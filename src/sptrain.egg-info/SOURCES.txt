@@ -1,0 +1,11 @@
+README.md
+setup.py
+src/cuda/meta.cpp
+src/cuda/meta_kernel.cu
+src/cuda/spmm.cpp
+src/cuda/spmm_kernel.cu
+src/sptrain.egg-info/PKG-INFO
+src/sptrain.egg-info/SOURCES.txt
+src/sptrain.egg-info/dependency_links.txt
+src/sptrain.egg-info/requires.txt
+src/sptrain.egg-info/top_level.txt

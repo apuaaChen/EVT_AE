@@ -2,15 +2,15 @@
 #include <vector>
 
 
-std::vector<torch::Tensor> batched_dense2sparse_cuda(
+std::vector<torch::Tensor> batched_dense2sparse_gold_cuda(
     torch::Tensor dense_tensor);
 
-std::vector<torch::Tensor> batched_dense2sparse(
+std::vector<torch::Tensor> batched_dense2sparse_gold(
     torch::Tensor dense_tensor)
 {
-    return batched_dense2sparse_cuda(dense_tensor);
+    return batched_dense2sparse_gold_cuda(dense_tensor);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m){
-    m.def("bdense2sparse", &batched_dense2sparse, "Convert dense matrix to sparse");
+    m.def("bdense2sparse_gold", &batched_dense2sparse_gold, "Convert dense matrix to sparse");
 }

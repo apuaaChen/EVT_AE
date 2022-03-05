@@ -27,7 +27,7 @@ __device__ __forceinline__ int reorder_index(int row, int col, int m){
 }
 
 template <typename Scalar16>
-__device__ void Dense2Sparse_(
+__device__ void Dense2Sparse_gold_(
     int m, int k,
     const Scalar16* __restrict__ dense_matrix,
     Scalar16* __restrict__ sparse_matrix,
@@ -141,7 +141,7 @@ __device__ void Dense2Sparse_(
 
 
 template <typename Scalar>
-__global__ void Dense2Sparse(
+__global__ void Dense2Sparse_gold(
     int m, int k,
     const Scalar* __restrict__ dense_matrix,
     Scalar* __restrict__ sparse_matrix,
@@ -149,11 +149,11 @@ __global__ void Dense2Sparse(
     int16_t * __restrict__ metadata,
     int16_t * __restrict__ metadata_reorder)
 {
-    Dense2Sparse_<Scalar>(m, k, dense_matrix, sparse_matrix, uncompressed_matrix, metadata, metadata_reorder);
+    Dense2Sparse_gold_<Scalar>(m, k, dense_matrix, sparse_matrix, uncompressed_matrix, metadata, metadata_reorder);
 }
 
 
-std::vector<torch::Tensor> batched_dense2sparse_cuda(
+std::vector<torch::Tensor> batched_dense2sparse_gold_cuda(
     torch::Tensor dense_matrix)
 {
     // Get problem size
@@ -203,7 +203,7 @@ std::vector<torch::Tensor> batched_dense2sparse_cuda(
 
     // Launch kernels
     // if (dense_matrix.dtype() == torch::kBFloat16){
-    Dense2Sparse<nv_bfloat16><<<grid, block>>>(
+    Dense2Sparse_gold<nv_bfloat16><<<grid, block>>>(
         m, k, 
         (nv_bfloat16*)dense_matrix.data_ptr(), 
         (nv_bfloat16*)sparse_matrix.data_ptr(), 

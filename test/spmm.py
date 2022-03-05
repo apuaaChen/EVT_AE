@@ -1,7 +1,7 @@
 import torch
 import nvtx
 import unittest
-from sptrain.meta import bdense2sparse
+from sptrain.meta import bdense2sparse_gold
 from sptrain.spmm import spmmv2_bf16
 
 
@@ -13,11 +13,11 @@ feat_out = 1024
 dtype = torch.bfloat16
 
 
-class TestPruning(unittest.TestCase):
+class TestPruningGold(unittest.TestCase):
     def test(self):
         dense_matrix = torch.randn(size=(batch_size, feat_in), dtype=dtype, device="cuda")
         rhs_matrix = torch.eye(n=feat_in, dtype=dtype, device="cuda")
-        nonzeros, uncompressed, metadata = bdense2sparse(dense_matrix)
+        nonzeros, uncompressed, metadata = bdense2sparse_gold(dense_matrix)
         output_matrix_ref = torch.matmul(uncompressed, rhs_matrix)
         output_matrix = spmmv2_bf16(nonzeros, rhs_matrix, metadata)
             
@@ -27,7 +27,7 @@ class TestSpMM(unittest.TestCase):
     def test(self):
         dense_matrix = torch.randn(size=(batch_size, feat_in), dtype=dtype, device="cuda")
         rhs_matrix = torch.randn(size=(feat_in, feat_out), dtype=dtype, device="cuda")
-        nonzeros, uncompressed, metadata = bdense2sparse(dense_matrix)
+        nonzeros, uncompressed, metadata = bdense2sparse_gold(dense_matrix)
         output_matrix_ref = torch.matmul(uncompressed, rhs_matrix)
         output_matrix = spmmv2_bf16(nonzeros, rhs_matrix, metadata)
             

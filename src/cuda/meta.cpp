@@ -3,21 +3,21 @@
 
 
 std::vector<torch::Tensor> batched_dense2sparse_gold_cuda(
-    torch::Tensor dense_tensor);
+    torch::Tensor dense_tensor, bool abs);
 
 std::vector<torch::Tensor> batched_dense2sparse_gold(
-    torch::Tensor dense_tensor)
+    torch::Tensor dense_tensor, bool abs)
 {
-    return batched_dense2sparse_gold_cuda(dense_tensor);
+    return batched_dense2sparse_gold_cuda(dense_tensor, abs);
 }
 
 std::vector<torch::Tensor> batched_dense2sparse_cuda(
-    torch::Tensor dense_tensor);
+    torch::Tensor dense_tensor, bool abs);
 
 std::vector<torch::Tensor> batched_dense2sparse(
-    torch::Tensor dense_tensor)
+    torch::Tensor dense_tensor, bool abs)
 {
-    return batched_dense2sparse_cuda(dense_tensor);
+    return batched_dense2sparse_cuda(dense_tensor, abs);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m){

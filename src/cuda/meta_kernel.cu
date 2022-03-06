@@ -26,7 +26,22 @@ __device__ __forceinline__ int reorder_index(int row, int col, int m){
     return idx;
 }
 
-template <typename Scalar16>
+template <bool ABS>
+__device__ __forceinline__ float sum(float a, float b);
+
+template <>
+__device__ __forceinline__ float sum<false>(float a, float b){
+    return a + b;
+}
+
+template <>
+__device__ __forceinline__ float sum<true>(float a, float b){
+    return fabsf(a) + fabsf(b);
+}
+
+
+
+template <typename Scalar16, bool ABS>
 __device__ void Dense2Sparse_gold_(
     int m, int k,
     const Scalar16* __restrict__ dense_matrix,
@@ -62,10 +77,10 @@ __device__ void Dense2Sparse_gold_(
             Scalar16 value_sp[2] = {data[0], data[1]};
             Scalar16 value_uncompressed[4] = {data[0], data[1], __float2bfloat16(0.0f), __float2bfloat16(0.0f)};
             int16_t meta_bit = 4;
-            float max_val = data_float[0] + data_float[1];
+            float max_val = sum<ABS>(data_float[0], data_float[1]);
 
             // TFTF
-            if (data_float[0] + data_float[2] > max_val){
+            if (sum<ABS>(data_float[0], data_float[2]) > max_val){
                 meta_bit = 8;
                 value_sp[0] = data[0];
                 value_sp[1] = data[2];
@@ -73,11 +88,11 @@ __device__ void Dense2Sparse_gold_(
                 value_uncompressed[1] = __float2bfloat16(0.0f);
                 value_uncompressed[2] = data[2];
                 value_uncompressed[3] = __float2bfloat16(0.0f);
-                max_val = data_float[0] + data_float[2];
+                max_val = sum<ABS>(data_float[0], data_float[2]);
             }
 
             // TFFT
-            if (data_float[0] + data_float[3] > max_val){
+            if (sum<ABS>(data_float[0], data_float[3]) > max_val){
                 meta_bit = 12;
                 value_sp[0] = data[0];
                 value_sp[1] = data[3];
@@ -85,11 +100,11 @@ __device__ void Dense2Sparse_gold_(
                 value_uncompressed[1] = __float2bfloat16(0.0f);
                 value_uncompressed[2] = __float2bfloat16(0.0f);
                 value_uncompressed[3] = data[3];
-                max_val = data_float[0] + data_float[3];
+                max_val = sum<ABS>(data_float[0], data_float[3]);
             }
 
             // FTTF
-            if (data_float[1] + data_float[2] > max_val){
+            if (sum<ABS>(data_float[1], data_float[2]) > max_val){
                 meta_bit = 9;
                 value_sp[0] = data[1];
                 value_sp[1] = data[2];
@@ -97,11 +112,11 @@ __device__ void Dense2Sparse_gold_(
                 value_uncompressed[1] = data[1];
                 value_uncompressed[2] = data[2];
                 value_uncompressed[3] = __float2bfloat16(0.0f);
-                max_val = data_float[1] + data_float[2];
+                max_val = sum<ABS>(data_float[1], data_float[2]);
             }
 
             // FTFT
-            if (data_float[1] + data_float[3] > max_val){
+            if (sum<ABS>(data_float[1], data_float[3]) > max_val){
                 meta_bit = 13;
                 value_sp[0] = data[1];
                 value_sp[1] = data[3];
@@ -109,11 +124,11 @@ __device__ void Dense2Sparse_gold_(
                 value_uncompressed[1] = data[1];
                 value_uncompressed[2] = __float2bfloat16(0.0f);
                 value_uncompressed[3] = data[3];
-                max_val = data_float[1] + data_float[3];
+                max_val = sum<ABS>(data_float[1], data_float[3]);
             }
 
             // FFTT
-            if (data_float[2] + data_float[3] > max_val){
+            if (sum<ABS>(data_float[2], data_float[3]) > max_val){
                 meta_bit = 14;
                 value_sp[0] = data[2];
                 value_sp[1] = data[3];
@@ -140,7 +155,7 @@ __device__ void Dense2Sparse_gold_(
 }
 
 
-template <typename Scalar>
+template <typename Scalar, bool ABS>
 __global__ void Dense2Sparse_gold(
     int m, int k,
     const Scalar* __restrict__ dense_matrix,
@@ -149,12 +164,13 @@ __global__ void Dense2Sparse_gold(
     int16_t * __restrict__ metadata,
     int16_t * __restrict__ metadata_reorder)
 {
-    Dense2Sparse_gold_<Scalar>(m, k, dense_matrix, sparse_matrix, uncompressed_matrix, metadata, metadata_reorder);
+    Dense2Sparse_gold_<Scalar, ABS>(m, k, dense_matrix, sparse_matrix, uncompressed_matrix, metadata, metadata_reorder);
 }
 
 
 std::vector<torch::Tensor> batched_dense2sparse_gold_cuda(
-    torch::Tensor dense_matrix)
+    torch::Tensor dense_matrix,
+    bool abs)
 {
     // Get problem size
     int m = dense_matrix.size(-2);
@@ -203,12 +219,23 @@ std::vector<torch::Tensor> batched_dense2sparse_gold_cuda(
 
     // Launch kernels
     // if (dense_matrix.dtype() == torch::kBFloat16){
-    Dense2Sparse_gold<nv_bfloat16><<<grid, block>>>(
-        m, k, 
-        (nv_bfloat16*)dense_matrix.data_ptr(), 
-        (nv_bfloat16*)sparse_matrix.data_ptr(), 
-        (nv_bfloat16*)uncompressed_matrix.data_ptr(), 
-        metadata.data<int16_t>(), metadata_reorder.data<int16_t>());        
+    if (abs){
+        printf("abs\n");
+        Dense2Sparse_gold<nv_bfloat16, true><<<grid, block>>>(
+            m, k, 
+            (nv_bfloat16*)dense_matrix.data_ptr(), 
+            (nv_bfloat16*)sparse_matrix.data_ptr(), 
+            (nv_bfloat16*)uncompressed_matrix.data_ptr(), 
+            metadata.data<int16_t>(), metadata_reorder.data<int16_t>());   
+    } else {
+        Dense2Sparse_gold<nv_bfloat16, false><<<grid, block>>>(
+            m, k, 
+            (nv_bfloat16*)dense_matrix.data_ptr(), 
+            (nv_bfloat16*)sparse_matrix.data_ptr(), 
+            (nv_bfloat16*)uncompressed_matrix.data_ptr(), 
+            metadata.data<int16_t>(), metadata_reorder.data<int16_t>());   
+    }
+         
     // }
     // else{
     //     Dense2Sparse<float><<<grid, block>>>(
@@ -223,7 +250,7 @@ std::vector<torch::Tensor> batched_dense2sparse_gold_cuda(
  * Implement the naive row-wise pruning kernel
  */
 
-template <typename Scalar16>
+template <typename Scalar16, bool ABS>
 __device__ void Dense2Sparse_(
     int m, int k,
     const Scalar16* __restrict__ dense_matrix,
@@ -254,44 +281,43 @@ __device__ void Dense2Sparse_(
             
             // TTFF
             Scalar16 value_sp[2] = {data[0], data[1]};
-            Scalar16 value_uncompressed[4] = {data[0], data[1], __float2bfloat16(0.0f), __float2bfloat16(0.0f)};
             int16_t meta_bit = 4;
-            float max_val = data_float[0] + data_float[1];
+            float max_val = sum<ABS>(data_float[0], data_float[1]);
 
             // TFTF
-            if (data_float[0] + data_float[2] > max_val){
+            if (sum<ABS>(data_float[0], data_float[2]) > max_val){
                 meta_bit = 8;
                 value_sp[0] = data[0];
                 value_sp[1] = data[2];
-                max_val = data_float[0] + data_float[2];
+                max_val = sum<ABS>(data_float[0], data_float[2]);
             }
 
             // TFFT
-            if (data_float[0] + data_float[3] > max_val){
+            if (sum<ABS>(data_float[0], data_float[3]) > max_val){
                 meta_bit = 12;
                 value_sp[0] = data[0];
                 value_sp[1] = data[3];
-                max_val = data_float[0] + data_float[3];
+                max_val = sum<ABS>(data_float[0], data_float[3]);
             }
 
             // FTTF
-            if (data_float[1] + data_float[2] > max_val){
+            if (sum<ABS>(data_float[1], data_float[2]) > max_val){
                 meta_bit = 9;
                 value_sp[0] = data[1];
                 value_sp[1] = data[2];
-                max_val = data_float[1] + data_float[2];
+                max_val = sum<ABS>(data_float[1], data_float[2]);
             }
 
             // FTFT
-            if (data_float[1] + data_float[3] > max_val){
+            if (sum<ABS>(data_float[1], data_float[3]) > max_val){
                 meta_bit = 13;
                 value_sp[0] = data[1];
                 value_sp[1] = data[3];
-                max_val = data_float[1] + data_float[3];
+                max_val = sum<ABS>(data_float[1], data_float[3]);
             }
 
             // FFTT
-            if (data_float[2] + data_float[3] > max_val){
+            if (sum<ABS>(data_float[2], data_float[3]) > max_val){
                 meta_bit = 14;
                 value_sp[0] = data[2];
                 value_sp[1] = data[3]; 
@@ -307,20 +333,28 @@ __device__ void Dense2Sparse_(
     }
 }
 
+/*
+ * Implement the tensor core layout inspired pruning
+ */
 
-template <typename Scalar>
+// Question: Do we really need to efficiently prune a dense matrix on the fly?
+// Or all the pruning are GEMM epilogues?
+
+
+template <typename Scalar, bool ABS>
 __global__ void Dense2Sparse(
     int m, int k,
     const Scalar* __restrict__ dense_matrix,
     Scalar* __restrict__ sparse_matrix,
     int16_t * __restrict__ metadata)
 {
-    Dense2Sparse_<Scalar>(m, k, dense_matrix, sparse_matrix, metadata);
+    Dense2Sparse_<Scalar, ABS>(m, k, dense_matrix, sparse_matrix, metadata);
 }
 
 
 std::vector<torch::Tensor> batched_dense2sparse_cuda(
-    torch::Tensor dense_matrix)
+    torch::Tensor dense_matrix, 
+    bool abs)
 {
     // Get problem size
     int m = dense_matrix.size(-2);
@@ -363,11 +397,20 @@ std::vector<torch::Tensor> batched_dense2sparse_cuda(
 
     // Launch kernels
     // if (dense_matrix.dtype() == torch::kBFloat16){
-    Dense2Sparse<nv_bfloat16><<<grid, block>>>(
-        m, k, 
-        (nv_bfloat16*)dense_matrix.data_ptr(), 
-        (nv_bfloat16*)sparse_matrix.data_ptr(), 
-        metadata.data<int16_t>());        
+    if (abs){
+        Dense2Sparse<nv_bfloat16, true><<<grid, block>>>(
+            m, k, 
+            (nv_bfloat16*)dense_matrix.data_ptr(), 
+            (nv_bfloat16*)sparse_matrix.data_ptr(), 
+            metadata.data<int16_t>());  
+    } else {
+        Dense2Sparse<nv_bfloat16, false><<<grid, block>>>(
+            m, k, 
+            (nv_bfloat16*)dense_matrix.data_ptr(), 
+            (nv_bfloat16*)sparse_matrix.data_ptr(), 
+            metadata.data<int16_t>());  
+    }
+          
     // }
     // else{
     //     Dense2Sparse<float><<<grid, block>>>(

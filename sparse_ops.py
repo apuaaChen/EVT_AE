@@ -10,7 +10,7 @@ from torch import autograd, nn
 import torch.nn.functional as F
 import nvtx
 from sptrain.meta import bdense2sparse
-from sptrain.spmm import spmmv2_bf16
+from sptrain.spmm import spmmv2_bf16, spmmv2_bf16_nt
 
 
 class Sparse(autograd.Function):
@@ -208,7 +208,8 @@ class LinearV3(autograd.Function):
         ctx.save_for_backward(input, sp_weight, sp_meta, bias)
         if bias is not None:
             bias = bias.unsqueeze(0)
-        output = spmmv2_bf16(sp_weight, input.t().contiguous(), sp_meta).t()
+        # output = spmmv2_bf16(sp_weight, input.t().contiguous(), sp_meta).t()
+        output = spmmv2_bf16_nt(sp_weight, input, sp_meta).t()
         if bias is not None:
             return output + bias
         else:

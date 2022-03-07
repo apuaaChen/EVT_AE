@@ -3,7 +3,7 @@ import torch
 import nvtx
 import unittest
 from sptrain.meta import bdense2sparse_gold, bdense2sparse
-from sptrain.spmm import spmmv2_bf16
+from sptrain.spmm import spmmv2_bf16, spmmv2_bf16_nt
 import torch.nn.functional as F
 
 
@@ -80,14 +80,23 @@ class TestPruning(unittest.TestCase):
 
 
 class TestSpMM(unittest.TestCase):
-    def test(self):
+    def test_nn(self):
         dense_matrix = torch.randn(size=(batch_size, feat_in), dtype=dtype, device="cuda")
         rhs_matrix = torch.randn(size=(feat_in, feat_out), dtype=dtype, device="cuda")
         nonzeros, uncompressed, metadata = bdense2sparse_gold(dense_matrix, False)
         output_matrix_ref = torch.matmul(uncompressed, rhs_matrix)
         output_matrix = spmmv2_bf16(nonzeros, rhs_matrix, metadata)
 
-        self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, rtol=1e-1))
+        self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, atol=0.5))
+
+    def test_nt(self):
+        dense_matrix = torch.randn(size=(batch_size, feat_in), dtype=dtype, device="cuda")
+        rhs_matrix = torch.randn(size=(feat_out, feat_in), dtype=dtype, device="cuda")
+        nonzeros, uncompressed, metadata = bdense2sparse_gold(dense_matrix, False)
+        output_matrix_ref = torch.matmul(uncompressed, rhs_matrix.t())
+        output_matrix = spmmv2_bf16_nt(nonzeros, rhs_matrix, metadata)
+
+        self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, rtol=0.5))
 
 if __name__ == '__main__':
     unittest.main()

@@ -7,9 +7,9 @@ from sptrain.spmm import spmmv2_bf16
 import torch.nn.functional as F
 
 
-batch_size = 512
+batch_size = 4096
 feat_in = 1024
-feat_out = 1024
+feat_out = 2048
 
 
 dtype = torch.bfloat16
@@ -86,7 +86,7 @@ class TestSpMM(unittest.TestCase):
         nonzeros, uncompressed, metadata = bdense2sparse_gold(dense_matrix, False)
         output_matrix_ref = torch.matmul(uncompressed, rhs_matrix)
         output_matrix = spmmv2_bf16(nonzeros, rhs_matrix, metadata)
-            
+
         self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, rtol=1e-1))
 
 if __name__ == '__main__':

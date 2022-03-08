@@ -10,7 +10,7 @@ from torch import autograd, nn
 import torch.nn.functional as F
 import nvtx
 from sptrain.meta import bdense2sparse
-from sptrain.spmm import spmmv2_bf16, spmmv2_bf16_nt
+from sptrain.spmm import spmmv2_bf16_nnn, spmmv2_bf16_ntn
 
 
 class Sparse(autograd.Function):
@@ -89,7 +89,7 @@ class SparseV3(autograd.Function):
     @staticmethod
     def backward(ctx, grad_nonzeros, grad_metadata, grad_weight):
         mask_nnz = torch.ones(size=(grad_weight.size(0), int(grad_weight.size(1)/2)), dtype=grad_weight.dtype, device="cuda")
-        mask = spmmv2_bf16(mask_nnz, torch.eye(grad_weight.size(1), dtype=grad_weight.dtype, device="cuda"), ctx.meta)
+        mask = spmmv2_bf16_nnn(mask_nnz, torch.eye(grad_weight.size(1), dtype=grad_weight.dtype, device="cuda"), ctx.meta)
 
         weight, = ctx.saved_tensors
         return grad_weight + ctx.decay * (1-mask) * weight, None, None
@@ -204,12 +204,10 @@ class LinearV3(autograd.Function):
     
     @staticmethod
     def forward(ctx, input, sp_weight, sp_meta, weight, bias):
-        eye = torch.eye(n=sp_weight.size(1) * 2, dtype=sp_weight.dtype, device="cuda")
         ctx.save_for_backward(input, sp_weight, sp_meta, bias)
         if bias is not None:
             bias = bias.unsqueeze(0)
-        # output = spmmv2_bf16(sp_weight, input.t().contiguous(), sp_meta).t()
-        output = spmmv2_bf16_nt(sp_weight, input, sp_meta).t()
+        output = spmmv2_bf16_ntn(sp_weight, input, sp_meta).t()
         if bias is not None:
             return output + bias
         else:
@@ -218,7 +216,7 @@ class LinearV3(autograd.Function):
     @staticmethod
     def backward(ctx, grad_out):
         input, sp_weight, sp_meta, bias = ctx.saved_tensors
-        weight = spmmv2_bf16(sp_weight, torch.eye(n=sp_weight.size(1) * 2, dtype=sp_weight.dtype, device="cuda"), sp_meta)
+        weight = spmmv2_bf16_nnn(sp_weight, torch.eye(n=sp_weight.size(1) * 2, dtype=sp_weight.dtype, device="cuda"), sp_meta)
         grad_input = torch.matmul(grad_out, weight)
         grad_weight = torch.matmul(grad_out.t(), input)
         if bias is not None:

@@ -2,35 +2,51 @@
 #include <vector>
 
 
-torch::Tensor spmmv2_bf16_cuda(
+torch::Tensor spmmv2_bf16_nnn_cuda(
     torch::Tensor tensor_a_,
     torch::Tensor tensor_b_,
     torch::Tensor tensor_e_);
 
-torch::Tensor spmmv2_bf16(
+torch::Tensor spmmv2_bf16_nnn(
     torch::Tensor tensor_a_,
     torch::Tensor tensor_b_,
     torch::Tensor tensor_e_)
 {
-    return spmmv2_bf16_cuda(tensor_a_, tensor_b_, tensor_e_);
+    return spmmv2_bf16_nnn_cuda(tensor_a_, tensor_b_, tensor_e_);
 }
 
 
-torch::Tensor spmmv2_bf16_nt_cuda(
+torch::Tensor spmmv2_bf16_ntn_cuda(
     torch::Tensor tensor_a_,
     torch::Tensor tensor_b_,
     torch::Tensor tensor_e_);
 
-torch::Tensor spmmv2_bf16_nt(
+torch::Tensor spmmv2_bf16_ntn(
     torch::Tensor tensor_a_,
     torch::Tensor tensor_b_,
     torch::Tensor tensor_e_)
 {
-    return spmmv2_bf16_nt_cuda(tensor_a_, tensor_b_, tensor_e_);
+    return spmmv2_bf16_ntn_cuda(tensor_a_, tensor_b_, tensor_e_);
 }
+
+
+torch::Tensor spmmv2_bf16_ntt_cuda(
+    torch::Tensor tensor_a_,
+    torch::Tensor tensor_b_,
+    torch::Tensor tensor_e_);
+
+torch::Tensor spmmv2_bf16_ntt(
+    torch::Tensor tensor_a_,
+    torch::Tensor tensor_b_,
+    torch::Tensor tensor_e_)
+{
+    return spmmv2_bf16_ntt_cuda(tensor_a_, tensor_b_, tensor_e_);
+}
+
 
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m){
-    m.def("spmmv2_bf16", &spmmv2_bf16, "Cutlass SpMM bf16 kernel");
-    m.def("spmmv2_bf16_nt", &spmmv2_bf16_nt, "Cutlass SpMM bf16 kernel nt");
+    m.def("spmmv2_bf16_nnn", &spmmv2_bf16_nnn, "Cutlass SpMM bf16 kernel nnn");
+    m.def("spmmv2_bf16_ntn", &spmmv2_bf16_ntn, "Cutlass SpMM bf16 kernel ntn");
+    m.def("spmmv2_bf16_ntt", &spmmv2_bf16_ntt, "Cutlass SpMM bf16 kernel ntt");
 }

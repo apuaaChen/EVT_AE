@@ -1,5 +1,6 @@
 #include "epilogue.h"
 #include "predicated_tile_iterator.h"
+#include "shared_load_iterator.h"
 
 namespace cutlass {
 namespace epilogue {
@@ -71,7 +72,8 @@ struct DefaultEpilogueTensorOpV2 {
   >;
 
   using WarpTileIterator = typename DefaultIterators::WarpTileIterator;
-  using SharedLoadIterator = typename DefaultIterators::SharedLoadIterator;
+  // using SharedLoadIterator = typename DefaultIterators::SharedLoadIterator;
+  using SharedLoadIterator = SharedLoadIteratorV2<typename OutputTileThreadMap::CompactedThreadMap, ElementAccumulator>;
 
   /// Hard-coded padding elements added 
   using Padding = cutlass::MatrixShape<0, 64 / sizeof_bits<ElementAccumulator>::value * 4>;

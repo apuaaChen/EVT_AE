@@ -1,14 +1,10 @@
-#include <helper.h>
+#include "helper.h"
 
 
 namespace cutlass {
 namespace epilogue {
 namespace threadblock {
 
-
-__device__ void print_val(int blockid, int threadid, float value){
-    if (blockid == 0 && threadid == 0) printf("tid: %d, value is: %.8f\n", threadid, float(value));
-}
 
 ////////////////////////////////////////////////////////////////////////////////
 

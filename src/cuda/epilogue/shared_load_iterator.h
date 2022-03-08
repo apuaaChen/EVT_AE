@@ -1,3 +1,5 @@
+#include "helper.h"
+
 namespace cutlass {
 namespace epilogue {
 namespace threadblock {

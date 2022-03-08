@@ -2,6 +2,7 @@
 #include "predicated_tile_iterator.h"
 #include "shared_load_iterator.h"
 #include "tile_iterator_tensor_op.h"
+#include "fragment_iterator_tensor_op.h"
 
 namespace cutlass {
 namespace epilogue {
@@ -47,19 +48,25 @@ struct DefaultEpilogueTensorOpV2 {
     UseCUDAStore
   >;
 
-  using AccumulatorFragmentIterator = typename std::conditional<is_complex<ElementOutput>::value,
-                                    cutlass::epilogue::warp::FragmentIteratorComplexTensorOp<
-                                        typename WarpMmaTensorOp::Shape,
-                                        typename WarpMmaTensorOp::Policy::Operator::Shape,
-                                        typename WarpMmaTensorOp::Policy::Operator::ElementC,
-                                        typename WarpMmaTensorOp::Policy::Operator::FragmentC,
-                                        LayoutC>,
-                                    cutlass::epilogue::warp::FragmentIteratorTensorOp<
-                                        typename WarpMmaTensorOp::Shape,
-                                        typename WarpMmaTensorOp::Policy::Operator::Shape,
-                                        typename WarpMmaTensorOp::Policy::Operator::ElementC,
-                                        typename WarpMmaTensorOp::Policy::Operator::FragmentC,
-                                        LayoutC> >::type;
+  // using AccumulatorFragmentIterator = typename std::conditional<is_complex<ElementOutput>::value,
+  //                                   cutlass::epilogue::warp::FragmentIteratorComplexTensorOp<
+  //                                       typename WarpMmaTensorOp::Shape,
+  //                                       typename WarpMmaTensorOp::Policy::Operator::Shape,
+  //                                       typename WarpMmaTensorOp::Policy::Operator::ElementC,
+  //                                       typename WarpMmaTensorOp::Policy::Operator::FragmentC,
+  //                                       LayoutC>,
+  //                                   cutlass::epilogue::warp::FragmentIteratorTensorOp<
+  //                                       typename WarpMmaTensorOp::Shape,
+  //                                       typename WarpMmaTensorOp::Policy::Operator::Shape,
+  //                                       typename WarpMmaTensorOp::Policy::Operator::ElementC,
+  //                                       typename WarpMmaTensorOp::Policy::Operator::FragmentC,
+  //                                       LayoutC> >::type;
+  using AccumulatorFragmentIterator = cutlass::epilogue::warp::FragmentIteratorTensorOpV2<
+                                          typename WarpMmaTensorOp::Shape,
+                                          typename WarpMmaTensorOp::Policy::Operator::Shape,
+                                          typename WarpMmaTensorOp::Policy::Operator::ElementC,
+                                          typename WarpMmaTensorOp::Policy::Operator::FragmentC,
+                                          LayoutC>;
 
   /// Support several implementations depending on structure of epilogue
   using DefaultIterators = detail::DefaultIteratorsTensorOp<

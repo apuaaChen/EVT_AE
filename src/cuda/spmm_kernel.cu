@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <vector>
 #include "cuda_bf16.h"
+#include "helper.h"
 
 #include "epilogue/default_epilogue_tensor_op.h"
 
@@ -221,6 +222,252 @@ __device__ void cutlassSpmmKernel_bf16_(
     epilogue(output_op, iterator_D, accumulators, iterator_D);
 }
 
+
+template<typename _Mma, typename _SharedStorage, typename _Epilogue>
+__global__ void cutlassSpmmKernel_bf16_test(
+    cutlass::gemm::GemmCoord problem_size,
+    cutlass::gemm::GemmCoord grid_tiled_shape,
+    typename _Mma::IteratorA::Params params_A,
+    cutlass::bfloat16_t* __restrict__ ptr_A,
+    typename _Mma::IteratorB::Params params_B,
+    cutlass::bfloat16_t* __restrict__ ptr_B,
+    typename _Epilogue::OutputTileIterator::Params params_D,
+    cutlass::bfloat16_t* __restrict__ ptr_D,
+    typename _Mma::IteratorE::Params params_E,
+    typename _Mma::ElementE* __restrict__ ptr_E,
+    typename _Epilogue::OutputOp::Params output_op_,
+    int gemm_k_size)
+{
+    extern __shared__ int SharedStorageBase[];
+
+    _SharedStorage& shared_storage = *reinterpret_cast<_SharedStorage *>(SharedStorageBase);
+
+    ThreadblockSwizzle threadblock_swizzle;
+
+    cutlass::gemm::GemmCoord threadblock_tile_offset=threadblock_swizzle.get_tile_offset(grid_tiled_shape);
+
+    // Early exit if CTA is out of range
+    if (grid_tiled_shape.m() <= threadblock_tile_offset.m() ||
+        grid_tiled_shape.n() <= threadblock_tile_offset.n())
+    {
+        return;
+    }
+
+    // Compute initial location in logical coordinates
+    cutlass::MatrixCoord tb_offset_A{
+        threadblock_tile_offset.m() * _Mma::Shape::kM,
+        threadblock_tile_offset.k() * gemm_k_size / _Mma::kSparse
+    };
+
+    cutlass::MatrixCoord tb_offset_B{
+        threadblock_tile_offset.k() * gemm_k_size,
+        threadblock_tile_offset.n() * _Mma::Shape::kN
+    };
+
+    cutlass::MatrixCoord tb_offset_E{
+        threadblock_tile_offset.m() * _Mma::Shape::kM,
+        threadblock_tile_offset.k() * gemm_k_size / _Mma::kSparse
+    };
+
+    // Problem size
+    int problem_size_k = min(problem_size.k(), (threadblock_tile_offset.k() + 1) * gemm_k_size);
+
+    int gemm_k_iterations = (problem_size_k - tb_offset_B.row() + _Mma::Shape::kK - 1) / _Mma::Shape::kK;
+
+    // Compute position within threadblock
+    int thread_idx = threadIdx.x;
+
+    // Construct iterators to A, B, and E operands
+    typename _Mma::IteratorA iterator_A(
+        params_A,
+        //ref_A.data(),
+        ptr_A,
+        {problem_size.m(), problem_size_k / _Mma::kSparse},
+        thread_idx,
+        tb_offset_A
+    );
+
+    typename _Mma::IteratorB iterator_B(
+        params_B,
+        //ref_B.data(),
+        ptr_B,
+        {problem_size_k, problem_size.n()},
+        thread_idx,
+        tb_offset_B
+    );
+
+    typename _Mma::IteratorE iterator_E(
+        params_E,
+        // ref_E.data(),
+        ptr_E,
+        {problem_size.m(),
+        problem_size_k / _Mma::kSparse / _Mma::kElementsPerElementE},
+        thread_idx,
+        tb_offset_E
+    );
+
+    // Broadcast the warp_id computed by lane 0 to ensure dependent code
+    // is compuled as warp-uniform
+    int warp_idx = __shfl_sync(0xffffffff, threadIdx.x / 32, 0);
+    int lane_idx = threadIdx.x % 32;
+
+    //
+    //  Main loop
+    //
+
+    // Construct thread-scoped matrix multiply
+    _Mma mma(shared_storage.main_loop, thread_idx, warp_idx, lane_idx);
+
+    typename _Mma::FragmentC accumulators;
+
+    accumulators.clear();
+
+    if (gemm_k_iterations > 0){
+        mma(gemm_k_iterations, accumulators, iterator_A, iterator_B, iterator_E, accumulators);
+    }
+
+    //
+    //  Epilogue
+    //
+
+    /* Row-major output
+    int warp_row_idx = warp_idx % 2;
+    int warp_col_idx = warp_idx / 2;
+    int quad_idx = lane_idx / 4;
+    int idx_in_quad = lane_idx % 4;
+
+    int global_offset = (warp_row_idx * 64 + quad_idx) * problem_size.n() + warp_col_idx * 64 + idx_in_quad * 2;
+
+
+    float2 *frag_ptr = reinterpret_cast<float2 *>(&accumulators);
+    float *global_ptr = reinterpret_cast<float *>(ptr_D + 128 * blockIdx.x * problem_size.n() + 128 * blockIdx.y + global_offset);
+
+    float2 tmp;
+    __nv_bfloat16 res[2];
+
+    float* res_vec = reinterpret_cast<float *>(res);
+
+    #pragma unroll
+    for (int row=0; row < 8; row ++){
+        float *global_ptr_t = global_ptr;
+        float2 *frag_ptr_t = frag_ptr;
+        #pragma unroll
+        for (int col=0; col < 8; col ++){
+            tmp = *(frag_ptr_t);
+            res[0] = __float2bfloat16(tmp.x);
+            res[1] = __float2bfloat16(tmp.y);
+            *(global_ptr_t) = *(res_vec);
+            frag_ptr_t += 8;
+            global_ptr_t += 4;
+        }
+        global_ptr += problem_size.n() * 4;
+        frag_ptr += 1;
+    }
+    */
+
+    //// Transposed epilogue
+    // Step 1: cast results to bfloat16
+
+    int col_quad_idx = lane_idx % 8;
+    int row_quad_idx = lane_idx / 8;
+    int col_major = col_quad_idx % 4;
+    int col_minor = col_quad_idx / 4;
+    int quad_idx = lane_idx / 4;
+    int warp_row_idx = warp_idx % 2;
+    int warp_col_idx = warp_idx / 2;
+    int idx_in_quad = lane_idx % 4;
+
+    int sub_warp_idx = lane_idx / 16;
+    int sub_lane_idx = lane_idx % 16;
+
+    constexpr int kShmStride = 64 + 8;
+
+    float2 *frag_ptr = reinterpret_cast<float2 *>(&accumulators);
+
+    int shared_store_offset = (warp_col_idx * 8 + col_major * 2 + col_minor) * kShmStride + warp_row_idx * 32 + row_quad_idx;
+
+    int shared_load_offset = (warp_row_idx * 4 + warp_col_idx * 8 + sub_warp_idx) * kShmStride / 4 + sub_lane_idx;
+
+    float *shared_store_ptr = reinterpret_cast<float *>(SharedStorageBase) + shared_store_offset;
+    float4 *shared_load_ptr = reinterpret_cast<float4 *>(SharedStorageBase) + shared_load_offset;
+
+
+    int global_offset = (warp_row_idx * 4 + warp_col_idx * 64 + sub_warp_idx) * problem_size.m() / 8 + sub_lane_idx;
+    float4 *global_ptr = reinterpret_cast<float4 *>(ptr_D + 128 * blockIdx.y * problem_size.m() + 128 * blockIdx.x) + global_offset;
+
+    __nv_bfloat16 tmp_share;
+    __nv_bfloat16 res[2];
+
+    float* res_vec = reinterpret_cast<float* >(res);
+
+    #pragma unroll
+    for (int col=0; col < 8; col ++){
+        float2 *frag_ptr_t = frag_ptr;
+        float * shared_store_ptr_t = shared_store_ptr;
+        __syncthreads();
+
+        #pragma unroll
+        for (int row=0; row < 8; row ++){
+            if (quad_idx % 2 == 0){
+                tmp_share = __float2bfloat16((*(frag_ptr_t)).y);
+            } else {
+                tmp_share = __float2bfloat16((*(frag_ptr_t)).x);
+            }
+            tmp_share = __shfl_xor_sync(0xffffffff, tmp_share, 4);
+            if (quad_idx % 2 == 0){
+                res[0] = __float2bfloat16((*(frag_ptr_t)).x);
+                res[1] = tmp_share;
+            } else {
+                res[0] = tmp_share;
+                res[1] = __float2bfloat16((*(frag_ptr_t)).y);
+            }
+            *(shared_store_ptr_t) = *(res_vec);
+            frag_ptr_t += 1;
+            shared_store_ptr_t += 4;
+        }
+        __syncthreads();
+        // To this point, the results have been written into the shared memory
+        // Then we load them back to registers
+        *(global_ptr) = *(shared_load_ptr);
+
+        *(global_ptr + problem_size.m() / 4) = *(shared_load_ptr + kShmStride / 2);
+        global_ptr += problem_size.m();
+        frag_ptr += 8;
+    }
+
+
+
+    // typename _Epilogue::OutputOp output_op(output_op_);
+
+    // threadblock_tile_offset = threadblock_swizzle.get_tile_offset(grid_tiled_shape);
+
+    // // (blockIdx.x * TileM, blockIdx.y * TileN)
+    // cutlass::MatrixCoord threadblock_offset(
+    //     threadblock_tile_offset.m() * _Mma::Shape::kM,
+    //     threadblock_tile_offset.n() * _Mma::Shape::kN
+    // );
+
+    // int block_idx = threadblock_tile_offset.m() + threadblock_tile_offset.n() * grid_tiled_shape.m();
+    
+    // typename _Epilogue::OutputTileIterator iterator_D(
+    //     params_D,
+    //     ptr_D,
+    //     problem_size.mn(),
+    //     thread_idx,
+    //     threadblock_offset
+    // );
+
+    
+    // _Epilogue epilogue(
+    //     shared_storage.epilogue,
+    //     thread_idx,
+    //     warp_idx,
+    //     lane_idx
+    // );
+
+    // epilogue(output_op, iterator_D, accumulators, iterator_D);
+}
+
 template<typename _Mma, typename _SharedStorage, typename _Epilogue>
 __global__ void cutlassSpmmKernel_bf16(
     cutlass::gemm::GemmCoord problem_size,
@@ -361,7 +608,7 @@ torch::Tensor spmmv2_bf16_ntt_cuda(
     const int k = tensor_b.size(1);
 
     auto options_val = torch::TensorOptions().dtype(torch::kBFloat16).device(tensor_b.device());
-    auto output_matrix = torch::empty({m, n}, options_val);
+    auto output_matrix = torch::empty({n, m}, options_val);
 
     // Create a tuple of problem size for matrix multiplication
     cutlass::gemm::GemmCoord problem_size(m, n, k);
@@ -387,12 +634,12 @@ torch::Tensor spmmv2_bf16_ntt_cuda(
 
     int smem_size = int(sizeof(SharedStorage_bf16_ntt));
 
-    cudaFuncSetAttribute(cutlassSpmmKernel_bf16<Mma_bf16_ntt, SharedStorage_bf16_ntt, Epilogue_bf16_ntt>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size);
-    cudaFuncSetAttribute(cutlassSpmmKernel_bf16<Mma_bf16_ntt, SharedStorage_bf16_ntt, Epilogue_bf16_ntt>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
+    cudaFuncSetAttribute(cutlassSpmmKernel_bf16_test<Mma_bf16_ntt, SharedStorage_bf16_ntt, Epilogue_bf16_ntt>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size);
+    cudaFuncSetAttribute(cutlassSpmmKernel_bf16_test<Mma_bf16_ntt, SharedStorage_bf16_ntt, Epilogue_bf16_ntt>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
 
     int gemm_k_size = ((problem_size.k() + Mma_bf16_ntt::Shape::kK - 1) / Mma_bf16_ntt::Shape::kK) * Mma_bf16_ntt::Shape::kK;
 
-    cutlassSpmmKernel_bf16<Mma_bf16_ntt, SharedStorage_bf16_ntt, Epilogue_bf16_ntt><<<grid, block, smem_size>>>(
+    cutlassSpmmKernel_bf16_test<Mma_bf16_ntt, SharedStorage_bf16_ntt, Epilogue_bf16_ntt><<<grid, block, smem_size>>>(
         problem_size, grid_tiled_shape, 
         layout_a, (cutlass::bfloat16_t*)tensor_a.data_ptr(),
         layout_b, (cutlass::bfloat16_t*)tensor_b.data_ptr(),

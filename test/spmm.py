@@ -102,7 +102,7 @@ class TestSpMM(unittest.TestCase):
         dense_matrix = torch.randn(size=(batch_size, feat_in), dtype=dtype, device="cuda")
         rhs_matrix = torch.randn(size=(feat_out, feat_in), dtype=dtype, device="cuda")
         nonzeros, uncompressed, metadata = bdense2sparse_gold(dense_matrix, False)
-        output_matrix_ref = torch.matmul(uncompressed, rhs_matrix.t())
+        output_matrix_ref = torch.matmul(uncompressed, rhs_matrix.t()).t()
         output_matrix = spmmv2_bf16_ntt(nonzeros, rhs_matrix, metadata)
 
         self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, atol=0.5))

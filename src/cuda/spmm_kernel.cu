@@ -365,8 +365,7 @@ __global__ void cutlassSpmmKernel_bf16_test(
     }
     */
 
-    //// Transposed epilogue
-    // Step 1: cast results to bfloat16
+    /*// Naive Transposed epilogue
 
     int col_quad_idx = lane_idx % 8;
     int row_quad_idx = lane_idx / 8;
@@ -380,7 +379,7 @@ __global__ void cutlassSpmmKernel_bf16_test(
     int sub_warp_idx = lane_idx / 16;
     int sub_lane_idx = lane_idx % 16;
 
-    constexpr int kShmStride = 64 + 8;
+    constexpr int kShmStride = 64 + 4;
 
     float2 *frag_ptr = reinterpret_cast<float2 *>(&accumulators);
 
@@ -434,6 +433,117 @@ __global__ void cutlassSpmmKernel_bf16_test(
         global_ptr += problem_size.m();
         frag_ptr += 8;
     }
+    */
+
+    // transpose with pingpong buffer
+    int col_quad_idx = lane_idx % 8;
+    int row_quad_idx = lane_idx / 8;
+    int col_major = col_quad_idx % 4;
+    int col_minor = col_quad_idx / 4;
+    int quad_idx = lane_idx / 4;
+    int warp_row_idx = warp_idx % 2;
+    int warp_col_idx = warp_idx / 2;
+    int idx_in_quad = lane_idx % 4;
+
+    int sub_warp_idx = lane_idx / 16;
+    int sub_lane_idx = lane_idx % 16;
+
+    constexpr int kShmStride = 64 + 4;
+
+    float2 *frag_ptr = reinterpret_cast<float2 *>(&accumulators);
+
+    int shared_store_offset = (warp_col_idx * 8 + col_major * 2 + col_minor) * kShmStride + warp_row_idx * 32 + row_quad_idx;
+
+    int shared_load_offset = (warp_row_idx * 4 + warp_col_idx * 8 + sub_warp_idx) * kShmStride / 4 + sub_lane_idx;
+
+    float *shared_store_ptr = reinterpret_cast<float *>(SharedStorageBase) + shared_store_offset;
+    float4 *shared_load_ptr = reinterpret_cast<float4 *>(SharedStorageBase) + shared_load_offset;
+
+    constexpr int buffer_stride_float = 16 * kShmStride;
+    constexpr int buffer_stride_float4 = 4 * kShmStride;
+
+
+    int global_offset = (warp_row_idx * 4 + warp_col_idx * 64 + sub_warp_idx) * problem_size.m() / 8 + sub_lane_idx;
+    float4 *global_ptr = reinterpret_cast<float4 *>(ptr_D + 128 * blockIdx.y * problem_size.m() + 128 * blockIdx.x) + global_offset;
+
+    __nv_bfloat16 tmp_share;
+    __nv_bfloat16 res[2];
+
+    float* res_vec = reinterpret_cast<float* >(res);
+
+    /*
+     * Prologue
+     */ 
+    float2 *frag_ptr_t = frag_ptr;
+    float * shared_store_ptr_t = shared_store_ptr;
+    #pragma unroll
+    for (int row=0; row < 8; row ++){
+        if (quad_idx % 2 == 0){
+            tmp_share = __float2bfloat16((*(frag_ptr_t)).y);
+        } else {
+            tmp_share = __float2bfloat16((*(frag_ptr_t)).x);
+        }
+        tmp_share = __shfl_xor_sync(0xffffffff, tmp_share, 4);
+        if (quad_idx % 2 == 0){
+            res[0] = __float2bfloat16((*(frag_ptr_t)).x);
+            res[1] = tmp_share;
+        } else {
+            res[0] = tmp_share;
+            res[1] = __float2bfloat16((*(frag_ptr_t)).y);
+        }
+        *(shared_store_ptr_t) = *(res_vec);
+        frag_ptr_t += 1;
+        shared_store_ptr_t += 4;
+    }
+
+    frag_ptr += 8;
+
+    /*
+     * Main loop
+     */
+
+    #pragma unroll
+    for (int col=0; col < 7; col ++){
+        // To this point, the results have been written into the shared memory
+        // Then we load them back to registers
+        frag_ptr_t = frag_ptr;
+        shared_store_ptr_t = shared_store_ptr + ((col + 1) % 2) * buffer_stride_float;
+        #pragma unroll
+        for (int row=0; row < 8; row ++){
+            if (quad_idx % 2 == 0){
+                tmp_share = __float2bfloat16((*(frag_ptr_t)).y);
+            } else {
+                tmp_share = __float2bfloat16((*(frag_ptr_t)).x);
+            }
+            tmp_share = __shfl_xor_sync(0xffffffff, tmp_share, 4);
+            if (quad_idx % 2 == 0){
+                res[0] = __float2bfloat16((*(frag_ptr_t)).x);
+                res[1] = tmp_share;
+            } else {
+                res[0] = tmp_share;
+                res[1] = __float2bfloat16((*(frag_ptr_t)).y);
+            }
+            *(shared_store_ptr_t) = *(res_vec);
+            frag_ptr_t += 1;
+            shared_store_ptr_t += 4;
+        }
+        __syncthreads();
+
+        *(global_ptr) = *(shared_load_ptr + (col % 2) * buffer_stride_float4);
+
+        *(global_ptr + problem_size.m() / 4) = *(shared_load_ptr + (col % 2) * buffer_stride_float4 + kShmStride / 2);
+        global_ptr += problem_size.m();
+        frag_ptr += 8;
+        
+    }
+
+    /*
+     * epilogue
+     */ 
+    // __syncthreads();
+
+    *(global_ptr) = *(shared_load_ptr);
+    *(global_ptr + problem_size.m() / 4) = *(shared_load_ptr + kShmStride / 2);
 
 
 

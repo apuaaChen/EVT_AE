@@ -1,4 +1,3 @@
-from numpy import indices
 import torch
 import nvtx
 import unittest

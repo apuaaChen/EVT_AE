@@ -1,5 +1,6 @@
 #include "mma_multistage.h"
 #include "predicated_tile_access_iterator.h"
+#include "pitch_linear_thread_map.h"
 ////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
@@ -115,7 +116,11 @@ struct DefaultMmaV2<ElementA, LayoutA, kAlignmentA, ElementB, LayoutB,
           ElementA, LayoutA, 1, ThreadMapA, AccessTypeA>;
 
   // Define iterators over tiles from the B operand
-  using ThreadMapB = typename MmaCore::IteratorThreadMapB;
+  // using ThreadMapB = typename MmaCore::IteratorThreadMapB;
+  using ThreadMapB = cutlass::transform::PitchLinearWarpRakedThreadMapV2<
+      cutlass::layout::PitchLinearShape<ThreadblockShape::kN, ThreadblockShape::kK>, 128,
+      layout::PitchLinearShape<8, 4>, 8>;
+
   using AccessTypeB = cutlass::Array<ElementB, kAlignmentB>;
   using IteratorB =
       cutlass::transform::threadblock::PredicatedTileAccessIteratorV2<

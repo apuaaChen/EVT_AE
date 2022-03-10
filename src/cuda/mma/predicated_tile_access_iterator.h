@@ -131,7 +131,6 @@ class PredicatedTileAccessIteratorPredicatesV2 {
     if (kAdvanceRank) {
 
       typename TensorCoord::Index residue_size = (extent_[kAdvanceRank] - threadblock_offset.strided()) % Shape::kStrided;
-       print_val(blockIdx.x + blockIdx.y, threadIdx.x, residue_size);
       if (!residue_size) {
         residue_size = Shape::kStrided;
       }

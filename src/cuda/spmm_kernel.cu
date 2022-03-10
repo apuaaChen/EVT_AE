@@ -527,7 +527,9 @@ __global__ void cutlassSpmmKernel_bf16_test(
             frag_ptr_t += 1;
             shared_store_ptr_t += 4;
         }
-        __syncthreads();
+        if (col == 0){
+            __syncthreads();
+        }
 
         *(global_ptr) = *(shared_load_ptr + (col % 2) * buffer_stride_float4);
 
@@ -535,15 +537,15 @@ __global__ void cutlassSpmmKernel_bf16_test(
         global_ptr += problem_size.m();
         frag_ptr += 8;
         
+        __syncthreads();
     }
 
     /*
      * epilogue
      */ 
-    // __syncthreads();
 
-    *(global_ptr) = *(shared_load_ptr);
-    *(global_ptr + problem_size.m() / 4) = *(shared_load_ptr + kShmStride / 2);
+    *(global_ptr) = *(shared_load_ptr + buffer_stride_float4);
+    *(global_ptr + problem_size.m() / 4) = *(shared_load_ptr + kShmStride / 2 + buffer_stride_float4);
 
 
 

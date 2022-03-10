@@ -1,5 +1,4 @@
 import torch
-import nvtx
 import unittest
 from sptrain.meta import bdense2sparse_gold, bdense2sparse
 from sptrain.spmm import spmmv2_bf16_nnn, spmmv2_bf16_ntn, spmmv2_bf16_ntt

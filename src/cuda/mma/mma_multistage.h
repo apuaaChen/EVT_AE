@@ -1,3 +1,4 @@
+#include "mma_base.h"
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
@@ -42,10 +43,10 @@ template <
     /// Used for partial specialization
     typename Enable = bool>
 class MmaMultistageV2 : 
-  public MmaBase<Shape_, Policy_, Stages> {
+  public MmaBaseV2<Shape_, Policy_, Stages> {
 public:
   ///< Base class
-  using Base = MmaBase<Shape_, Policy_, Stages>;
+  using Base = MmaBaseV2<Shape_, Policy_, Stages>;
   ///< Size of the Gemm problem - concept: gemm::GemmShape<>
   using Shape = Shape_;
   ///< Iterates over tiles of A operand in global memory

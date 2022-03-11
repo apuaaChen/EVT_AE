@@ -1,6 +1,7 @@
 #include "mma_multistage.h"
 #include "predicated_tile_access_iterator.h"
 #include "pitch_linear_thread_map.h"
+#include "regular_tile_access_iterator_tensor_op.h"
 ////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
@@ -126,11 +127,15 @@ struct DefaultMmaV2<ElementA, LayoutA, kAlignmentA, ElementB, LayoutB,
       cutlass::transform::threadblock::PredicatedTileAccessIteratorV2<
           cutlass::MatrixShape<ThreadblockShape::kK, ThreadblockShape::kN>,
           ElementB, LayoutB, 0, ThreadMapB, AccessTypeB>;
+  using SmemIteratorB = cutlass::transform::threadblock::RegularTileAccessIteratorV2<
+        cutlass::MatrixShape<ThreadblockShape::kK, ThreadblockShape::kN>,
+        ElementB, layout::RowMajorTensorOpMultiplicandCongruous<sizeof_bits<ElementB>::value, int(128 / sizeof(ElementB))>,
+        0, ThreadMapB>;
 
   // Define the threadblock-scoped multistage matrix multiply
   using ThreadblockMma = cutlass::gemm::threadblock::MmaMultistageV2<
       typename MmaCore::Shape, IteratorA, typename MmaCore::SmemIteratorA,
-      MmaCore::kCacheOpA, IteratorB, typename MmaCore::SmemIteratorB,
+      MmaCore::kCacheOpA, IteratorB, SmemIteratorB,
       MmaCore::kCacheOpB, ElementAccumulator, LayoutC,
       typename MmaCore::MmaPolicy, Stages, SharedMemoryClear>;
 };

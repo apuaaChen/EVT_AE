@@ -1,3 +1,5 @@
+#include "helper.h"
+#include "mma_sparse_tensor_op.h"
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
@@ -90,7 +92,16 @@ public:
   using FragmentC = typename Policy::Operator::FragmentC;
 
   /// Warp-level Mma
-  using Operator = typename Policy::Operator;
+  // using Operator = typename Policy::Operator;
+  using Operator = typename cutlass::gemm::warp::SparseMmaTensorOpV2<
+    cutlass::gemm::GemmShape<64, 64, 64>, cutlass::bfloat16_t, cutlass::layout::RowMajorTensorOpMultiplicandCrosswise<16, 32>,
+    cutlass::bfloat16_t, cutlass::layout::ColumnMajorTensorOpMultiplicandCrosswise<16, 64>, float, cutlass::layout::RowMajor, 
+    cutlass::gemm::warp::MmaTensorOpPolicy<
+      cutlass::arch::SparseMma<cutlass::gemm::GemmShape<16, 8, 32>, 32, cutlass::bfloat16_t,
+                               cutlass::layout::RowMajor, cutlass::bfloat16_t, 
+                               cutlass::layout::ColumnMajor, float, 
+                               cutlass::layout::RowMajor, cutlass::arch::OpMultiplyAdd>,
+      cutlass::MatrixShape<1, 1>>, 1, false>;
 
   /// ElementE
   using ElementE = typename IteratorE::Element;
@@ -443,6 +454,21 @@ public:
     WarpTransformedFragmentA warp_transformed_frag_A[2];
     WarpTransformedFragmentB warp_transformed_frag_B[Detail::kBBufferSize];
     WarpFragmentE warp_frag_E[2];
+
+    __nv_bfloat16 warp_identity_frag[8];
+
+    #pragma unroll
+    for (int i=0; i < 8; i++){
+      warp_identity_frag[i] = __float2bfloat16(0.0f);
+    }
+
+    // Initialize the values in the warp identity frag
+    int lane_idx = threadIdx.x % 32;
+    if ((lane_idx == 0) || (lane_idx == 9) || (lane_idx == 18) || (lane_idx == 27)){
+      warp_identity_frag[0] = __float2bfloat16(1.0f);
+    } else if ((lane_idx == 4) || (lane_idx == 13) || (lane_idx == 22) || (lane_idx == 31)){
+      warp_identity_frag[1] =  __float2bfloat16(1.0f);
+    }
 
     Operator warp_mma;
 

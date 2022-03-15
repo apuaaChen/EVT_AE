@@ -9,6 +9,8 @@
 #include "cuda_bf16.h"
 #include "helper.h"
 
+#include "spmmt/default_sparse_mma.h"
+
 // Define the Tile Size in different levels
 
 using ThreadblockShape_bf16 = cutlass::gemm::GemmShape<128, 128, 64>;
@@ -29,7 +31,7 @@ using EpilogueOp_bf16 = cutlass::epilogue::thread::LinearCombination<
 // Pipeline stages in GEMM
 constexpr int NumStages = 3;
 
-using Mma_bf16_ntn = typename cutlass::gemm::threadblock::DefaultSparseMma<
+using Mma_bf16_ntn = typename cutlass::gemm::threadblock::DefaultSparseMmaV2<
     cutlass::bfloat16_t, cutlass::layout::RowMajor, 128 / cutlass::sizeof_bits<cutlass::bfloat16_t>::value,
     cutlass::bfloat16_t, cutlass::layout::ColumnMajor, 128 / cutlass::sizeof_bits<cutlass::bfloat16_t>::value,
     float, cutlass::layout::RowMajor, cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80,

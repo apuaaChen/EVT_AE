@@ -1,3 +1,4 @@
+#include "mma_sparse_sm80.h"
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
@@ -64,7 +65,9 @@ public:
                            AccumulatorsInRowMajor, Enable>;
 
   /// Underlying matrix multiply operator (concept: arch::Mma)
-  using ArchMmaOperator = typename Base::ArchMmaOperator;
+  // using ArchMmaOperator = typename Base::ArchMmaOperator;
+  using ArchMmaOperator = typename cutlass::arch::SparseMmaV2<gemm::GemmShape<16, 8, 32>, 32, bfloat16_t, layout::RowMajor,
+           bfloat16_t, layout::ColumnMajor, float, layout::RowMajor, cutlass::arch::OpMultiplyAdd, true>;
 
   /// Indicates math operator 
   using MathOperator = typename ArchMmaOperator::Operator;
@@ -184,7 +187,8 @@ public:
     TransformedFragmentA const &A, 
     TransformedFragmentB const &B, 
     FragmentC const &C,
-    FragmentE const &E
+    FragmentE const &E,
+    __nv_bfloat16 (&I)[8]
   ) const {
 
     using MmaOperandA = typename Policy::Operator::FragmentA;
@@ -198,6 +202,7 @@ public:
 
     MmaOperandA const *ptr_A = reinterpret_cast<MmaOperandA const *>(&A);
     MmaOperandB const *ptr_B = reinterpret_cast<MmaOperandB const *>(&B);
+    MmaOperandB const *ptr_I = reinterpret_cast<MmaOperandB const *>(&I);
     MmaOperandC *ptr_D = reinterpret_cast<MmaOperandC *>(&D);
     MmaOperandE const *ptr_E = reinterpret_cast<MmaOperandE const *>(&E);
 
@@ -217,6 +222,7 @@ public:
               ptr_A[m],
               ptr_B[n_serpentine],
               ptr_D[n_serpentine + m * MmaIterations::kColumn],
+              ptr_I[0],
               ptr_E[(m / kMaxID2)],
               id2);
           } else {
@@ -224,8 +230,15 @@ public:
                 ptr_A[m],
                 ptr_B[n_serpentine],
                 ptr_D[m + n_serpentine * MmaIterations::kRow],
+                ptr_I[0],
                 ptr_E[(m / kMaxID2)],
                 id2);
+            // mma(ptr_D[m + n_serpentine * MmaIterations::kRow],
+            //     ptr_A[m],
+            //     ptr_I[0],
+            //     ptr_D[m + n_serpentine * MmaIterations::kRow],
+            //     ptr_E[(m / kMaxID2)],
+            //     id2);
           }
         }
       }

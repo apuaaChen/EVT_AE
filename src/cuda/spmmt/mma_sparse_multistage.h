@@ -539,7 +539,8 @@ public:
           accum,
           warp_transformed_frag_A[warp_mma_k % 2],
           warp_transformed_frag_B[warp_mma_k % Detail::kBBufferSize], accum,
-          warp_frag_E[warp_mma_k % 2]
+          warp_frag_E[warp_mma_k % 2],
+          warp_identity_frag
         );
 
         if (Detail::kBBufferSize == 1) {

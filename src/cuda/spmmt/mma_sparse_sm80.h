@@ -282,7 +282,7 @@ struct SparseMmaV2<gemm::GemmShape<16, 8, 32>, 32, half_t, layout::RowMajor,
     float *D = reinterpret_cast<float *>(&d);
 
     __half dense[8];
-    
+
     uint32_t *DO = reinterpret_cast<uint32_t *>(dense);
     uint32_t const *O = reinterpret_cast<uint32_t const*>(dense);
 
@@ -294,26 +294,26 @@ struct SparseMmaV2<gemm::GemmShape<16, 8, 32>, 32, half_t, layout::RowMajor,
         "{%0,%1}, {%2,%3}, {%4,%5}, {%6,%7}, %8, 0x0;\n"
         : "=r"(DO[0]), "=r"(DO[1])
         : "r"(A[0]), "r"(A[1]), "r"(I[0]), "r"(I[1]), 
-          "r"(I[1]), "r"(I[1]), "r"(E));
+          "r"(I[4]), "r"(I[5]), "r"(E));
     asm volatile(
         "mma.sp.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
         "{%0,%1}, {%2,%3}, {%4,%5}, {%6,%7}, %8, 0x0;\n"
         : "=r"(DO[2]), "=r"(DO[3])
-        : "r"(A[0]), "r"(A[1]), "r"(I[1]), "r"(I[0]), 
-          "r"(I[1]), "r"(I[1]), "r"(E));
+        : "r"(A[0]), "r"(A[1]), "r"(I[2]), "r"(I[3]), 
+          "r"(I[4]), "r"(I[5]), "r"(E));
     } else if (id2 == 1) {
     asm volatile(
         "mma.sp.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
         "{%0,%1}, {%2,%3}, {%4,%5}, {%6,%7}, %8, 0x2;\n"
         : "=r"(DO[0]), "=r"(DO[1])
         : "r"(A[0]), "r"(A[1]), "r"(I[0]), "r"(I[1]), 
-          "r"(I[1]), "r"(I[1]), "r"(E));
+          "r"(I[4]), "r"(I[5]), "r"(E));
     asm volatile(
         "mma.sp.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
         "{%0,%1}, {%2,%3}, {%4,%5}, {%6,%7}, %8, 0x2;\n"
         : "=r"(DO[2]), "=r"(DO[3])
-        : "r"(A[0]), "r"(A[1]), "r"(I[1]), "r"(I[0]), 
-          "r"(I[1]), "r"(I[1]), "r"(E));
+        : "r"(A[0]), "r"(A[1]), "r"(I[2]), "r"(I[3]), 
+          "r"(I[4]), "r"(I[5]), "r"(E));
     } else {
     assert(0);
     }
@@ -333,26 +333,26 @@ struct SparseMmaV2<gemm::GemmShape<16, 8, 32>, 32, half_t, layout::RowMajor,
         "{%0,%1}, {%2,%3}, {%4,%5}, {%6,%7}, %8, 0x1;\n"
         : "=r"(DO[0]), "=r"(DO[1])
         : "r"(A[2]), "r"(A[3]), "r"(I[0]), "r"(I[1]), 
-          "r"(I[1]), "r"(I[1]), "r"(E));
+          "r"(I[4]), "r"(I[5]), "r"(E));
     asm volatile(
         "mma.sp.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
         "{%0,%1}, {%2,%3}, {%4,%5}, {%6,%7}, %8, 0x1;\n"
         : "=r"(DO[2]), "=r"(DO[3])
-        : "r"(A[2]), "r"(A[3]), "r"(I[1]), "r"(I[0]), 
-          "r"(I[1]), "r"(I[1]), "r"(E));
+        : "r"(A[2]), "r"(A[3]), "r"(I[2]), "r"(I[3]), 
+          "r"(I[4]), "r"(I[5]), "r"(E));
     } else if (id2 == 1) {
     asm volatile(
         "mma.sp.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
         "{%0,%1}, {%2,%3}, {%4,%5}, {%6,%7}, %8, 0x3;\n"
         : "=r"(DO[0]), "=r"(DO[1])
         : "r"(A[2]), "r"(A[3]), "r"(I[0]), "r"(I[1]), 
-          "r"(I[1]), "r"(I[1]), "r"(E));
+          "r"(I[4]), "r"(I[5]), "r"(E));
     asm volatile(
         "mma.sp.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
         "{%0,%1}, {%2,%3}, {%4,%5}, {%6,%7}, %8, 0x3;\n"
         : "=r"(DO[2]), "=r"(DO[3])
-        : "r"(A[2]), "r"(A[3]), "r"(I[1]), "r"(I[0]), 
-          "r"(I[1]), "r"(I[1]), "r"(E));
+        : "r"(A[2]), "r"(A[3]), "r"(I[2]), "r"(I[3]), 
+          "r"(I[4]), "r"(I[5]), "r"(E));
     } else {
     assert(0);
     }

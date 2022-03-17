@@ -188,7 +188,7 @@ public:
     TransformedFragmentB const &B, 
     FragmentC const &C,
     FragmentE const &E,
-    ElementB (&I)[4]
+    ElementB (&I)[12]
   ) const {
 
     using MmaOperandA = typename Policy::Operator::FragmentA;

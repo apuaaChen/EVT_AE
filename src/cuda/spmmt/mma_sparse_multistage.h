@@ -455,10 +455,10 @@ public:
     WarpTransformedFragmentB warp_transformed_frag_B[Detail::kBBufferSize];
     WarpFragmentE warp_frag_E[2];
 
-    typename IteratorB::Element warp_identity_frag[4];
+    typename IteratorB::Element warp_identity_frag[12];
 
     #pragma unroll
-    for (int i=0; i < 4; i++){
+    for (int i=0; i < 12; i++){
       warp_identity_frag[i] = IteratorB::Element(0.0f);
     }
 
@@ -466,8 +466,10 @@ public:
     int lane_idx = threadIdx.x % 32;
     if ((lane_idx == 0) || (lane_idx == 9) || (lane_idx == 18) || (lane_idx == 27)){
       warp_identity_frag[0] = IteratorB::Element(1.0f);
+      warp_identity_frag[6] = IteratorB::Element(1.0f);
     } else if ((lane_idx == 4) || (lane_idx == 13) || (lane_idx == 22) || (lane_idx == 31)){
       warp_identity_frag[1] = IteratorB::Element(1.0f);
+      warp_identity_frag[7] = IteratorB::Element(1.0f);
     }
 
     Operator warp_mma;

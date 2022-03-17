@@ -212,6 +212,7 @@ public:
 
         int id2 = m % kMaxID2;
 
+        // Convert sparse A to dense
         ElementA dense_A[16];
         mma.todense(ptr_A[m], dense_A, ptr_I[0], ptr_E[(m / kMaxID2)], id2);
 

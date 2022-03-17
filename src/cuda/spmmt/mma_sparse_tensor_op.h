@@ -66,8 +66,8 @@ public:
 
   /// Underlying matrix multiply operator (concept: arch::Mma)
   // using ArchMmaOperator = typename Base::ArchMmaOperator;
-  using ArchMmaOperator = typename cutlass::arch::SparseMmaV2<gemm::GemmShape<16, 8, 32>, 32, bfloat16_t, layout::RowMajor,
-           bfloat16_t, layout::ColumnMajor, float, layout::RowMajor, cutlass::arch::OpMultiplyAdd, true>;
+  using ArchMmaOperator = typename cutlass::arch::SparseMmaV2<gemm::GemmShape<16, 8, 32>, 32, ElementA, layout::RowMajor,
+           ElementB, layout::ColumnMajor, float, layout::RowMajor, cutlass::arch::OpMultiplyAdd, true>;
 
   /// Indicates math operator 
   using MathOperator = typename ArchMmaOperator::Operator;
@@ -188,7 +188,7 @@ public:
     TransformedFragmentB const &B, 
     FragmentC const &C,
     FragmentE const &E,
-    __nv_bfloat16 (&I)[8]
+    ElementB (&I)[8]
   ) const {
 
     using MmaOperandA = typename Policy::Operator::FragmentA;

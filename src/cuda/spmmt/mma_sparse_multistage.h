@@ -455,10 +455,10 @@ public:
     WarpTransformedFragmentB warp_transformed_frag_B[Detail::kBBufferSize];
     WarpFragmentE warp_frag_E[2];
 
-    typename IteratorB::Element warp_identity_frag[8];
+    typename IteratorB::Element warp_identity_frag[4];
 
     #pragma unroll
-    for (int i=0; i < 8; i++){
+    for (int i=0; i < 4; i++){
       warp_identity_frag[i] = IteratorB::Element(0.0f);
     }
 

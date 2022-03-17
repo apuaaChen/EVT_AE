@@ -1,4 +1,5 @@
 #include "mma_sparse_sm80.h"
+#include "helper.h"
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
@@ -211,6 +212,9 @@ public:
 
         int id2 = m % kMaxID2;
 
+        ElementA dense_A[16];
+        mma.todense(ptr_A[m], dense_A, ptr_I[0], ptr_E[(m / kMaxID2)], id2);
+
         CUTLASS_PRAGMA_UNROLL
         for (int n = 0; n < MmaIterations::kColumn; ++n) {
 
@@ -219,20 +223,14 @@ public:
           if (AccumulatorsInRowMajor) {  // matrix B is reordered
             mma(
               ptr_D[n_serpentine + m * MmaIterations::kColumn],
-              ptr_A[m],
+              dense_A,
               ptr_B[n_serpentine],
-              ptr_D[n_serpentine + m * MmaIterations::kColumn],
-              ptr_I[0],
-              ptr_E[(m / kMaxID2)],
-              id2);
+              ptr_D[n_serpentine + m * MmaIterations::kColumn]);
           } else {
             mma(ptr_D[m + n_serpentine * MmaIterations::kRow],
-                ptr_A[m],
+                dense_A,
                 ptr_B[n_serpentine],
-                ptr_D[m + n_serpentine * MmaIterations::kRow],
-                ptr_I[0],
-                ptr_E[(m / kMaxID2)],
-                id2);
+                ptr_D[m + n_serpentine * MmaIterations::kRow]);
             // mma(ptr_D[m + n_serpentine * MmaIterations::kRow],
             //     ptr_A[m],
             //     ptr_I[0],

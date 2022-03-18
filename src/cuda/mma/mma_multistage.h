@@ -1,4 +1,6 @@
 #include "mma_base.h"
+#include "mma_tensor_op.h"
+#include "helper.h"
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
@@ -74,7 +76,16 @@ public:
   using FragmentC = typename Policy::Operator::FragmentC;
 
   /// Warp-level Mma
-  using Operator = typename Policy::Operator;
+  // using Operator = typename Policy::Operator;
+  using Operator = typename cutlass::gemm::warp::MmaTensorOpV2<
+    cutlass::gemm::GemmShape<64, 64, 64>, typename IteratorA::Element, cutlass::layout::RowMajorTensorOpMultiplicandCrosswise<16, 64>,
+    typename IteratorB::Element, cutlass::layout::RowMajorTensorOpMultiplicandCongruous<16, 64>, float, cutlass::layout::RowMajor,
+    cutlass::gemm::warp::MmaTensorOpPolicy<
+      cutlass::arch::Mma<cutlass::gemm::GemmShape<16, 8, 16>, 32, typename IteratorA::Element,
+                         cutlass::layout::RowMajor, typename IteratorB::Element, 
+                         cutlass::layout::ColumnMajor, float, 
+                         cutlass::layout::RowMajor, cutlass::arch::OpMultiplyAdd>,
+      cutlass::MatrixShape<1, 1>>, 1, false>;
 
   /// Minimum architecture is Sm80 to support cp.async
   using ArchTag = arch::Sm80;

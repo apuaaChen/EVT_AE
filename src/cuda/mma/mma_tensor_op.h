@@ -1,3 +1,5 @@
+#include "helper.h"
+#include "mma_sm80.h"
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
@@ -124,13 +126,17 @@ public:
   /// Number of mma operations performed
   using MmaIterations = MatrixShape<
     (Shape::kM + ArchMmaOperator::Shape::kM - 1) / ArchMmaOperator::Shape::kM,
-    (Shape::kN + ArchMmaOperator::Shape::kN - 1) / ArchMmaOperator::Shape::kN
+    (Shape::kN + ArchMmaOperator::Shape::kN - 1) / ArchMmaOperator::Shape::kN / 2
   >;
 
 public:
 
   /// Underlying matrix multiply operator (concept: arch::Mma)
-  ArchMmaOperator mma;
+  using ArchMmaOperatorV2 = typename cutlass::arch::MmaV2<cutlass::gemm::GemmShape<16, 16, 16>, 32, typename IteratorA::Element,
+                         cutlass::layout::RowMajor, typename IteratorB::Element, 
+                         cutlass::layout::ColumnMajor, float, 
+                         cutlass::layout::RowMajor, cutlass::arch::OpMultiplyAdd>;
+  ArchMmaOperatorV2 mma;
 
 public:
 
@@ -161,32 +167,7 @@ public:
     MmaOperandB const *ptr_B = reinterpret_cast<MmaOperandB const *>(&B);
     MmaOperandC *ptr_D = reinterpret_cast<MmaOperandC *>(&D);
 
-    #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ < 800)
-      // Serpentine visitation order maximizing reuse of Rb
-      CUTLASS_PRAGMA_UNROLL
-      for (int n = 0; n < MmaIterations::kColumn; ++n) {
-
-        CUTLASS_PRAGMA_UNROLL
-        for (int m = 0; m < MmaIterations::kRow; ++m) {
-
-          int m_serpentine = ((n % 2) ? (MmaIterations::kRow - 1 - m) : m);
-
-          if (AccumulatorsInRowMajor) {  // matrix B is reordered
-            mma(
-              ptr_D[n + m_serpentine * MmaIterations::kColumn],
-              ptr_A[m_serpentine],
-              ptr_B[n],
-              ptr_D[n + m_serpentine * MmaIterations::kColumn]);
-          } else {
-            mma(
-              ptr_D[m_serpentine + n * MmaIterations::kRow],
-              ptr_A[m_serpentine],
-              ptr_B[n],
-              ptr_D[m_serpentine + n * MmaIterations::kRow]);
-          }
-        }
-      }
-    #elif defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
+    #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
       // Serpentine visitation order maximizing reuse of Ra
       CUTLASS_PRAGMA_UNROLL
       for (int m = 0; m < MmaIterations::kRow; ++m) {
@@ -194,19 +175,23 @@ public:
         CUTLASS_PRAGMA_UNROLL
         for (int n = 0; n < MmaIterations::kColumn; ++n) {
 
-          int n_serpentine = ((m % 2) ? (MmaIterations::kColumn - 1 - n) : n);
+          int n_serpentine = ((m % 2) ? (MmaIterations::kColumn - 1 - n) : n) * 2;
 
           if (AccumulatorsInRowMajor) {  // matrix B is reordered
             mma(
-              ptr_D[n_serpentine + m * MmaIterations::kColumn],
+              ptr_D[n_serpentine + m * MmaIterations::kColumn * 2],
+              ptr_D[n_serpentine + m * MmaIterations::kColumn * 2 + 1],
               ptr_A[m],
               ptr_B[n_serpentine],
-              ptr_D[n_serpentine + m * MmaIterations::kColumn]);
+              ptr_D[n_serpentine + m * MmaIterations::kColumn * 2],
+              ptr_D[n_serpentine + m * MmaIterations::kColumn * 2 + 1]);
           } else {
             mma(ptr_D[m + n_serpentine * MmaIterations::kRow],
+                ptr_D[m + (n_serpentine + 1) * MmaIterations::kRow],
                 ptr_A[m],
                 ptr_B[n_serpentine],
-                ptr_D[m + n_serpentine * MmaIterations::kRow]);
+                ptr_D[m + n_serpentine * MmaIterations::kRow],
+                ptr_D[m + (n_serpentine + 1) * MmaIterations::kRow]);
           }
         }
       }

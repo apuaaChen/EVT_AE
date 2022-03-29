@@ -352,7 +352,7 @@ public:
 
         char const *source_byte_ptr = reinterpret_cast<char const *>(source_ptr) + byte_offset + byte_offset_;
 
-        cutlass::arch::ldsm<layout::ColumnMajor, Policy::LdsmShape::kCount>(
+        cutlass::arch::ldsm<layout::RowMajor, Policy::LdsmShape::kCount>(
           fetch_ptr[access_idx],
           source_byte_ptr
         );

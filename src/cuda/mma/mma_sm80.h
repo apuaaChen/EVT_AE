@@ -75,7 +75,7 @@ struct MmaV2<
 #if defined(CUTLASS_ARCH_MMA_SM80_ENABLED)
 
     uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
-    uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+    // uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
     float const *C1 = reinterpret_cast<float const *>(&c1);
     float *D1 = reinterpret_cast<float *>(&d1);
     float const *C2 = reinterpret_cast<float const *>(&c2);

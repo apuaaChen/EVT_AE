@@ -1,4 +1,7 @@
 #include "mma_sparse_multistage_trans.h"
+#include "default_mma_core_sparse_sm80_trans.h"
+#include "predicated_tile_access_iterator_trans.h"
+#include "helper.h"
 ////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
@@ -90,8 +93,7 @@ struct DefaultSparseMmaTrans<ElementA, LayoutA, kAlignmentA, ElementB, LayoutB,
           : cutlass::arch::CacheOperation::Always;
   
 
-  // Define the MmaCore components
-  using MmaCore = typename cutlass::gemm::threadblock::DefaultSparseMmaCore<
+  using MmaCore = typename cutlass::gemm::threadblock::DefaultSparseMmaCoreTrans<
       ThreadblockShape, WarpShape, InstructionShape, ElementA, LayoutA,
       ElementB, LayoutB, ElementAccumulator, layout::RowMajor, arch::OpClassTensorOp,
       Stages, Operator, false, CacheOpA, CacheOpB>;
@@ -102,9 +104,9 @@ struct DefaultSparseMmaTrans<ElementA, LayoutA, kAlignmentA, ElementB, LayoutB,
   using ThreadMapA = typename MmaCore::IteratorThreadMapA;
   using AccessTypeA = cutlass::Array<ElementA, kAlignmentA>;
   using IteratorA =
-      cutlass::transform::threadblock::PredicatedTileAccessIterator<
-          cutlass::MatrixShape<ThreadblockShape::kM, ThreadblockShape::kK / kSparse>,
-          ElementA, LayoutA, 1, ThreadMapA, AccessTypeA>;
+      cutlass::transform::threadblock::PredicatedTileAccessIteratorTrans<
+          cutlass::MatrixShape<ThreadblockShape::kK, ThreadblockShape::kM / kSparse>,
+          ElementA, LayoutA, 0, ThreadMapA, AccessTypeA>;
 
   // Define iterators over tiles from the B operand
   using ThreadMapB = typename MmaCore::IteratorThreadMapB;
@@ -122,8 +124,8 @@ struct DefaultSparseMmaTrans<ElementA, LayoutA, kAlignmentA, ElementB, LayoutB,
       cutlass::Array<ElementE, 128 / sizeof_bits<ElementE>::value>;
   using IteratorE =
       cutlass::transform::threadblock::PredicatedTileAccessIterator<
-          cutlass::MatrixShape<ThreadblockShape::kM,
-                               ThreadblockShape::kK / kSparse /
+          cutlass::MatrixShape<ThreadblockShape::kK,
+                               ThreadblockShape::kM / kSparse /
                                    MmaCore::kElementsPerElementE>,
           ElementE, LayoutE, 1, ThreadMapE, AccessTypeE>;
 

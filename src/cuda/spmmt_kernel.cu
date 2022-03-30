@@ -106,8 +106,8 @@ __global__ void cutlassSpmmTKernel_16(
 
     // Compute initial location in logical coordinates
     cutlass::MatrixCoord tb_offset_A{
-        threadblock_tile_offset.m() * _Mma::Shape::kM,
-        threadblock_tile_offset.k() * gemm_k_size / _Mma::kSparse
+        threadblock_tile_offset.k() * gemm_k_size,
+        threadblock_tile_offset.m() * _Mma::Shape::kM / _Mma::kSparse
     };
 
     cutlass::MatrixCoord tb_offset_B{
@@ -116,8 +116,8 @@ __global__ void cutlassSpmmTKernel_16(
     };
 
     cutlass::MatrixCoord tb_offset_E{
-        threadblock_tile_offset.m() * _Mma::Shape::kM,
-        threadblock_tile_offset.k() * gemm_k_size / _Mma::kSparse
+        threadblock_tile_offset.k() * gemm_k_size,
+        threadblock_tile_offset.m() * _Mma::Shape::kM / _Mma::kSparse / _Mma::kElementsPerElementE
     };
 
     // Problem size
@@ -128,12 +128,15 @@ __global__ void cutlassSpmmTKernel_16(
     // Compute position within threadblock
     int thread_idx = threadIdx.x;
 
+
+    ///// TODO: Current Progress /////
+
     // Construct iterators to A, B, and E operands
     typename _Mma::IteratorA iterator_A(
         params_A,
         //ref_A.data(),
         ptr_A,
-        {problem_size.m(), problem_size_k / _Mma::kSparse},
+        {problem_size_k, problem_size.m() / _Mma::kSparse},
         thread_idx,
         tb_offset_A
     );
@@ -151,8 +154,8 @@ __global__ void cutlassSpmmTKernel_16(
         params_E,
         // ref_E.data(),
         ptr_E,
-        {problem_size.m(),
-        problem_size_k / _Mma::kSparse / _Mma::kElementsPerElementE},
+        {problem_size_k,
+        problem_size.m() / _Mma::kSparse / _Mma::kElementsPerElementE},
         thread_idx,
         tb_offset_E
     );
@@ -213,12 +216,21 @@ __global__ void cutlassSpmmTKernel_16(
 }
 
 
+////////////////////////////////////////////////////////////////////////////////
+/// Specialized for bf16 data type
+////////////////////////////////////////////////////////////////////////////////
+
+/// Args
+//  * tensor_a: N:M sparse matrix with shape k x m/2 in row-major. The sparse pattern is along m
+//  * tensor_b: dense matrix with shape k x n in column-major. (nxk in row-major)
+//  * tensor_e: metadata for tensor a with shape k x (m/2/kElementsPerElementE)
+
 torch::Tensor spmmt_bf16_ntn_cuda(
     torch::Tensor tensor_a,
     torch::Tensor tensor_b,
     torch::Tensor tensor_e_reordered)
 {
-    const int m = tensor_a.size(0);
+    const int m = tensor_a.size(1) * 2;
     const int n = tensor_b.size(0);
     const int k = tensor_b.size(1);
 
@@ -228,9 +240,9 @@ torch::Tensor spmmt_bf16_ntn_cuda(
     // Create a tuple of problem size for matrix multiplication
     cutlass::gemm::GemmCoord problem_size(m, n, k);
 
-    auto layout_a = cutlass::layout::RowMajor::packed(cutlass::make_Coord(problem_size.m(), problem_size.k() / 2));
+    auto layout_a = cutlass::layout::RowMajor::packed(cutlass::make_Coord(problem_size.k(), problem_size.m()/2));
     auto layout_b = cutlass::layout::ColumnMajor::packed(problem_size.kn());
-    auto layout_e = Mma_bf16_ntn::LayoutE::packed(cutlass::make_Coord(problem_size.m(), problem_size.k()/Mma_bf16_ntn::kSparse / Mma_bf16_ntn::kElementsPerElementE));
+    auto layout_e = Mma_bf16_ntn::LayoutE::packed(cutlass::make_Coord(problem_size.k(), problem_size.m()/Mma_bf16_ntn::kSparse / Mma_bf16_ntn::kElementsPerElementE));
     auto layout_d = cutlass::layout::RowMajor::packed(problem_size.mn());
 
     cutlass::bfloat16_t alpha = cutlass::bfloat16_t(1.0);
@@ -266,12 +278,22 @@ torch::Tensor spmmt_bf16_ntn_cuda(
 }
 
 
+////////////////////////////////////////////////////////////////////////////////
+/// Specialized for f16 data type
+////////////////////////////////////////////////////////////////////////////////
+
+/// Args
+//  * tensor_a: N:M sparse matrix with shape k/2 x m in row-major. The sparse pattern is along m
+//  * tensor_b: dense matrix with shape n x m in row-major.
+//  * tensor_e: metadata for tensor a with shape k/2 x m / 2 / kElementsPerElementE
+
+
 torch::Tensor spmmt_f16_ntn_cuda(
     torch::Tensor tensor_a,
     torch::Tensor tensor_b,
     torch::Tensor tensor_e_reordered)
 {
-    const int m = tensor_a.size(0);
+    const int m = tensor_a.size(1) * 2;
     const int n = tensor_b.size(0);
     const int k = tensor_b.size(1);
 
@@ -281,9 +303,9 @@ torch::Tensor spmmt_f16_ntn_cuda(
     // Create a tuple of problem size for matrix multiplication
     cutlass::gemm::GemmCoord problem_size(m, n, k);
 
-    auto layout_a = cutlass::layout::RowMajor::packed(cutlass::make_Coord(problem_size.m(), problem_size.k() / 2));
+    auto layout_a = cutlass::layout::RowMajor::packed(cutlass::make_Coord(problem_size.k(), problem_size.m() / 2));
     auto layout_b = cutlass::layout::ColumnMajor::packed(problem_size.kn());
-    auto layout_e = Mma_f16_ntn::LayoutE::packed(cutlass::make_Coord(problem_size.m(), problem_size.k()/Mma_f16_ntn::kSparse / Mma_f16_ntn::kElementsPerElementE));
+    auto layout_e = Mma_f16_ntn::LayoutE::packed(cutlass::make_Coord(problem_size.k(), problem_size.m()/Mma_f16_ntn::kSparse / Mma_f16_ntn::kElementsPerElementE));
     auto layout_d = cutlass::layout::RowMajor::packed(problem_size.mn());
 
     cutlass::half_t alpha = cutlass::half_t(1.0);

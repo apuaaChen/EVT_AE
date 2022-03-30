@@ -1,5 +1,6 @@
 #include "helper.h"
 #include "mma_sparse_tensor_op.h"
+#include "mma_sparse_base_trans.h"
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
@@ -51,10 +52,10 @@ template <
     /// Used for partial specialization
     typename Enable = bool>
 class SparseMmaMultistageTrans : 
-  public SparseMmaBase<Shape_, Policy_, Stages> {
+  public SparseMmaBaseTrans<Shape_, Policy_, Stages> {
 public:
   ///< Base class
-  using Base = SparseMmaBase<Shape_, Policy_, Stages>;
+  using Base = SparseMmaBaseTrans<Shape_, Policy_, Stages>;
   ///< Size of the Gemm problem - concept: gemm::GemmShape<>
   using Shape = Shape_;
   ///< Iterates over tiles of A operand in global memory
@@ -428,13 +429,13 @@ public:
       }
 
       // Move to the next stage
-      iterator_A.add_tile_offset({0, 1});
+      iterator_A.add_tile_offset({1, 0});
       iterator_B.add_tile_offset({1, 0});
-      iterator_E.add_tile_offset({0, 1});
+      iterator_E.add_tile_offset({1, 0});
 
-      this->smem_iterator_A_.add_tile_offset({0, 1});
+      this->smem_iterator_A_.add_tile_offset({1, 0});
       this->smem_iterator_B_.add_tile_offset({1, 0});
-      this->smem_iterator_E_.add_tile_offset({0, 1});
+      this->smem_iterator_E_.add_tile_offset({1, 0});
 
       // LDGDEPBAR - completes a stage
       cutlass::arch::cp_async_fence();
@@ -586,11 +587,11 @@ public:
           __syncthreads();
 
           // Move to the next stage
-          iterator_A.add_tile_offset({0, 1});
+          iterator_A.add_tile_offset({1, 0});
           iterator_B.add_tile_offset({1, 0});
-          iterator_E.add_tile_offset({0, 1});
+          iterator_E.add_tile_offset({1, 0});
 
-          this->smem_iterator_A_.add_tile_offset({0, 1});
+          this->smem_iterator_A_.add_tile_offset({1, 0});
           this->smem_iterator_B_.add_tile_offset({1, 0});
           this->smem_iterator_E_.add_tile_offset({0, 1});
 

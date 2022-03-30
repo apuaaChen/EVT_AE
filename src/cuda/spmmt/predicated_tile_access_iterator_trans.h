@@ -431,7 +431,6 @@ class PredicatedTileAccessIteratorTrans<Shape_, Element_, layout::PitchLinear,
       }
     } else {
       if (kAdvanceRank) {
-        print_val(0, 0, 0, params_.inc_advance_ * LongIndex(tile_offset.strided()));
         pointer_ += params_.inc_advance_ * LongIndex(tile_offset.strided());
         pointer_ += Shape::kContiguous * tile_offset.contiguous();
       } else {
@@ -457,17 +456,19 @@ class PredicatedTileAccessIteratorTrans<Shape_, Element_, layout::PitchLinear,
     the_predicates.operator++();
 
     ++the_predicates.iteration_vector_;
+    // kAccessesPerVector = 1
     if (the_predicates.iteration_vector_ < kAccessesPerVector) {
       return *this;
     }
 
     the_predicates.iteration_vector_ = 0;
     ++the_predicates.iteration_contiguous_;
-
+    // ThreadMap::Iterations::kContiguous = 1
     if (the_predicates.iteration_contiguous_ < ThreadMap::Iterations::kContiguous) {
       return *this;
     }
 
+    // ThreadMap::Iterations::kStrided = 4
     // Enter here only if (iteration_contiguous_ ==
     // ThreadMap::Iteration::kContiguous)
     the_predicates.iteration_contiguous_ = 0;

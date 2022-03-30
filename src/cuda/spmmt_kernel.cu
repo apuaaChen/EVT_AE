@@ -128,9 +128,6 @@ __global__ void cutlassSpmmTKernel_16(
     // Compute position within threadblock
     int thread_idx = threadIdx.x;
 
-
-    ///// TODO: Current Progress /////
-
     // Construct iterators to A, B, and E operands
     typename _Mma::IteratorA iterator_A(
         params_A,

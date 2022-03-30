@@ -124,8 +124,8 @@ struct DefaultSparseMmaTrans<ElementA, LayoutA, kAlignmentA, ElementB, LayoutB,
       cutlass::Array<ElementE, 128 / sizeof_bits<ElementE>::value>;
   using IteratorE =
       cutlass::transform::threadblock::PredicatedTileAccessIterator<
-          cutlass::MatrixShape<ThreadblockShape::kK,
-                               ThreadblockShape::kM / kSparse /
+          cutlass::MatrixShape<ThreadblockShape::kM,
+                               ThreadblockShape::kK / kSparse /
                                    MmaCore::kElementsPerElementE>,
           ElementE, LayoutE, 1, ThreadMapE, AccessTypeE>;
 

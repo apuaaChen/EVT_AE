@@ -433,7 +433,7 @@ public:
       iterator_B.add_tile_offset({1, 0});
       iterator_E.add_tile_offset({0, 1});
 
-      this->smem_iterator_A_.add_tile_offset({0, 1});
+      this->smem_iterator_A_.add_tile_offset({1, 0});
       this->smem_iterator_B_.add_tile_offset({1, 0});
       this->smem_iterator_E_.add_tile_offset({0, 1});
 
@@ -479,7 +479,7 @@ public:
     this->warp_tile_iterator_B_.set_kgroup_index(0);
     this->warp_tile_iterator_E_.set_kgroup_index(0);
 
-    this->warp_tile_iterator_A_.load(warp_loaded_frag_A[0]);
+    // this->warp_tile_iterator_A_.load(warp_loaded_frag_A[0]);
     this->warp_tile_iterator_B_.load(warp_loaded_frag_B[0]);
     this->warp_tile_iterator_E_.load(warp_frag_E[0]);
 
@@ -519,7 +519,7 @@ public:
         this->warp_tile_iterator_A_.set_kgroup_index((warp_mma_k + 1) % Base::kWarpGemmIterations);
         this->warp_tile_iterator_E_.set_kgroup_index((warp_mma_k + 1) % Base::kWarpGemmIterations);
         
-        this->warp_tile_iterator_A_.load(warp_loaded_frag_A[(warp_mma_k + 1) % 2]);
+        // this->warp_tile_iterator_A_.load(warp_loaded_frag_A[(warp_mma_k + 1) % 2]);
         this->warp_tile_iterator_E_.load(warp_frag_E[(warp_mma_k + 1) % 2]);
 
         ++this->warp_tile_iterator_A_;
@@ -591,14 +591,14 @@ public:
           iterator_B.add_tile_offset({1, 0});
           iterator_E.add_tile_offset({0, 1});
 
-          this->smem_iterator_A_.add_tile_offset({0, 1});
+          this->smem_iterator_A_.add_tile_offset({1, 0});
           this->smem_iterator_B_.add_tile_offset({1, 0});
           this->smem_iterator_E_.add_tile_offset({0, 1});
 
           // Add negative offsets to return iterators to the 'start' of the
           // circular buffer in shared memory
           if (smem_write_stage_idx == (Base::kStages - 1)) {
-            this->smem_iterator_A_.add_tile_offset({0, -Base::kStages});
+            this->smem_iterator_A_.add_tile_offset({-Base::kStages, 0});
             this->smem_iterator_B_.add_tile_offset({-Base::kStages, 0});
             this->smem_iterator_E_.add_tile_offset({0, -Base::kStages});
             smem_write_stage_idx = 0;

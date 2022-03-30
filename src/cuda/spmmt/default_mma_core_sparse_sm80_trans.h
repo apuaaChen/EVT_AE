@@ -156,7 +156,7 @@ struct DefaultSparseMmaCoreTrans<Shape_, WarpShape_, InstructionShape_, ElementA
   //
 
   using SmemLayoutA = layout::RowMajorTensorOpMultiplicandCrosswise<
-      sizeof_bits<ElementA>::value, Shape::kK / kSparse>;
+      sizeof_bits<ElementA>::value, Shape::kM / kSparse>;
 
   // Shared memory layout
   using SmemLayoutB = layout::ColumnMajorTensorOpMultiplicandCrosswise<
@@ -175,7 +175,7 @@ struct DefaultSparseMmaCoreTrans<Shape_, WarpShape_, InstructionShape_, ElementA
 
   /// Shared memory iterator to A operand
   using SmemIteratorA = transform::threadblock::RegularTileAccessIteratorTrans<
-      MatrixShape<Shape::kM, Shape::kK / kSparse>, ElementA, SmemLayoutA, 0,
+      MatrixShape<Shape::kK, Shape::kM / kSparse>, ElementA, SmemLayoutA, 0,
       IteratorThreadMapA>;
 
   /// ThreadMap of iterator B

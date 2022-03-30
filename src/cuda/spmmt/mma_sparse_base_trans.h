@@ -73,8 +73,9 @@ class SparseMmaBaseTrans {
     //
 
     /// Shape of the A matrix operand in shared memory
-    using ShapeA = MatrixShape<Shape::kM + Policy::SmemPaddingA::kRow,
-                               Shape::kK / kSparse * kStages +
+    // ShapeA is [kK * Stages, kM/2]
+    using ShapeA = MatrixShape<Shape::kK * kStages + Policy::SmemPaddingA::kRow,
+                               Shape::kM / kSparse +
                                    Policy::SmemPaddingA::kColumn>;
 
     /// Shape of the B matrix operand in shared memory

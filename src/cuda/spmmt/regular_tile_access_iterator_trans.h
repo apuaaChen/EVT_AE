@@ -122,7 +122,7 @@ class RegularTileAccessIteratorTrans<Shape_, Element_,
         byte_offset_(0) {
     layout::PitchLinearCoord thread_offset_base =
         ThreadMap::initial_offset(thread_id);
-    print_val(0, 0, 0, Detail::kPointerCount);
+    
     CUTLASS_PRAGMA_UNROLL
     for (int i = 0; i < Detail::kPointerCount; ++i) {
       // This is the offset of a thread within a threadblock tile for a specific
@@ -143,6 +143,7 @@ class RegularTileAccessIteratorTrans<Shape_, Element_,
   /// Overrides the internal iteration index
   CUTLASS_HOST_DEVICE
   void set_iteration_index(int index) {
+    // ThreadMap::Iterations::kContiguous = 1
     iteration_contiguous_ = index % ThreadMap::Iterations::kContiguous;
     iteration_strided_ = index / ThreadMap::Iterations::kContiguous;
   }
@@ -158,7 +159,9 @@ class RegularTileAccessIteratorTrans<Shape_, Element_,
   AccessType *get() const {
     AccessType *access_ptr = pointer_[iteration_strided_ & 1];
     int stride_idx = (iteration_strided_ & ~1);
-
+    // ThreadMap::Delta::kStrided = 4
+    // stride_ = 8
+    // Layout::kFactor = 1
     int access_offset =
         stride_idx * ThreadMap::Delta::kStrided * stride_ / Layout::kFactor +
         // kCrosswise elements in the contiguous dimension would span to a
@@ -170,6 +173,8 @@ class RegularTileAccessIteratorTrans<Shape_, Element_,
     return reinterpret_cast<AccessType *>(access_byte_ptr + byte_offset_);
   }
 
+  // Iterations the number of loading iterations on both side
+  // Delta the stride of each iteration on both sides
   /// Advances to the next tile in memory.
   CUTLASS_HOST_DEVICE
   RegularTileAccessIteratorTrans &operator++() {
@@ -182,7 +187,8 @@ class RegularTileAccessIteratorTrans<Shape_, Element_,
     // ThreadMap::Iteration::kContiguous)
     iteration_contiguous_ = 0;
     ++iteration_strided_;
-
+    // The pointer moves along the stride direction for 4 times
+    // ThreadMap::Iterations::kStrided = 4
     if (iteration_strided_ < ThreadMap::Iterations::kStrided) {
       return *this;
     }
@@ -206,6 +212,7 @@ class RegularTileAccessIteratorTrans<Shape_, Element_,
   /// Adds a tile offset
   CUTLASS_DEVICE
   void add_tile_offset(TensorCoord const &coord) {
+    // sections_per_stage_ = sections_ = 1
     add_pointer_offset(coord.contiguous() * sections_per_stage_ * stride_ *
                            ThreadMap::kElementsPerAccess / sections_ +
                        coord.strided() * Shape::kStrided * stride_ *

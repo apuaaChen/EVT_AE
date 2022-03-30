@@ -67,7 +67,7 @@ public:
 
   /// Underlying matrix multiply operator (concept: arch::Mma)
   // using ArchMmaOperator = typename Base::ArchMmaOperator;
-  using ArchMmaOperator = typename cutlass::arch::SparseMmaTrans<gemm::GemmShape<16, 8, 32>, 32, ElementA, layout::RowMajor,
+  using ArchMmaOperator = typename cutlass::arch::SparseMmaV2<gemm::GemmShape<16, 8, 32>, 32, ElementA, layout::RowMajor,
            ElementB, layout::ColumnMajor, float, layout::RowMajor, cutlass::arch::OpMultiplyAdd, true>;
 
   /// Indicates math operator 

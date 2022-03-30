@@ -34,7 +34,7 @@ template <
   /// Used for partial specialization
   typename Enable = bool
 >
-class SparseMmaTensorOpV2 {
+class SparseMmaTensorOpV3 {
 public:
   /// Shape of warp-level matrix operation (concept: GemmShape)
   using Shape = Shape_;
@@ -66,9 +66,9 @@ public:
                            AccumulatorsInRowMajor, Enable>;
 
   /// Underlying matrix multiply operator (concept: arch::Mma)
-  // using ArchMmaOperator = typename Base::ArchMmaOperator;
-  using ArchMmaOperator = typename cutlass::arch::SparseMmaV2<gemm::GemmShape<16, 8, 32>, 32, ElementA, layout::RowMajor,
-           ElementB, layout::ColumnMajor, float, layout::RowMajor, cutlass::arch::OpMultiplyAdd, true>;
+  using ArchMmaOperator = typename Base::ArchMmaOperator;
+  // using ArchMmaOperator = typename cutlass::arch::SparseMmaV3<gemm::GemmShape<16, 8, 32>, 32, ElementA, layout::RowMajor,
+  //          ElementB, layout::ColumnMajor, float, layout::RowMajor, cutlass::arch::OpMultiplyAdd, true>;
 
   /// Indicates math operator 
   using MathOperator = typename ArchMmaOperator::Operator;
@@ -179,7 +179,7 @@ public:
 
   /// Ctor
   CUTLASS_DEVICE
-  SparseMmaTensorOpV2() {}
+  SparseMmaTensorOpV3() {}
 
   /// Performs a warp-level matrix multiply-accumulate operation
   CUTLASS_DEVICE

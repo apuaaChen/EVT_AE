@@ -122,7 +122,7 @@ class RegularTileAccessIteratorTrans<Shape_, Element_,
         byte_offset_(0) {
     layout::PitchLinearCoord thread_offset_base =
         ThreadMap::initial_offset(thread_id);
-
+    print_val(0, 0, 0, Detail::kPointerCount);
     CUTLASS_PRAGMA_UNROLL
     for (int i = 0; i < Detail::kPointerCount; ++i) {
       // This is the offset of a thread within a threadblock tile for a specific

@@ -1,4 +1,5 @@
 #include "regular_tile_access_iterator_trans.h"
+#include "default_mma_sparse_tensor_op_trans.h"
 ////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
@@ -173,7 +174,7 @@ struct DefaultSparseMmaCoreTrans<Shape_, WarpShape_, InstructionShape_, ElementA
       kAccessSizeInBits / sizeof_bits<ElementA>::value>;
 
   /// Shared memory iterator to A operand
-  using SmemIteratorA = transform::threadblock::RegularTileAccessIterator<
+  using SmemIteratorA = transform::threadblock::RegularTileAccessIteratorTrans<
       MatrixShape<Shape::kM, Shape::kK / kSparse>, ElementA, SmemLayoutA, 0,
       IteratorThreadMapA>;
 
@@ -194,7 +195,7 @@ struct DefaultSparseMmaCoreTrans<Shape_, WarpShape_, InstructionShape_, ElementA
   //
 
   // Define the warp-level tensor op
-  using MmaTensorOp = typename cutlass::gemm::warp::DefaultSparseMmaTensorOp<
+  using MmaTensorOp = typename cutlass::gemm::warp::DefaultSparseMmaTensorOpTrans<
       WarpShape, InstructionShape, ElementA, SmemLayoutA, ElementB, SmemLayoutB,
       ElementC, LayoutC, Operator, WarpCount::kK>::Type;
 

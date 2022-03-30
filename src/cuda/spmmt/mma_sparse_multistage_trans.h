@@ -93,16 +93,16 @@ public:
   using FragmentC = typename Policy::Operator::FragmentC;
 
   /// Warp-level Mma
-  // using Operator = typename Policy::Operator;
-  using Operator = typename cutlass::gemm::warp::SparseMmaTensorOpV2<
-    cutlass::gemm::GemmShape<64, 64, 64>, typename IteratorA::Element, cutlass::layout::RowMajorTensorOpMultiplicandCrosswise<16, 32>,
-    typename IteratorB::Element, cutlass::layout::ColumnMajorTensorOpMultiplicandCrosswise<16, 64>, float, cutlass::layout::RowMajor, 
-    cutlass::gemm::warp::MmaTensorOpPolicy<
-      cutlass::arch::SparseMma<cutlass::gemm::GemmShape<16, 8, 32>, 32, typename IteratorA::Element,
-                               cutlass::layout::RowMajor, typename IteratorB::Element, 
-                               cutlass::layout::ColumnMajor, float, 
-                               cutlass::layout::RowMajor, cutlass::arch::OpMultiplyAdd>,
-      cutlass::MatrixShape<1, 1>>, 1, false>;
+  using Operator = typename Policy::Operator;
+  // using Operator = typename cutlass::gemm::warp::SparseMmaTensorOpV2<
+  //   cutlass::gemm::GemmShape<64, 64, 64>, typename IteratorA::Element, cutlass::layout::RowMajorTensorOpMultiplicandCrosswise<16, 32>,
+  //   typename IteratorB::Element, cutlass::layout::ColumnMajorTensorOpMultiplicandCrosswise<16, 64>, float, cutlass::layout::RowMajor, 
+  //   cutlass::gemm::warp::MmaTensorOpPolicy<
+  //     cutlass::arch::SparseMma<cutlass::gemm::GemmShape<16, 8, 32>, 32, typename IteratorA::Element,
+  //                              cutlass::layout::RowMajor, typename IteratorB::Element, 
+  //                              cutlass::layout::ColumnMajor, float, 
+  //                              cutlass::layout::RowMajor, cutlass::arch::OpMultiplyAdd>,
+  //     cutlass::MatrixShape<1, 1>>, 1, false>;
 
   /// ElementE
   using ElementE = typename IteratorE::Element;

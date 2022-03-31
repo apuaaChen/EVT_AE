@@ -1,4 +1,5 @@
 #include "mma_sparse_sm80.h"
+#include "mma_tensor_op_tile_iterator_trans.h"
 #include "helper.h"
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -121,7 +122,7 @@ public:
  public:
 
   /// Iterates over the A operand in memory
- using IteratorA = MmaTensorOpMultiplicandTileIterator<
+ using IteratorA = MmaTensorOpMultiplicandTileIteratorTrans<
      MatrixShape<Shape::kM, Shape::kK / kSparse>, Operand::kA, ElementA,
      LayoutA,
      MatrixShape<Policy::Operator::Shape::kM,

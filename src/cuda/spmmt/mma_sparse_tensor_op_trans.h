@@ -121,9 +121,10 @@ public:
 
  public:
 
+  // TODO: change to kK, kM
   /// Iterates over the A operand in memory
  using IteratorA = MmaTensorOpMultiplicandTileIteratorTrans<
-     MatrixShape<Shape::kM, Shape::kK / kSparse>, Operand::kA, ElementA,
+     MatrixShape<Shape::kK, Shape::kM / kSparse>, Operand::kA, ElementA,
      LayoutA,
      MatrixShape<Policy::Operator::Shape::kM,
                  Policy::Operator::Shape::kK / kSparse>,

@@ -40,13 +40,13 @@ class MmaTensorOpMultiplicandTileIteratorTrans;
 ///
 template <
     /// Size of the matrix to load (concept: PitchLinearShape)
-    typename Shape_,
+    typename Shape_,  // <32, 64>
     /// Identifies A or B multiplicand
     Operand Operand_,
     /// Data type of elements
     typename Element_,
     /// Shape of one matrix product operation (concept: PitchLinearShape)
-    typename InstructionShape_,
+    typename InstructionShape_,  // <16, 16>
     /// Interval between adjacent *MMA instructions (in units of MMA
     /// instructions)
     int OpDelta_,
@@ -137,9 +137,12 @@ class MmaTensorOpMultiplicandTileIteratorTrans<
         layout::PitchLinearShape<LdsmShapeContiguous, LdsmShapeStrided>;
 
     /// Number and arrangement of LDSM instructions
+    // using LdsmIterations =
+    //     layout::PitchLinearShape<1, Shape::kStrided / kLdsmOpInner /
+    //                                     LdsmShape::kStrided>;
+    // TODO: formalize this part of code
     using LdsmIterations =
-        layout::PitchLinearShape<1, Shape::kStrided / kLdsmOpInner /
-                                        LdsmShape::kStrided>;
+        layout::PitchLinearShape<2, 2>;
 
     ///
     static int const kGroupsPerTile = Layout::TileShape::kContiguous /
@@ -437,31 +440,35 @@ class MmaTensorOpMultiplicandTileIteratorTrans<
     // Matrix multiply 16816 kblock=64 | 1688.TF32 kblock=32 || Integer matrix multiply 16832 kblock=128
     //   ^2 ^6 ^2 ^6
 
-    if ((Policy::kGroupsPerTile / kPartitionsK) > 1) {
-      int mask = ((Policy::kGroupsPerTile / kPartitionsK) == 8)
-                     ? 3
-                     : (((Policy::kGroupsPerTile / kPartitionsK) == 4) ? 1 : 0);
+    // if ((Policy::kGroupsPerTile / kPartitionsK) > 1) {
+    //   int mask = ((Policy::kGroupsPerTile / kPartitionsK) == 8)
+    //                  ? 3
+    //                  : (((Policy::kGroupsPerTile / kPartitionsK) == 4) ? 1 : 0);
 
-      if (((k_group_idx_ & mask) % 2) == 0)
-        byte_offset_ ^= 1 * Policy::LdsmShape::kContiguous *
-                        sizeof_bits<Element>::value *
-                        Layout::kElementsPerAccess / 8;
-      else if ((k_group_idx_ & mask) == 1)
-        byte_offset_ ^= 3 * Policy::LdsmShape::kContiguous *
-                        sizeof_bits<Element>::value *
-                        Layout::kElementsPerAccess / 8;
-      else if ((k_group_idx_ & mask) == 3)
-        byte_offset_ ^= 7 * Policy::LdsmShape::kContiguous *
-                        sizeof_bits<Element>::value *
-                        Layout::kElementsPerAccess / 8;
-    }
+    //   if (((k_group_idx_ & mask) % 2) == 0)
+    //     byte_offset_ ^= 1 * Policy::LdsmShape::kContiguous *
+    //                     sizeof_bits<Element>::value *
+    //                     Layout::kElementsPerAccess / 8;
+    //   else if ((k_group_idx_ & mask) == 1)
+    //     byte_offset_ ^= 3 * Policy::LdsmShape::kContiguous *
+    //                     sizeof_bits<Element>::value *
+    //                     Layout::kElementsPerAccess / 8;
+    //   else if ((k_group_idx_ & mask) == 3)
+    //     byte_offset_ ^= 7 * Policy::LdsmShape::kContiguous *
+    //                     sizeof_bits<Element>::value *
+    //                     Layout::kElementsPerAccess / 8;
+    // }
 
-    k_group_idx_++;
+    // k_group_idx_++;
 
-    if (k_group_idx_ == (Policy::kGroupsPerTile / kPartitionsK)) {
-      k_group_idx_ = 0;
-      add_tile_offset({Policy::kGroupsPerTile, 0});
-    }
+    // if (k_group_idx_ == (Policy::kGroupsPerTile / kPartitionsK)) {
+    //   k_group_idx_ = 0;
+    //   add_tile_offset({Policy::kGroupsPerTile, 0});
+    // }
+
+ 
+    pointer_ += Policy::kLdsmOpInner / Layout::kFactor *
+                Policy::LdsmShape::kStrided * stride_ * 2;
 
     return *this;
   }
@@ -505,18 +512,17 @@ class MmaTensorOpMultiplicandTileIteratorTrans<
     CUTLASS_PRAGMA_UNROLL
     for (int s = 0; s < Policy::LdsmIterations::kStrided; ++s) {
       CUTLASS_PRAGMA_UNROLL
-      for (int c = 0; c < Policy::LdsmIterations::kContiguous; ++c) {
-        int access_idx = c + s * Policy::LdsmIterations::kContiguous;
+      for (int c = 0; c < Policy::LdsmIterations::kContiguous; ++c){
+        int access_idx = c * Policy::LdsmIterations::kStrided + s;
 
-        AccessType const *source_ptr =
-            pointer_ + Policy::LdsmShape::kContiguous * c +
-            Policy::kLdsmOpInner / Layout::kFactor *
+        AccessType const *source_ptr = 
+            pointer_ + Policy::kLdsmOpInner / Layout::kFactor *
                 Policy::LdsmShape::kStrided * s * stride_;
-
+        Index byte_offset_t = (byte_offset + byte_offset_) ^ (c * Policy::LdsmShape::kContiguous *
+                                                              sizeof_bits<Element>::value *
+                                                              Layout::kElementsPerAccess / 8);
         char const *source_byte_ptr =
-            reinterpret_cast<char const *>(source_ptr) + byte_offset +
-            byte_offset_;
-
+            reinterpret_cast<char const *>(source_ptr) + byte_offset_t;
         cutlass::arch::ldsm<layout::RowMajor, Policy::LdsmShape::kCount>(
             fetch_ptr[access_idx], source_byte_ptr);
       }
@@ -662,9 +668,11 @@ class MmaTensorOpMultiplicandTileIteratorTrans<
 
   /// Underlying tile iterator implementation
   using Base = MmaTensorOpMultiplicandTileIteratorTrans<
+      // <32, 64>
       layout::PitchLinearShape<Shape::kColumn, Shape::kRow>, kOperand, Element,
       layout::TensorOpMultiplicandCrosswise<sizeof_bits<Element_>::value,
                                             kCrosswise>,
+      // <16, 16>
       layout::PitchLinearShape<InstructionShape::kColumn,
                                InstructionShape::kRow>,
       kOpDelta, kThreads, PartitionsK_>;

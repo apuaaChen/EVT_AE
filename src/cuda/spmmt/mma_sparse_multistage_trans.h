@@ -231,7 +231,7 @@ public:
 
     // Add per-warp offsets in units of warp-level tiles
     this->warp_tile_iterator_A_.add_tile_offset(
-        {warp_idx_m, Base::kWarpGemmIterations * warp_idx_k});
+        {Base::kWarpGemmIterations * warp_idx_k, warp_idx_m * 2});
     this->warp_tile_iterator_B_.add_tile_offset(
         {Base::kWarpGemmIterations * warp_idx_k, warp_idx_n});
     this->warp_tile_iterator_E_.add_tile_offset(
@@ -475,11 +475,11 @@ public:
 
     Operator warp_mma;
 
-    this->warp_tile_iterator_A_.set_kgroup_index(0);
+    this->warp_tile_iterator_A_.set_kgroup_index(0); // just set parameter kgroup_id = 0
     this->warp_tile_iterator_B_.set_kgroup_index(0);
     this->warp_tile_iterator_E_.set_kgroup_index(0);
 
-    // this->warp_tile_iterator_A_.load(warp_loaded_frag_A[0]);
+    this->warp_tile_iterator_A_.load(warp_loaded_frag_A[0]);
     this->warp_tile_iterator_B_.load(warp_loaded_frag_B[0]);
     this->warp_tile_iterator_E_.load(warp_frag_E[0]);
 
@@ -519,7 +519,7 @@ public:
         this->warp_tile_iterator_A_.set_kgroup_index((warp_mma_k + 1) % Base::kWarpGemmIterations);
         this->warp_tile_iterator_E_.set_kgroup_index((warp_mma_k + 1) % Base::kWarpGemmIterations);
         
-        // this->warp_tile_iterator_A_.load(warp_loaded_frag_A[(warp_mma_k + 1) % 2]);
+        this->warp_tile_iterator_A_.load(warp_loaded_frag_A[(warp_mma_k + 1) % 2]);
         this->warp_tile_iterator_E_.load(warp_frag_E[(warp_mma_k + 1) % 2]);
 
         ++this->warp_tile_iterator_A_;
@@ -608,8 +608,8 @@ public:
 
           if (smem_read_stage_idx == (Base::kStages - 1)) {
             this->warp_tile_iterator_A_.add_tile_offset(
-                {0, -Base::kStages * Policy::kPartitionsK *
-                        Base::kWarpGemmIterations});
+                {-Base::kStages * Policy::kPartitionsK *
+                        Base::kWarpGemmIterations/2, 0});
             this->warp_tile_iterator_B_.add_tile_offset(
                 {-Base::kStages * Policy::kPartitionsK *
                      Base::kWarpGemmIterations,

@@ -35,7 +35,7 @@ using EpilogueOp_bf16 = cutlass::epilogue::thread::LinearCombination<
 
 using EpilogueOp_f16 = cutlass::epilogue::thread::LinearCombination<
     cutlass::half_t, 128 / cutlass::sizeof_bits<cutlass::half_t>::value, float, float,
-    cutlass::epilogue::thread::ScaleType::OnlyAlphaScaling>;
+    cutlass::epilogue::thread::ScaleType::OnlyAlphaScaling>; 
 
 // Pipeline stages in GEMM
 constexpr int NumStages = 3;

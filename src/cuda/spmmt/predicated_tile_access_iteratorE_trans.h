@@ -1,3 +1,4 @@
+#include "helper.h"
 namespace cutlass {
 namespace transform {
 namespace threadblock {

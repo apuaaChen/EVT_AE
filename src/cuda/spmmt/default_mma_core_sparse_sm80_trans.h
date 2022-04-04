@@ -229,8 +229,8 @@ struct DefaultSparseMmaCoreTrans<Shape_, WarpShape_, InstructionShape_, ElementA
              (kAccessSizeInBits / sizeof_bits<ElementE>::value));
 
   using IteratorThreadMapE = transform::PitchLinearStripminedThreadMap<
-      layout::PitchLinearShape<Shape::kM * kInterleavedE,
-                               Shape::kK / kSparse / kElementsPerElementE /
+      layout::PitchLinearShape<Shape::kK * kInterleavedE,
+                               Shape::kM / kSparse / kElementsPerElementE /
                                    kInterleavedE>,
       kThreadsE, kElementsPerAccessE>;
 

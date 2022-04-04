@@ -125,10 +125,10 @@ struct DefaultSparseMmaTrans<ElementA, LayoutA, kAlignmentA, ElementB, LayoutB,
       cutlass::Array<ElementE, 128 / sizeof_bits<ElementE>::value>;
   using IteratorE =
       cutlass::transform::threadblock::PredicatedTileAccessIteratorETrans<
-          cutlass::MatrixShape<ThreadblockShape::kM,
-                               ThreadblockShape::kK / kSparse /
+          cutlass::MatrixShape<ThreadblockShape::kK,
+                               ThreadblockShape::kM / kSparse /
                                    MmaCore::kElementsPerElementE>,
-          ElementE, LayoutE, 1, ThreadMapE, AccessTypeE>;
+          ElementE, LayoutE, 0, ThreadMapE, AccessTypeE>;
 
   // Define the threadblock-scoped multistage matrix multiply
   using ThreadblockMma = cutlass::gemm::threadblock::SparseMmaMultistageTrans<

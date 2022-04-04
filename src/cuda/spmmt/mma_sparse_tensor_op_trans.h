@@ -1,4 +1,5 @@
 #include "mma_sparse_sm80.h"
+#include "mma_tensor_op_tile_iterator_sparse_trans.h"
 #include "mma_tensor_op_tile_iterator_trans.h"
 #include "helper.h"
 /////////////////////////////////////////////////////////////////////////////////////////////////
@@ -153,7 +154,7 @@ public:
  using FragmentC = typename Base::FragmentC;
 
  /// Iterates over the E operand in memory
- using IteratorE = SparseMmaTensorOpMetaTileIterator<
+ using IteratorE = SparseMmaTensorOpMetaTileIteratorTrans<
      MatrixShape<Shape::kM * kInterleaved,
                  Shape::kK / kSparse / kElementsPerElementE / kInterleaved>,
      ElementE, LayoutE,

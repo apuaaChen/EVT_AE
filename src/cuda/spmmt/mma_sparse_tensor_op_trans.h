@@ -1,7 +1,6 @@
 #include "mma_sparse_sm80.h"
 #include "mma_tensor_op_tile_iterator_sparse_trans.h"
 #include "mma_tensor_op_tile_iterator_trans.h"
-#include "helper.h"
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {

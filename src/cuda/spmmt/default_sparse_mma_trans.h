@@ -1,8 +1,5 @@
 #include "mma_sparse_multistage_trans.h"
 #include "default_mma_core_sparse_sm80_trans.h"
-#include "predicated_tile_access_iterator_trans.h"
-#include "predicated_tile_access_iteratorE_trans.h"
-#include "helper.h"
 ////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
@@ -105,7 +102,7 @@ struct DefaultSparseMmaTrans<ElementA, LayoutA, kAlignmentA, ElementB, LayoutB,
   using ThreadMapA = typename MmaCore::IteratorThreadMapA;
   using AccessTypeA = cutlass::Array<ElementA, kAlignmentA>;
   using IteratorA =
-      cutlass::transform::threadblock::PredicatedTileAccessIteratorTrans<
+      cutlass::transform::threadblock::PredicatedTileAccessIterator<
           cutlass::MatrixShape<ThreadblockShape::kK, ThreadblockShape::kM / kSparse>,
           ElementA, LayoutA, 0, ThreadMapA, AccessTypeA>;
 
@@ -124,7 +121,7 @@ struct DefaultSparseMmaTrans<ElementA, LayoutA, kAlignmentA, ElementB, LayoutB,
   using AccessTypeE =
       cutlass::Array<ElementE, 128 / sizeof_bits<ElementE>::value>;
   using IteratorE =
-      cutlass::transform::threadblock::PredicatedTileAccessIteratorETrans<
+      cutlass::transform::threadblock::PredicatedTileAccessIterator<
           cutlass::MatrixShape<ThreadblockShape::kK,
                                ThreadblockShape::kM / kSparse /
                                    MmaCore::kElementsPerElementE>,

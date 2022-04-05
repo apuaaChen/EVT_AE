@@ -1,5 +1,3 @@
-#include "regular_tile_access_iterator_trans.h"
-#include "regular_tile_access_iteratorE_trans.h"
 #include "default_mma_sparse_tensor_op_trans.h"
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -175,7 +173,7 @@ struct DefaultSparseMmaCoreTrans<Shape_, WarpShape_, InstructionShape_, ElementA
       kAccessSizeInBits / sizeof_bits<ElementA>::value>;
 
   /// Shared memory iterator to A operand
-  using SmemIteratorA = transform::threadblock::RegularTileAccessIteratorTrans<
+  using SmemIteratorA = transform::threadblock::RegularTileAccessIterator<
       MatrixShape<Shape::kK, Shape::kM / kSparse>, ElementA, SmemLayoutA, 0,
       IteratorThreadMapA>;
 
@@ -236,7 +234,7 @@ struct DefaultSparseMmaCoreTrans<Shape_, WarpShape_, InstructionShape_, ElementA
 
 
   /// Shared memory iterator to E operand
-  using SmemIteratorE = transform::threadblock::RegularTileAccessIteratorETrans<
+  using SmemIteratorE = transform::threadblock::RegularTileAccessIterator<
       MatrixShape<Shape::kK * kInterleavedE,
                   Shape::kM / kSparse / kElementsPerElementE / kInterleavedE>,
       ElementE, SmemLayoutE, 0, IteratorThreadMapE>;

@@ -161,7 +161,7 @@ public:
      ElementE, LayoutE,
      MatrixShape<Policy::Operator::Shape::kM,
                  Policy::Operator::Shape::kK / kSparse / kElementsPerElementE /
-                     kInterleaved>,
+                     kInterleaved * 2>,
      Policy::OpDelta::kRow, kThreadCount, kPartitionsK>;
 
  /// Storage for E tile
@@ -212,38 +212,68 @@ public:
     MmaOperandE const *ptr_E = reinterpret_cast<MmaOperandE const *>(&E);
 
       CUTLASS_PRAGMA_UNROLL
-      for (int m = 0; m < MmaIterations::kRow; ++m) {
+      for (int m = 0; m < MmaIterations::kRow / 2; ++m) {
 
-        int id2 = m % kMaxID2;
+        for (int k = 0; k < 2; k ++){
+          ElementA dense_A[16];
+          mma.todense(ptr_A[2 * m + k], dense_A, ptr_I[0], ptr_E[m], k);
+          mma.transpose(dense_A);
 
-        // Convert sparse A to dense
-        ElementA dense_A[16];
-        mma.todense(ptr_A[m], dense_A, ptr_I[0], ptr_E[(m / kMaxID2)], id2);
+          CUTLASS_PRAGMA_UNROLL
+          for (int n = 0; n < MmaIterations::kColumn; ++n){
+            int n_serpentine = ((m % 2) ? (MmaIterations::kColumn - 1 - n) : n);
 
-        CUTLASS_PRAGMA_UNROLL
-        for (int n = 0; n < MmaIterations::kColumn; ++n) {
-
-          int n_serpentine = ((m % 2) ? (MmaIterations::kColumn - 1 - n) : n);
-
-          if (AccumulatorsInRowMajor) {  // matrix B is reordered
-            mma(
-              ptr_D[n_serpentine + m * MmaIterations::kColumn],
-              dense_A,
-              ptr_B[n_serpentine],
-              ptr_D[n_serpentine + m * MmaIterations::kColumn]);
-          } else {
-            mma(ptr_D[m + n_serpentine * MmaIterations::kRow],
+            if (AccumulatorsInRowMajor) {  // matrix B is reordered
+              mma(
+                ptr_D[n_serpentine + m * 2 * MmaIterations::kColumn],
+                ptr_D[n_serpentine + (m * 2 + 1) * MmaIterations::kColumn],
                 dense_A,
                 ptr_B[n_serpentine],
-                ptr_D[m + n_serpentine * MmaIterations::kRow]);
-            // mma(ptr_D[m + n_serpentine * MmaIterations::kRow],
-            //     ptr_A[m],
-            //     ptr_I[0],
-            //     ptr_D[m + n_serpentine * MmaIterations::kRow],
-            //     ptr_E[(m / kMaxID2)],
-            //     id2);
+                ptr_D[n_serpentine + m * 2 * MmaIterations::kColumn],
+                ptr_D[n_serpentine + (m * 2 + 1) * MmaIterations::kColumn],
+                k);
+            } else {
+              mma(ptr_D[m * 2 + n_serpentine * MmaIterations::kRow],
+                  ptr_D[m * 2 + 1 + n_serpentine * MmaIterations::kRow],
+                  dense_A,
+                  ptr_B[n_serpentine],
+                  ptr_D[m * 2 + n_serpentine * MmaIterations::kRow],
+                  ptr_D[m * 2 + 1 + n_serpentine * MmaIterations::kRow],
+                  k);
+            }
           }
         }
+
+        // int id2 = m % kMaxID2;
+
+        // // Convert sparse A to dense
+        // ElementA dense_A[16];
+        // mma.todense(ptr_A[m], dense_A, ptr_I[0], ptr_E[(m / kMaxID2)], id2);
+
+        // CUTLASS_PRAGMA_UNROLL
+        // for (int n = 0; n < MmaIterations::kColumn; ++n) {
+
+        //   int n_serpentine = ((m % 2) ? (MmaIterations::kColumn - 1 - n) : n);
+
+        //   if (AccumulatorsInRowMajor) {  // matrix B is reordered
+        //     mma(
+        //       ptr_D[n_serpentine + m * MmaIterations::kColumn],
+        //       dense_A,
+        //       ptr_B[n_serpentine],
+        //       ptr_D[n_serpentine + m * MmaIterations::kColumn]);
+        //   } else {
+        //     mma(ptr_D[m + n_serpentine * MmaIterations::kRow],
+        //         dense_A,
+        //         ptr_B[n_serpentine],
+        //         ptr_D[m + n_serpentine * MmaIterations::kRow]);
+        //     // mma(ptr_D[m + n_serpentine * MmaIterations::kRow],
+        //     //     ptr_A[m],
+        //     //     ptr_I[0],
+        //     //     ptr_D[m + n_serpentine * MmaIterations::kRow],
+        //     //     ptr_E[(m / kMaxID2)],
+        //     //     id2);
+        //   }
+        // }
       }
     #else
       assert(0);

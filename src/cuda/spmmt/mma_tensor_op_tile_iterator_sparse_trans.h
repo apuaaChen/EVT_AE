@@ -173,7 +173,7 @@ class SparseMmaTensorOpMetaTileIteratorTrans {
       TensorCoord const &tile_offset) {
     int offset = tile_offset.row() * Shape::kRow +
                  tile_offset.column() * InstructionShape::kColumn * stride_ *
-                     Policy::kElementsPerAccess;
+                     Policy::kElementsPerAccess / 2;
 
     add_pointer_offset(offset);
     return *this;

@@ -154,9 +154,10 @@ public:
  using FragmentC = typename Base::FragmentC;
 
  /// Iterates over the E operand in memory
+ // The shape is <64, 2> 
  using IteratorE = SparseMmaTensorOpMetaTileIteratorTrans<
-     MatrixShape<Shape::kM * kInterleaved,
-                 Shape::kK / kSparse / kElementsPerElementE / kInterleaved>,
+     MatrixShape<Shape::kK * kInterleaved / 2,
+                 Shape::kM / kSparse / kElementsPerElementE / kInterleaved>,
      ElementE, LayoutE,
      MatrixShape<Policy::Operator::Shape::kM,
                  Policy::Operator::Shape::kK / kSparse / kElementsPerElementE /

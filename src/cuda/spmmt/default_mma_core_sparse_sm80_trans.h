@@ -237,8 +237,8 @@ struct DefaultSparseMmaCoreTrans<Shape_, WarpShape_, InstructionShape_, ElementA
 
   /// Shared memory iterator to E operand
   using SmemIteratorE = transform::threadblock::RegularTileAccessIteratorETrans<
-      MatrixShape<Shape::kM * kInterleavedE,
-                  Shape::kK / kSparse / kElementsPerElementE / kInterleavedE>,
+      MatrixShape<Shape::kK * kInterleavedE,
+                  Shape::kM / kSparse / kElementsPerElementE / kInterleavedE>,
       ElementE, SmemLayoutE, 0, IteratorThreadMapE>;
 
   /// Policy used to define MmaPipelined

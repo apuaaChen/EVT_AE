@@ -235,7 +235,7 @@ public:
     this->warp_tile_iterator_B_.add_tile_offset(
         {Base::kWarpGemmIterations * warp_idx_k, warp_idx_n});
     this->warp_tile_iterator_E_.add_tile_offset(
-        {warp_idx_m, Base::kWarpGemmIterations * warp_idx_k});
+        {Base::kWarpGemmIterations * warp_idx_k, warp_idx_m * 2});
   }
 
   CUTLASS_DEVICE
@@ -593,14 +593,14 @@ public:
 
           this->smem_iterator_A_.add_tile_offset({1, 0});
           this->smem_iterator_B_.add_tile_offset({1, 0});
-          this->smem_iterator_E_.add_tile_offset({0, 1});
+          this->smem_iterator_E_.add_tile_offset({1, 0});
 
           // Add negative offsets to return iterators to the 'start' of the
           // circular buffer in shared memory
           if (smem_write_stage_idx == (Base::kStages - 1)) {
             this->smem_iterator_A_.add_tile_offset({-Base::kStages, 0});
             this->smem_iterator_B_.add_tile_offset({-Base::kStages, 0});
-            this->smem_iterator_E_.add_tile_offset({0, -Base::kStages});
+            this->smem_iterator_E_.add_tile_offset({-Base::kStages, 0});
             smem_write_stage_idx = 0;
           } else {
             ++smem_write_stage_idx;
@@ -615,8 +615,8 @@ public:
                      Base::kWarpGemmIterations,
                  0});
             this->warp_tile_iterator_E_.add_tile_offset(
-                {0, -Base::kStages * Policy::kPartitionsK *
-                        Base::kWarpGemmIterations});
+                {-Base::kStages * Policy::kPartitionsK *
+                        Base::kWarpGemmIterations, 0});
             smem_read_stage_idx = 0;
           } else {
             ++smem_read_stage_idx;

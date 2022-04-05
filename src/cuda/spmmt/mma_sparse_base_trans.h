@@ -85,8 +85,8 @@ class SparseMmaBaseTrans {
 
     /// Shape of the E matrix operand in shared memory
     using ShapeE =
-        MatrixShape<Shape::kM * 2 + Policy::SmemPaddingE::kRow,
-                    Shape::kK / kSparse / kElementsPerElementE / 2 * kStages +
+        MatrixShape<Shape::kK * 2 * kStages + Policy::SmemPaddingE::kRow,
+                    Shape::kM / kSparse / kElementsPerElementE / 2 +
                         Policy::SmemPaddingE::kColumn>;
 
    public:

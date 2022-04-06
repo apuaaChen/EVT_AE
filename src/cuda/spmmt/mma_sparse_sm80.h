@@ -329,61 +329,16 @@ struct SparseMmaV2<gemm::GemmShape<16, 8, 32>, 32, half_t, layout::RowMajor,
 
   CUTLASS_DEVICE
   void transpose(half_t (&da)[16], FragmentB const &i) const{
-    // Explicitly transpose the matrix with warp shuffle
-    // __half tmp_share;
-    // uint32_t tmp_share_b;
-    // __half const *B16 = reinterpret_cast<const __half *>(&da);
-    // uint32_t* B32 = reinterpret_cast<uint32_t *>(&da);
-    // uint32_t BT[8];
-    // __half *BT16 = reinterpret_cast<__half *>(&BT);
-    // int lane_idx = threadIdx.x % 32;
-    // int quad_idx = lane_idx / 4;
-    // int target_lane = 0;
-    //
-    // if (lane_idx == 8 || lane_idx == 12 || lane_idx == 17 || lane_idx == 21 || lane_idx == 26 || lane_idx == 30) target_lane = lane_idx - 7;
-    // else if (lane_idx == 1 || lane_idx == 5 || lane_idx == 10 || lane_idx == 14 || lane_idx == 19 || lane_idx == 23) target_lane = lane_idx + 7;
-    // else if (lane_idx == 16 || lane_idx == 20 || lane_idx == 25 || lane_idx == 29) target_lane = lane_idx - 14;
-    // else if (lane_idx == 2 || lane_idx == 6 || lane_idx == 11 || lane_idx == 15) target_lane = lane_idx + 14;
-    // else if (lane_idx == 24 || lane_idx == 28) target_lane = lane_idx - 21;
-    // else if (lane_idx == 3 || lane_idx == 7) target_lane = lane_idx + 21;
-    // else target_lane = lane_idx;
-    //
-    // #pragma unroll
-    // for (int i = 0; i < 8; i++){
-    //     if (quad_idx % 2 == 0){
-    //         tmp_share = B16[1 + i * 2];
-    //     } else {
-    //         tmp_share = B16[0 + i * 2];
-    //     }
-    //     tmp_share = __shfl_xor_sync(0xffffffff, tmp_share, 4);
-    //     if (quad_idx % 2 == 0){
-    //         BT16[0 + i * 2] = B16[0 + i * 2];
-    //         BT16[1 + i * 2] = tmp_share;
-    //     } else {
-    //         BT16[0 + i * 2] = tmp_share;
-    //         BT16[1 + i * 2] = B16[1 + i * 2];
-    //     }
-    //     tmp_share_b = __shfl_sync(0xffffffff, BT[i], target_lane);
-    //     BT[i] = tmp_share_b;
-    // }
-    //
-    // B32[0] = BT[0];
-    // B32[1] = BT[2];
-    // B32[2] = BT[1];
-    // B32[3] = BT[3];
-    // B32[4] = BT[4];
-    // B32[5] = BT[6];
-    // B32[6] = BT[5];
-    // B32[7] = BT[7];
-    
     // Transpose the matrix with wmma
     uint32_t *A = reinterpret_cast<uint32_t *>(&da);
     uint32_t const *I = reinterpret_cast<uint32_t const *>(&i);
 
+    uint32_t tmp = A[1];
+
     asm volatile(
         "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
         "{%0,%1}, {%2,%3,%4,%5}, {%6,%7}, {%8,%9};\n"
-        : "=r"(A[0]), "=r"(A[2])
+        : "=r"(A[0]), "=r"(A[1])
         : "r"(I[0]), "r"(I[1]), "r"(I[2]), "r"(I[3]), "r"(A[0]), "r"(A[2]),
           "r"(I[4]), "r"(I[5])
     );
@@ -391,15 +346,17 @@ struct SparseMmaV2<gemm::GemmShape<16, 8, 32>, 32, half_t, layout::RowMajor,
     asm volatile(
         "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
         "{%0,%1}, {%2,%3,%4,%5}, {%6,%7}, {%8,%9};\n"
-        : "=r"(A[1]), "=r"(A[3])
-        : "r"(I[0]), "r"(I[1]), "r"(I[2]), "r"(I[3]), "r"(A[1]), "r"(A[3]),
+        : "=r"(A[2]), "=r"(A[3])
+        : "r"(I[0]), "r"(I[1]), "r"(I[2]), "r"(I[3]), "r"(tmp), "r"(A[3]),
           "r"(I[4]), "r"(I[5])
     );
+
+    tmp = A[5];
 
     asm volatile(
         "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
         "{%0,%1}, {%2,%3,%4,%5}, {%6,%7}, {%8,%9};\n"
-        : "=r"(A[4]), "=r"(A[6])
+        : "=r"(A[4]), "=r"(A[5])
         : "r"(I[0]), "r"(I[1]), "r"(I[2]), "r"(I[3]), "r"(A[4]), "r"(A[6]),
           "r"(I[4]), "r"(I[5])
     );
@@ -407,18 +364,11 @@ struct SparseMmaV2<gemm::GemmShape<16, 8, 32>, 32, half_t, layout::RowMajor,
     asm volatile(
         "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
         "{%0,%1}, {%2,%3,%4,%5}, {%6,%7}, {%8,%9};\n"
-        : "=r"(A[5]), "=r"(A[7])
-        : "r"(I[0]), "r"(I[1]), "r"(I[2]), "r"(I[3]), "r"(A[5]), "r"(A[7]),
+        : "=r"(A[6]), "=r"(A[7])
+        : "r"(I[0]), "r"(I[1]), "r"(I[2]), "r"(I[3]), "r"(tmp), "r"(A[7]),
           "r"(I[4]), "r"(I[5])
     );
-
-    uint32_t tmp = A[2];
-    A[2] = A[1];
-    A[1] = tmp;
-
-    tmp = A[6];
-    A[6] = A[5];
-    A[5] = tmp;
+  
   }
 
   CUTLASS_HOST_DEVICE

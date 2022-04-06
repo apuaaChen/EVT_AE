@@ -216,7 +216,7 @@ public:
         for (int k = 0; k < 2; k ++){
           ElementA dense_A[16];
           mma.todense(ptr_A[2 * m + k], dense_A, ptr_I[0], ptr_E[m], k);
-          mma.transpose(dense_A);
+          mma.transpose(dense_A, ptr_I[0]);
 
           CUTLASS_PRAGMA_UNROLL
           for (int n = 0; n < MmaIterations::kColumn; ++n){

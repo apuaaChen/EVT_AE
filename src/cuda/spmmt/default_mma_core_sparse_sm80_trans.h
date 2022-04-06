@@ -92,42 +92,32 @@ struct DefaultSparseMmaCoreTrans<Shape_, WarpShape_, InstructionShape_, ElementA
                       layout::RowMajor, ElementB_, layout::ColumnMajor,
                       ElementC_, LayoutC_, arch::OpClassTensorOp, Stages,
                       Operator_, false, CacheOpA, CacheOpB> {
-  using Shape = Shape_;
-  using WarpShape = WarpShape_;
-  using InstructionShape = InstructionShape_;
-  using ElementA = ElementA_;
-  using LayoutA = layout::RowMajor;
-  using ElementB = ElementB_;
-  using LayoutB = layout::ColumnMajor;
-  using ElementC = ElementC_;
-  using LayoutC = LayoutC_;
-  static int const kStages = Stages;
+  using Base = cutlass::gemm::threadblock::DefaultSparseMmaCore<Shape_, WarpShape_, InstructionShape_, ElementA_,
+                      layout::RowMajor, ElementB_, layout::ColumnMajor,
+                      ElementC_, LayoutC_, arch::OpClassTensorOp, Stages,
+                      Operator_, false, CacheOpA, CacheOpB>;
+  using Shape = typename Base::Shape;
+  using WarpShape = typename Base::WarpShape;
+  using InstructionShape = typename Base::InstructionShape;
+  using ElementA = typename Base::ElementA;
+  using LayoutA = typename Base::LayoutA;
+  using ElementB = typename Base::ElementB;
+  using LayoutB = typename Base::LayoutB;
+  using ElementC = typename Base::ElementC;
+  using LayoutC = typename Base::LayoutC;
+  static int const kStages = Base::Stages;
   static cutlass::arch::CacheOperation::Kind const kCacheOpA = CacheOpA;
   static cutlass::arch::CacheOperation::Kind const kCacheOpB = CacheOpB;
 
   static int const kSparse = 2;
-
-  /// Number of warps present
-  using WarpCount = GemmShape<Shape::kM / WarpShape::kM,
-                              Shape::kN / WarpShape::kN, 
-                              Shape::kK / WarpShape::kK>;
-
-  // Divisility requirements
-  static_assert(
-      !(Shape::kM % WarpShape::kM) && !(Shape::kN % WarpShape::kN),
-      "Threadblock-scoped GEMM should be divisible by warp-scoped GEMM size.");
-
-  /// Number of threads per warp
-  static int const kWarpSize = warp::WarpSize<arch::OpClassTensorOp>::value;
-
-  /// Number of threads total
-  static int const kThreads = WarpCount::kCount * kWarpSize;
-
-  /// Size of a threadblock-scoped access
-  static int const kAccessSizeInBits = 128;
-
-  /// Default Operator
-  using Operator = Operator_;
+  using WarpCount = typename Base::WarpCount;
+  static int const kWarpSize = Base::kWarpSize; 
+  static int const kThreads = Base::kThreads;
+  static int const kAccessSizeInBits = Base::kAccessSizeInBits;
+  using Operator = typename Base::Operator;
+  static int const kCrosswiseB = Base::kCrosswiseB;
+  static int const kWarpThreadArrangementContiguousB = Base::kWarpThreadArrangementContiguousB;
+  static int const kWarpThreadArrangementStridedB = Base::kWarpThreadArrangementStridedB;
 
   // Warp thread arrangement
   // Shape::kM = 128, kSparse = 2, (kAccessSizeInBits / sizeof_bits<ElementA>::value) = 8 for bf16/f16
@@ -138,18 +128,6 @@ struct DefaultSparseMmaCoreTrans<Shape_, WarpShape_, InstructionShape_, ElementA
   static int const kWarpThreadArrangementStridedA =
       kWarpSize / kWarpThreadArrangementContiguousA;
 
-  // crosswise cannot be larger than 1024 bit.
-  static int const kCrosswiseB =
-      (Shape::kK > (1024 / sizeof_bits<ElementB>::value))
-          ? (1024 / sizeof_bits<ElementB>::value)
-          : Shape::kK;
-
-  static int const kWarpThreadArrangementContiguousB =
-      kCrosswiseB / (kAccessSizeInBits / sizeof_bits<ElementB>::value);
-
-  static int const kWarpThreadArrangementStridedB =
-      kWarpSize / kWarpThreadArrangementContiguousB;
-
   //
   // Shared memory layouts
   //
@@ -158,8 +136,7 @@ struct DefaultSparseMmaCoreTrans<Shape_, WarpShape_, InstructionShape_, ElementA
       sizeof_bits<ElementA>::value, Shape::kM / kSparse>;
 
   // Shared memory layout
-  using SmemLayoutB = layout::ColumnMajorTensorOpMultiplicandCrosswise<
-      sizeof_bits<ElementB>::value, kCrosswiseB>;
+  using SmemLayoutB = typename Base::SmemLayoutB;
 
   //
   // Iterators to write to shared memory
@@ -178,16 +155,10 @@ struct DefaultSparseMmaCoreTrans<Shape_, WarpShape_, InstructionShape_, ElementA
       IteratorThreadMapA>;
 
   /// ThreadMap of iterator B
-  using IteratorThreadMapB = transform::PitchLinearWarpRakedThreadMap<
-      layout::PitchLinearShape<Shape::kK, Shape::kN>, kThreads,
-      layout::PitchLinearShape<kWarpThreadArrangementContiguousB,
-                               kWarpThreadArrangementStridedB>,
-      kAccessSizeInBits / sizeof_bits<ElementB>::value>;
+  using IteratorThreadMapB = typename Base::IteratorThreadMapB;
 
   /// Shared memory iterator to B operand
-  using SmemIteratorB = transform::threadblock::RegularTileAccessIterator<
-      MatrixShape<Shape::kK, Shape::kN>, ElementB, SmemLayoutB, 1,
-      IteratorThreadMapB>;
+  using SmemIteratorB = typename Base::SmemIteratorB;
 
   //
   // Warp-level matrix multiply operator
@@ -214,17 +185,8 @@ struct DefaultSparseMmaCoreTrans<Shape_, WarpShape_, InstructionShape_, ElementA
   using SmemLayoutE = typename MmaTensorOp::LayoutE;
 
   /// ThreadMap of iterator E
-  static int const kElementsPerAccessE =
-      kAccessSizeInBits / sizeof_bits<ElementE>::value;
-
-  /// E is tiny.  Not all warps are needed.
-  static int const kThreadsE =
-      (Shape::kM * Shape::kK / kSparse / kElementsPerElementE /
-           (kAccessSizeInBits / sizeof_bits<ElementE>::value) >
-       kThreads)
-          ? kThreads
-          : (Shape::kM * Shape::kK / kSparse / kElementsPerElementE /
-             (kAccessSizeInBits / sizeof_bits<ElementE>::value));
+  static int const kElementsPerAccessE = Base::kElementsPerAccessE;
+  static int const kThreadsE = Base::kThreadsE;
 
   using IteratorThreadMapE = transform::PitchLinearStripminedThreadMap<
       layout::PitchLinearShape<Shape::kK * kInterleavedE,

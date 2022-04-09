@@ -1,6 +1,7 @@
 #include "mma_sparse_sm80.h"
 #include "mma_tensor_op_tile_iterator_sparse_trans.h"
 #include "mma_tensor_op_tile_iterator_trans.h"
+#include "helper.h"
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
@@ -135,7 +136,7 @@ public:
 
  /// Storage for transformed A tile
  using TransformedFragmentA =
-     Array<typename Policy::Operator::ElementA, FragmentA::kElements>;
+     Array<typename Policy::Operator::ElementA, FragmentA::kElements * 2>;
 
  /// Iterates over the B operand in memory
  using IteratorB = typename Base::IteratorB;
@@ -188,35 +189,31 @@ public:
   CUTLASS_DEVICE
   void operator()(
     FragmentC &D, 
-    TransformedFragmentA const &A, 
+    TransformedFragmentA &A, 
     TransformedFragmentB const &B, 
     FragmentC const &C,
     FragmentE const &E,
     ElementB (&I)[12]
   ) const {
 
-    using MmaOperandA = typename Policy::Operator::FragmentA;
+    using MmaOperandAT = typename Policy::Operator::FragmentAT;
     using MmaOperandB = typename Policy::Operator::FragmentB;
     using MmaOperandC = typename Policy::Operator::FragmentC;
-    using MmaOperandE = typename Policy::Operator::FragmentE;
 
     #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
 
     D = C;
 
-    MmaOperandA const *ptr_A = reinterpret_cast<MmaOperandA const *>(&A);
+    MmaOperandAT *ptr_A = reinterpret_cast<MmaOperandAT *>(&A);
     MmaOperandB const *ptr_B = reinterpret_cast<MmaOperandB const *>(&B);
     MmaOperandB const *ptr_I = reinterpret_cast<MmaOperandB const *>(&I);
     MmaOperandC *ptr_D = reinterpret_cast<MmaOperandC *>(&D);
-    MmaOperandE const *ptr_E = reinterpret_cast<MmaOperandE const *>(&E);
 
       CUTLASS_PRAGMA_UNROLL
       for (int m = 0; m < MmaIterations::kRow / 2; ++m) {
-
+        CUTLASS_PRAGMA_UNROLL
         for (int k = 0; k < 2; k ++){
-          ElementA dense_A[16];
-          mma.todense(ptr_A[2 * m + k], dense_A, ptr_I[0], ptr_E[m], k);
-          mma.transpose(dense_A, ptr_I[0]);
+          mma.transpose(ptr_A[2 * m + k], ptr_I[0]);
 
           CUTLASS_PRAGMA_UNROLL
           for (int n = 0; n < MmaIterations::kColumn; ++n){
@@ -226,7 +223,7 @@ public:
               mma(
                 ptr_D[n_serpentine + m * 2 * MmaIterations::kColumn],
                 ptr_D[n_serpentine + (m * 2 + 1) * MmaIterations::kColumn],
-                dense_A,
+                ptr_A[2 * m + k],
                 ptr_B[n_serpentine],
                 ptr_D[n_serpentine + m * 2 * MmaIterations::kColumn],
                 ptr_D[n_serpentine + (m * 2 + 1) * MmaIterations::kColumn],
@@ -234,7 +231,7 @@ public:
             } else {
               mma(ptr_D[m * 2 + n_serpentine * MmaIterations::kRow],
                   ptr_D[m * 2 + 1 + n_serpentine * MmaIterations::kRow],
-                  dense_A,
+                  ptr_A[2 * m + k],
                   ptr_B[n_serpentine],
                   ptr_D[m * 2 + n_serpentine * MmaIterations::kRow],
                   ptr_D[m * 2 + 1 + n_serpentine * MmaIterations::kRow],
@@ -251,34 +248,39 @@ public:
   /// Transform the mma operands to the required types
   CUTLASS_DEVICE
   void transform(TransformedFragmentA &dst_A, TransformedFragmentB &dst_B,
-                 FragmentA const &A, FragmentB const &B) const {
+                 FragmentA const &A, FragmentB const &B, FragmentE const &E, ElementB (&I)[12]) const {
 
     #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
     //
     // Define conversions from source type to instruction type
     //
-    FloatRoundStyle const kRoundA =
-        PreferredRoundingMode<typename ArchMmaOperator::ElementA,
-                              ElementA>::kRound;
     FloatRoundStyle const kRoundB =
         PreferredRoundingMode<typename ArchMmaOperator::ElementB,
                               ElementB>::kRound;
-    detail::ConvertAndPack<typename ArchMmaOperator::ElementA, ElementA,
-                           FragmentA::kElements / 2, kRoundA>
-        convert_A;
     NumericArrayConverter<typename ArchMmaOperator::ElementB, ElementB,
                           FragmentB::kElements, kRoundB>
         convert_B;
-    Array<ElementA, FragmentA::kElements / 2> const *ptr_A =
-        reinterpret_cast<Array<ElementA, FragmentA::kElements / 2> const *>(&A);
-    Array<typename ArchMmaOperator::ElementA, FragmentA::kElements / 2> *
-        ptr_dst_A = reinterpret_cast<Array<typename ArchMmaOperator::ElementA,
-                                           FragmentA::kElements / 2> *>(&dst_A);
 
     dst_B = convert_B(B);
 
-    ptr_dst_A[0] = convert_A(ptr_A[0]);
-    ptr_dst_A[1] = convert_A(ptr_A[1]);
+    using MmaOperandA = typename Policy::Operator::FragmentA;
+    using MmaOperandAT= typename Policy::Operator::FragmentAT;
+    using MmaOperandE = typename Policy::Operator::FragmentE;
+    using MmaOperandB = typename Policy::Operator::FragmentB;
+
+    MmaOperandA const *ptr_A = reinterpret_cast<MmaOperandA const *>(&A);
+    MmaOperandAT *ptr_dest_A = reinterpret_cast<MmaOperandAT *>(&dst_A);
+    MmaOperandB const *ptr_I = reinterpret_cast<MmaOperandB const *>(&I);
+    MmaOperandE const *ptr_E = reinterpret_cast<MmaOperandE const *>(&E);
+    
+    CUTLASS_PRAGMA_UNROLL
+    for (int m = 0; m < MmaIterations::kRow / 2; ++m){
+      CUTLASS_PRAGMA_UNROLL
+      for (int k=0; k < 2; k ++){
+        mma.todense(ptr_A[2 * m + k], ptr_dest_A[2 * m + k], ptr_I[0], ptr_E[m], k);
+      }
+    }
+
     #else
       assert(0);
     #endif

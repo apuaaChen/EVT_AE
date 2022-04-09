@@ -1,4 +1,5 @@
 #include "mma_sparse_tensor_op_trans.h"
+#include "mma_sparse_sm80.h"
 namespace cutlass {
 namespace gemm {
 namespace warp {
@@ -61,10 +62,10 @@ template <
     bool AccumulatorsInRowMajor>
 struct DefaultSparseMmaTensorOpTrans {
   using Policy = cutlass::gemm::warp::MmaTensorOpPolicy<
-      cutlass::arch::SparseMma<InstructionShape_, 32, ElementA,
+      cutlass::arch::SparseMmaV2<InstructionShape_, 32, ElementA,
                                cutlass::layout::RowMajor, ElementB,
                                cutlass::layout::ColumnMajor, ElementC,
-                               cutlass::layout::RowMajor, Operator_>,
+                               cutlass::layout::RowMajor, Operator_, true>,
       cutlass::MatrixShape<1, 1> >;
 
   // Define the warp-level tensor op

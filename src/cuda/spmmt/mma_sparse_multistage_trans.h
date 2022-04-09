@@ -494,7 +494,10 @@ public:
     int smem_read_stage_idx = 0;
 
     warp_mma.transform(warp_transformed_frag_A[0], warp_transformed_frag_B[0],
-                       warp_loaded_frag_A[0], warp_loaded_frag_B[0]);
+                       warp_loaded_frag_A[0], warp_loaded_frag_B[0],
+                       warp_frag_E[0],
+                       warp_identity_frag
+                       );
 
     //
     // Mainloop
@@ -517,6 +520,14 @@ public:
 
         this->warp_tile_iterator_A_.set_kgroup_index((warp_mma_k + 1) % Base::kWarpGemmIterations);
         this->warp_tile_iterator_E_.set_kgroup_index((warp_mma_k + 1) % Base::kWarpGemmIterations);
+
+        if (warp_mma_k > 0)
+          warp_mma.transform(warp_transformed_frag_A[warp_mma_k % 2],
+                             warp_transformed_frag_B[warp_mma_k % Detail::kBBufferSize],
+                             warp_loaded_frag_A[warp_mma_k % 2],
+                             warp_loaded_frag_B[warp_mma_k % Detail::kBBufferSize],
+                             warp_frag_E[warp_mma_k % 2],
+                             warp_identity_frag);
         
         this->warp_tile_iterator_A_.load(warp_loaded_frag_A[(warp_mma_k + 1) % 2]);
         this->warp_tile_iterator_E_.load(warp_frag_E[(warp_mma_k + 1) % 2]);
@@ -530,12 +541,6 @@ public:
               warp_loaded_frag_B[(warp_mma_k + 1) % Detail::kBBufferSize]);
           ++this->warp_tile_iterator_B_;
         }
-
-        if (warp_mma_k > 0)
-          warp_mma.transform(warp_transformed_frag_A[warp_mma_k % 2],
-                             warp_transformed_frag_B[warp_mma_k % Detail::kBBufferSize],
-                             warp_loaded_frag_A[warp_mma_k % 2],
-                             warp_loaded_frag_B[warp_mma_k % Detail::kBBufferSize]);
 
         warp_mma(
           accum,
@@ -633,7 +638,9 @@ public:
           warp_mma.transform(warp_transformed_frag_A[(warp_mma_k + 1) % 2],
                              warp_transformed_frag_B[(warp_mma_k + 1) % 2],
                              warp_loaded_frag_A[(warp_mma_k + 1) % 2],
-                             warp_loaded_frag_B[(warp_mma_k + 1) % 2]);
+                             warp_loaded_frag_B[(warp_mma_k + 1) % 2],
+                             warp_frag_E[(warp_mma_k + 1) % 2],
+                             warp_identity_frag);
       }
 
     }

@@ -104,6 +104,8 @@ struct SparseMmaV2<gemm::GemmShape<16, 8, 32>, 32, bfloat16_t, layout::RowMajor,
   using LayoutA = layout::RowMajor;
   using FragmentA = Array<bfloat16_t, 8>;
 
+  using FragmentAT = Array<bfloat16_t, 16>;
+
   using ElementB = bfloat16_t;
   using LayoutB = layout::ColumnMajor;
   using FragmentB = Array<bfloat16_t, 8>;
@@ -124,7 +126,7 @@ struct SparseMmaV2<gemm::GemmShape<16, 8, 32>, 32, bfloat16_t, layout::RowMajor,
   static int const kMaxID2 = 2;
 
   CUTLASS_DEVICE
-  void transpose(bfloat16_t (&da)[16], FragmentB const &i) const{
+  void transpose(FragmentAT &da, FragmentB const &i) const{
     // Explicitly transpose the matrix with warp shuffle
     __nv_bfloat16 tmp_share;
     uint32_t tmp_share_b;
@@ -175,7 +177,7 @@ struct SparseMmaV2<gemm::GemmShape<16, 8, 32>, 32, bfloat16_t, layout::RowMajor,
   }
 
   CUTLASS_HOST_DEVICE
-  void todense(FragmentA const&a, bfloat16_t (&da)[16], FragmentB const &i, uint32_t const &E, int const id2) const {
+  void todense(FragmentA const&a, FragmentAT &da, FragmentB const &i, uint32_t const &E, int const id2) const {
     uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
     uint32_t const *I = reinterpret_cast<uint32_t const *>(&i);
 
@@ -243,17 +245,19 @@ struct SparseMmaV2<gemm::GemmShape<16, 8, 32>, 32, bfloat16_t, layout::RowMajor,
     } else {
     assert(0);
     }
+
+    bfloat16_t *da_t = reinterpret_cast<bfloat16_t *>(&da);
     #pragma unroll
     for (int i=0; i < 16; i++){
-      da[i] = bfloat16_t(dense[i]);
+      da_t[i] = bfloat16_t(dense[i]);
     }
   }
 
   CUTLASS_HOST_DEVICE
-  void operator()(FragmentC &d1, FragmentC &d2, bfloat16_t const (&a)[16], FragmentB const &b,
+  void operator()(FragmentC &d1, FragmentC &d2, FragmentAT const &a, FragmentB const &b,
                   FragmentC const &c1, FragmentC const &c2, int const id2) const {
 
-    uint32_t const *A = reinterpret_cast<uint32_t const *>(a);
+    uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
     uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
     float const *C1 = reinterpret_cast<float const *>(&c1);
     float const *C2 = reinterpret_cast<float const *>(&c2);
@@ -306,6 +310,7 @@ struct SparseMmaV2<gemm::GemmShape<16, 8, 32>, 32, half_t, layout::RowMajor,
   using ElementA = half_t;
   using LayoutA = layout::RowMajor;
   using FragmentA = Array<half_t, 8>;
+  using FragmentAT = Array<half_t, 16>;
 
   using ElementB = half_t;
   using LayoutB = layout::ColumnMajor;
@@ -328,7 +333,7 @@ struct SparseMmaV2<gemm::GemmShape<16, 8, 32>, 32, half_t, layout::RowMajor,
 
 
   CUTLASS_DEVICE
-  void transpose(half_t (&da)[16], FragmentB const &i) const{
+  void transpose(FragmentAT &da, FragmentB const &i) const{
     // Transpose the matrix with wmma
     uint32_t *A = reinterpret_cast<uint32_t *>(&da);
     uint32_t const *I = reinterpret_cast<uint32_t const *>(&i);
@@ -372,7 +377,7 @@ struct SparseMmaV2<gemm::GemmShape<16, 8, 32>, 32, half_t, layout::RowMajor,
   }
 
   CUTLASS_HOST_DEVICE
-  void todense(FragmentA const&a, half_t (&da)[16], FragmentB const &i, uint32_t const &E, int const id2) const {
+  void todense(FragmentA const&a, FragmentAT &da, FragmentB const &i, uint32_t const &E, int const id2) const {
     uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
     uint32_t *D = reinterpret_cast<uint32_t *>(&da);
     uint32_t const *I = reinterpret_cast<uint32_t const *>(&i);
@@ -432,10 +437,10 @@ struct SparseMmaV2<gemm::GemmShape<16, 8, 32>, 32, half_t, layout::RowMajor,
     }
   }
   CUTLASS_HOST_DEVICE
-  void operator()(FragmentC &d1, FragmentC &d2, half_t const (&a)[16], FragmentB const &b,
+  void operator()(FragmentC &d1, FragmentC &d2, FragmentAT const &a, FragmentB const &b,
                   FragmentC const &c1, FragmentC const &c2, int const id2) const {
 
-    uint32_t const *A = reinterpret_cast<uint32_t const *>(a);
+    uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
     uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
     float const *C1 = reinterpret_cast<float const *>(&c1);
     float const *C2 = reinterpret_cast<float const *>(&c2);

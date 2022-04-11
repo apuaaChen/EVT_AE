@@ -213,7 +213,7 @@ public:
       for (int m = 0; m < MmaIterations::kRow / 2; ++m) {
         CUTLASS_PRAGMA_UNROLL
         for (int k = 0; k < 2; k ++){
-          mma.transpose(ptr_A[2 * m + k], ptr_I[0]);
+          // mma.transpose(ptr_A[2 * m + k], ptr_I[0]);
 
           CUTLASS_PRAGMA_UNROLL
           for (int n = 0; n < MmaIterations::kColumn; ++n){
@@ -278,6 +278,7 @@ public:
       CUTLASS_PRAGMA_UNROLL
       for (int k=0; k < 2; k ++){
         mma.todense(ptr_A[2 * m + k], ptr_dest_A[2 * m + k], ptr_I[0], ptr_E[m], k);
+        mma.transpose(ptr_dest_A[2 * m + k], ptr_I[0]);
       }
     }
 

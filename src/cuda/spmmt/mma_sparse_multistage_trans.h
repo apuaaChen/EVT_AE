@@ -230,11 +230,11 @@ public:
 
     // Add per-warp offsets in units of warp-level tiles
     this->warp_tile_iterator_A_.add_tile_offset(
-        {Base::kWarpGemmIterations * warp_idx_k, warp_idx_m * 2});
+        {Base::kWarpGemmIterations * warp_idx_k, warp_idx_m});
     this->warp_tile_iterator_B_.add_tile_offset(
         {Base::kWarpGemmIterations * warp_idx_k, warp_idx_n});
     this->warp_tile_iterator_E_.add_tile_offset(
-        {Base::kWarpGemmIterations * warp_idx_k, warp_idx_m * 2});
+        {Base::kWarpGemmIterations * warp_idx_k, warp_idx_m});
   }
 
   CUTLASS_DEVICE

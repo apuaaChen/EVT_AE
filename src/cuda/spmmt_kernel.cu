@@ -19,7 +19,7 @@ using WarpShape_bf16 = cutlass::gemm::GemmShape<64, 64, 64>;
 using InstructionShape_bf16 = cutlass::gemm::GemmShape<16, 8, 32>;
 
 using ThreadblockShape_f16 = cutlass::gemm::GemmShape<128, 128, 64>;
-using WarpShape_f16 = cutlass::gemm::GemmShape<64, 64, 64>;
+using WarpShape_f16 = cutlass::gemm::GemmShape<32, 128, 64>;
 using InstructionShape_f16 = cutlass::gemm::GemmShape<16, 8, 32>;
 
 // Define MMA & Epilogue

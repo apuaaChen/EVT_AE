@@ -69,7 +69,7 @@ class SparseMmaTensorOpMetaTileIteratorTrans {
     static int const kElementsPerAccess = 128 / sizeof_bits<Element>::value;
 
     // Determine number of elements along outer dimension per individual LDSM op
-    static int const kLdsmOpOuter = InstructionShape::kColumn;
+    static int const kLdsmOpOuter = Shape::kColumn;
     static int const kLdsmOpInner = 8 * kElementsPerAccess / kLdsmOpOuter;
 
     static_assert(!(Shape::kColumn % kLdsmOpOuter),
@@ -82,7 +82,7 @@ class SparseMmaTensorOpMetaTileIteratorTrans {
 
     /// Shape of one individual LDSM instruction
     static int const LdsmShapeColumn =
-        InstructionShape::kColumn / kLdsmOpOuter;
+        Shape::kColumn / kLdsmOpOuter;
     static int const LdsmShapeRow =
         ((4 / LdsmShapeColumn * kLdsmOpInner) > Shape::kRow)
             ? (Shape::kRow / kLdsmOpInner)
@@ -97,7 +97,7 @@ class SparseMmaTensorOpMetaTileIteratorTrans {
 
     /// Number of groups for each tile
     static int const kGroupsPerTile =
-        Shape::kColumn / InstructionShape::kColumn;
+        Shape::kColumn / Shape::kColumn;
   };
 
  private:
@@ -115,7 +115,7 @@ class SparseMmaTensorOpMetaTileIteratorTrans {
 
   /// Fragment object holding a thread's part of a tile
   using Fragment =
-      Array<Element, Shape::kRow * InstructionShape::kColumn / kThreads>;
+      Array<Element, Shape::kRow * Shape::kColumn / kThreads>;
 
  private:
 
@@ -171,8 +171,8 @@ class SparseMmaTensorOpMetaTileIteratorTrans {
   SparseMmaTensorOpMetaTileIteratorTrans &add_tile_offset(
       TensorCoord const &tile_offset) {
     int offset = tile_offset.row() * Shape::kRow +
-                 tile_offset.column() * InstructionShape::kColumn * stride_ *
-                     Policy::kElementsPerAccess / 2;
+                 tile_offset.column() * InstructionShape::kColumn * Policy::LdsmShape::kContiguous * stride_ *
+                     Policy::kElementsPerAccess;
 
     add_pointer_offset(offset);
     return *this;
@@ -299,7 +299,7 @@ class SparseMmaTensorOpMetaTileIteratorTrans {
       Index byte_offset) const {
     Index pointer_offset = 
       tile_offset.contiguous() * Shape::kRow / Layout::kElementsPerAccess + 
-      tile_offset.strided() * InstructionShape::kColumn * stride_;
+      tile_offset.strided() * Shape::kColumn * stride_;
 
     byte_offset += sizeof(AccessType) * pointer_offset;
 

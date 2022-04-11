@@ -1,3 +1,4 @@
+#include "helper.h"
 ////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
@@ -140,8 +141,10 @@ class MmaTensorOpMultiplicandTileIteratorTrans<
     //     layout::PitchLinearShape<1, Shape::kStrided / kLdsmOpInner /
     //                                     LdsmShape::kStrided>;
     // TODO: formalize this part of code
-    using LdsmIterations =
-        layout::PitchLinearShape<2, 2>;
+    // using LdsmIterations =
+    //     layout::PitchLinearShape<2, 2>;
+    using LdsmIterations = 
+        layout::PitchLinearShape<Shape::kContiguous/LdsmShapeContiguous/kLdsmOpOuter, Shape::kStrided / kLdsmOpInner / LdsmShape::kStrided / 2>;
 
     ///
     static int const kGroupsPerTile = Layout::TileShape::kContiguous /
@@ -370,7 +373,7 @@ class MmaTensorOpMultiplicandTileIteratorTrans<
 
     byte_offset_ ^= k_groups_delta * sizeof_bits<Element>::value *
                     Layout::kElementsPerAccess *
-                    Policy::LdsmShape::kContiguous / 8;
+                    Policy::LdsmShape::kContiguous / 8 * Policy::LdsmIterations::kContiguous;
     pointer_ +=
         tile_offset.strided() * stride_ * Shape::kStrided / Layout::kFactor +
         whole_tiles * stride_ / sections_;

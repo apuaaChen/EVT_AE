@@ -161,7 +161,7 @@ public:
      ElementE, LayoutE,
      MatrixShape<Policy::Operator::Shape::kM,
                  Policy::Operator::Shape::kK / kSparse / kElementsPerElementE /
-                     kInterleaved * 2>,
+                     kInterleaved>,
      Policy::OpDelta::kRow, kThreadCount, kPartitionsK>;
 
  /// Storage for E tile

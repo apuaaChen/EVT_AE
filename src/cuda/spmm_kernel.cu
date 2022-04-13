@@ -50,7 +50,7 @@ using Mma_bf16_ntt = typename cutlass::gemm::threadblock::DefaultSparseMma<
     cutlass::bfloat16_t, cutlass::layout::RowMajor, 128 / cutlass::sizeof_bits<cutlass::bfloat16_t>::value,
     cutlass::bfloat16_t, cutlass::layout::ColumnMajor, 128 / cutlass::sizeof_bits<cutlass::bfloat16_t>::value,
     float, cutlass::layout::RowMajor, cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80,
-    ThreadblockShape_bf16, WarpShape_bf16, InstructionShape_bf16, NumStages, cutlass::arch::OpMultiplyAdd>::ThreadblockMma;
+    ThreadblockShape_bf16, cutlass::gemm::GemmShape<32, 128, 64>, InstructionShape_bf16, NumStages, cutlass::arch::OpMultiplyAdd>::ThreadblockMma;
 
 // Epilogue
 
@@ -435,39 +435,88 @@ __global__ void cutlassSpmmKernel_bf16_test(
     }
     */
 
+    threadblock_tile_offset = threadblock_swizzle.get_tile_offset(grid_tiled_shape);
+
+    // (blockIdx.x * TileM, blockIdx.y * TileN)
+    cutlass::MatrixCoord threadblock_offset(
+        threadblock_tile_offset.m() * _Mma::Shape::kM,
+        threadblock_tile_offset.n() * _Mma::Shape::kN
+    );
+
+    // _Epilogue::Shape : the threadblock shape <128, 128, 64>, accessed with kM, kN, kK
+    // Each step only store 2 elements
+    constexpr const int ShmemStoreElementsPerAccess = 2;
+    using ShmemStoreAccessType = float;
+    using FragmentAccessType = float2;
+
+    // The shared memory skew to avoid bank conflict
+    constexpr int Skew = 8;
+    constexpr int kShmStride = _Epilogue::Shape::kM + Skew;
+
+    // Pointer to fragments
+    FragmentAccessType *frag_ptr = reinterpret_cast<FragmentAccessType *>(&accumulators);
+
+    // TODO: this should be feed with the template
+    using WarpShape = cutlass::gemm::GemmShape<32, 128, 64>;
+
+    using WarpCount = cutlass::gemm::GemmShape<_Epilogue::Shape::kM / WarpShape::kM,
+                                _Epilogue::Shape::kN / WarpShape::kN,
+                                _Epilogue::Shape::kK / WarpShape::kK>;
+    // The shape of each fragment
+    using FragmentShape = cutlass::MatrixShape<8, 8>;
+
+    using ShmStoreIterations = cutlass::MatrixShape<WarpShape::kM/FragmentShape::kRow,
+                                                    WarpShape::kN/FragmentShape::kColumn>;
+
+
+
+
     // transpose with pingpong buffer
     int col_quad_idx = lane_idx % 8;
     int row_quad_idx = lane_idx / 8;
     int col_major = col_quad_idx % 4;
     int col_minor = col_quad_idx / 4;
     int quad_idx = lane_idx / 4;
-    int warp_row_idx = warp_idx % 2;
-    int warp_col_idx = warp_idx / 2;
-    int idx_in_quad = lane_idx % 4;
+    // int sub_warp_idx = lane_idx / 16;
+    // int sub_lane_idx = lane_idx % 16;
 
-    int sub_warp_idx = lane_idx / 16;
-    int sub_lane_idx = lane_idx % 16;
+    int warp_row_idx = warp_idx % WarpCount::kM;
+    int warp_col_idx = warp_idx / WarpCount::kM;
 
-    constexpr int kShmStride = 64 + 4;
+    int shared_store_offset = (warp_col_idx * FragmentShape::kColumn + col_major * 2 + col_minor) * kShmStride + warp_row_idx * WarpShape::kM + row_quad_idx * ShmemStoreElementsPerAccess;
 
-    float2 *frag_ptr = reinterpret_cast<float2 *>(&accumulators);
+    ShmemStoreAccessType *shared_store_ptr = reinterpret_cast<ShmemStoreAccessType *>(SharedStorageBase) + shared_store_offset / ShmemStoreElementsPerAccess;
 
-    int shared_store_offset = (warp_col_idx * 8 + col_major * 2 + col_minor) * kShmStride + warp_row_idx * 32 + row_quad_idx;
+    constexpr const int ShmemLoadElementsPerAccess = 8;
+    // <16, 4, 2>
+    using ThreadMapLoad = cutlass::gemm::GemmShape<_Epilogue::Shape::kM/ShmemLoadElementsPerAccess,
+                                                   WarpCount::kM * 32 / (_Epilogue::Shape::kM/ShmemLoadElementsPerAccess),
+                                                   WarpCount::kN>;
 
-    int shared_load_offset = (warp_row_idx * 4 + warp_col_idx * 8 + sub_warp_idx) * kShmStride / 4 + sub_lane_idx;
+    using ShmLoadIterations = cutlass::MatrixShape<1, WarpCount::kN * FragmentShape::kColumn / ThreadMapLoad::kN / ThreadMapLoad::kK>;
 
-    float *shared_store_ptr = reinterpret_cast<float *>(SharedStorageBase) + shared_store_offset;
-    float4 *shared_load_ptr = reinterpret_cast<float4 *>(SharedStorageBase) + shared_load_offset;
+    int group_lane_idx = thread_idx % (ThreadMapLoad::kM * ThreadMapLoad::kN);
+    int group_idx = thread_idx / (ThreadMapLoad::kM * ThreadMapLoad::kN);
+    int sub_warp_idx = group_lane_idx / ThreadMapLoad::kM;
+    int sub_lane_idx = group_lane_idx % ThreadMapLoad::kM;
 
-    constexpr int buffer_stride_float = 16 * kShmStride;
-    constexpr int buffer_stride_float4 = 4 * kShmStride;
+    int shared_load_offset = (sub_warp_idx + group_idx * FragmentShape::kColumn) * kShmStride + sub_lane_idx * ShmemLoadElementsPerAccess;
+    int global_offset = (sub_warp_idx + group_idx * WarpShape::kN) * problem_size.m() + sub_lane_idx * ShmemLoadElementsPerAccess;
+
+    
+    float4 *shared_load_ptr = reinterpret_cast<float4 *>(SharedStorageBase) + shared_load_offset / ShmemLoadElementsPerAccess;
+
+    constexpr int buffer_stride_float = FragmentShape::kColumn * WarpCount::kN * kShmStride / ShmemStoreElementsPerAccess;
+    constexpr int buffer_stride_float4 = buffer_stride_float / 4;
 
 
-    int global_offset = (warp_row_idx * 4 + warp_col_idx * 64 + sub_warp_idx) * problem_size.m() / 8 + sub_lane_idx;
-    float4 *global_ptr = reinterpret_cast<float4 *>(ptr_D + 128 * blockIdx.y * problem_size.m() + 128 * blockIdx.x) + global_offset;
+    // int global_offset = (warp_row_idx * 2 + warp_col_idx * 64 + sub_warp_idx) * problem_size.m() / 8 + sub_lane_idx;
+    float4 *global_ptr = reinterpret_cast<float4 *>(ptr_D + threadblock_offset.column() * problem_size.m() + threadblock_offset.row()) + global_offset / ShmemLoadElementsPerAccess;
 
-    __nv_bfloat16 tmp_share;
-    __nv_bfloat16 res[2];
+    using ElementOutput = typename _Epilogue::OutputOp::ElementOutput;
+
+    ElementOutput tmp_share[1];
+    ElementOutput res[2];
 
     float* res_vec = reinterpret_cast<float* >(res);
 
@@ -477,65 +526,69 @@ __global__ void cutlassSpmmKernel_bf16_test(
     float2 *frag_ptr_t = frag_ptr;
     float * shared_store_ptr_t = shared_store_ptr;
     #pragma unroll
-    for (int row=0; row < 8; row ++){
+    for (int row=0; row < ShmStoreIterations::kRow; row ++){
+        // Transpose the fragment with shuffle & convert to output type
         if (quad_idx % 2 == 0){
-            tmp_share = __float2bfloat16((*(frag_ptr_t)).y);
+            *tmp_share = ElementOutput((*(frag_ptr_t)).y);
         } else {
-            tmp_share = __float2bfloat16((*(frag_ptr_t)).x);
+            *tmp_share = ElementOutput((*(frag_ptr_t)).x);
         }
-        tmp_share = __shfl_xor_sync(0xffffffff, tmp_share, 4);
+        *reinterpret_cast<uint16_t *>(tmp_share) = __shfl_xor_sync(0xffffffff, *reinterpret_cast<uint16_t *>(tmp_share), 4);
         if (quad_idx % 2 == 0){
-            res[0] = __float2bfloat16((*(frag_ptr_t)).x);
-            res[1] = tmp_share;
+            res[0] = ElementOutput((*(frag_ptr_t)).x);
+            res[1] = *tmp_share;
         } else {
-            res[0] = tmp_share;
-            res[1] = __float2bfloat16((*(frag_ptr_t)).y);
+            res[0] = *tmp_share;
+            res[1] = ElementOutput((*(frag_ptr_t)).y);
         }
+        // Store the results to shared memory
         *(shared_store_ptr_t) = *(res_vec);
         frag_ptr_t += 1;
-        shared_store_ptr_t += 4;
+        shared_store_ptr_t += FragmentShape::kRow / ShmemStoreElementsPerAccess;
     }
 
-    frag_ptr += 8;
+    frag_ptr += ShmStoreIterations::kRow;
 
     /*
      * Main loop
      */
 
     #pragma unroll
-    for (int col=0; col < 7; col ++){
+    for (int col=0; col < ShmStoreIterations::kColumn - 1; col ++){
         // To this point, the results have been written into the shared memory
         // Then we load them back to registers
         frag_ptr_t = frag_ptr;
         shared_store_ptr_t = shared_store_ptr + ((col + 1) % 2) * buffer_stride_float;
         #pragma unroll
-        for (int row=0; row < 8; row ++){
+        for (int row=0; row < ShmStoreIterations::kRow; row ++){
             if (quad_idx % 2 == 0){
-                tmp_share = __float2bfloat16((*(frag_ptr_t)).y);
+                *tmp_share = ElementOutput((*(frag_ptr_t)).y);
             } else {
-                tmp_share = __float2bfloat16((*(frag_ptr_t)).x);
+                *tmp_share = ElementOutput((*(frag_ptr_t)).x);
             }
-            tmp_share = __shfl_xor_sync(0xffffffff, tmp_share, 4);
+            *reinterpret_cast<uint16_t *>(tmp_share) = __shfl_xor_sync(0xffffffff, *reinterpret_cast<uint16_t *>(tmp_share), 4);
             if (quad_idx % 2 == 0){
-                res[0] = __float2bfloat16((*(frag_ptr_t)).x);
-                res[1] = tmp_share;
+                res[0] = ElementOutput((*(frag_ptr_t)).x);
+                res[1] = *tmp_share;
             } else {
-                res[0] = tmp_share;
-                res[1] = __float2bfloat16((*(frag_ptr_t)).y);
+                res[0] = *tmp_share;
+                res[1] = ElementOutput((*(frag_ptr_t)).y);
             }
             *(shared_store_ptr_t) = *(res_vec);
             frag_ptr_t += 1;
-            shared_store_ptr_t += 4;
+            shared_store_ptr_t += FragmentShape::kRow / ShmemStoreElementsPerAccess;
         }
         if (col == 0){
             __syncthreads();
         }
+        
+        #pragma unroll
+        for (int t=0; t < ShmLoadIterations::kColumn; t ++){
+            *(global_ptr + t * problem_size.m() * ThreadMapLoad::kN / ShmemLoadElementsPerAccess) = *(shared_load_ptr + (col % 2) * buffer_stride_float4 + t * kShmStride * ThreadMapLoad::kN / ShmemLoadElementsPerAccess);
+        }
 
-        *(global_ptr) = *(shared_load_ptr + (col % 2) * buffer_stride_float4);
-
-        *(global_ptr + problem_size.m() / 4) = *(shared_load_ptr + (col % 2) * buffer_stride_float4 + kShmStride / 2);
         global_ptr += problem_size.m();
-        frag_ptr += 8;
+        frag_ptr += ShmStoreIterations::kRow;
         
         __syncthreads();
     }
@@ -544,20 +597,16 @@ __global__ void cutlassSpmmKernel_bf16_test(
      * epilogue
      */ 
 
-    *(global_ptr) = *(shared_load_ptr + buffer_stride_float4);
-    *(global_ptr + problem_size.m() / 4) = *(shared_load_ptr + kShmStride / 2 + buffer_stride_float4);
+    #pragma unroll
+    for (int t=0; t < ShmLoadIterations::kColumn; t ++){
+        *(global_ptr + t * problem_size.m() * ThreadMapLoad::kN / ShmemLoadElementsPerAccess) = *(shared_load_ptr + buffer_stride_float4 + t * kShmStride * ThreadMapLoad::kN / ShmemLoadElementsPerAccess);
+    }
 
 
 
     // typename _Epilogue::OutputOp output_op(output_op_);
 
-    // threadblock_tile_offset = threadblock_swizzle.get_tile_offset(grid_tiled_shape);
-
-    // // (blockIdx.x * TileM, blockIdx.y * TileN)
-    // cutlass::MatrixCoord threadblock_offset(
-    //     threadblock_tile_offset.m() * _Mma::Shape::kM,
-    //     threadblock_tile_offset.n() * _Mma::Shape::kN
-    // );
+    
 
     // int block_idx = threadblock_tile_offset.m() + threadblock_tile_offset.n() * grid_tiled_shape.m();
     

@@ -63,10 +63,6 @@ using Epilogue_bf16_ntn = typename cutlass::epilogue::threadblock::DefaultEpilog
     ThreadblockShape_bf16, typename Mma_bf16_ntn::Operator, ThreadblockShape_bf16::kK / WarpShape_bf16::kK, EpilogueOp_bf16,
     EpilogueOp_bf16::kCount>::Epilogue;
 
-using Epilogue_bf16_ntt_ = typename cutlass::epilogue::threadblock::DefaultEpilogueTensorOpV2<
-    ThreadblockShape_bf16, typename Mma_bf16_ntt::Operator, ThreadblockShape_bf16::kK / WarpShape_bf16::kK, EpilogueOp_bf16,
-    EpilogueOp_bf16::kCount>::Epilogue;
-
 using Epilogue_bf16_ntt = typename cutlass::epilogue::threadblock::DefaultTransposeEpilogue<
     ThreadblockShape_bf16, WarpShape_bf16, EpilogueOp_bf16, Mma_bf16_ntt>::Epilogue;
 
@@ -225,153 +221,6 @@ __device__ void cutlassSpmmKernel_bf16_(
     epilogue(output_op, iterator_D, accumulators, iterator_D);
 }
 
-
-template<typename _Mma, typename _SharedStorage, typename _Epilogue>
-__global__ void cutlassSpmmKernel_bf16_test(
-    cutlass::gemm::GemmCoord problem_size,
-    cutlass::gemm::GemmCoord grid_tiled_shape,
-    typename _Mma::IteratorA::Params params_A,
-    cutlass::bfloat16_t* __restrict__ ptr_A,
-    typename _Mma::IteratorB::Params params_B,
-    cutlass::bfloat16_t* __restrict__ ptr_B,
-    typename _Epilogue::OutputTileIterator::Params params_D,
-    cutlass::bfloat16_t* __restrict__ ptr_D,
-    typename _Mma::IteratorE::Params params_E,
-    typename _Mma::ElementE* __restrict__ ptr_E,
-    typename _Epilogue::OutputOp::Params output_op_,
-    int gemm_k_size)
-{
-    extern __shared__ int SharedStorageBase[];
-
-    _SharedStorage& shared_storage = *reinterpret_cast<_SharedStorage *>(SharedStorageBase);
-
-    ThreadblockSwizzle threadblock_swizzle;
-
-    cutlass::gemm::GemmCoord threadblock_tile_offset=threadblock_swizzle.get_tile_offset(grid_tiled_shape);
-
-    // Early exit if CTA is out of range
-    if (grid_tiled_shape.m() <= threadblock_tile_offset.m() ||
-        grid_tiled_shape.n() <= threadblock_tile_offset.n())
-    {
-        return;
-    }
-
-    // Compute initial location in logical coordinates
-    cutlass::MatrixCoord tb_offset_A{
-        threadblock_tile_offset.m() * _Mma::Shape::kM,
-        threadblock_tile_offset.k() * gemm_k_size / _Mma::kSparse
-    };
-
-    cutlass::MatrixCoord tb_offset_B{
-        threadblock_tile_offset.k() * gemm_k_size,
-        threadblock_tile_offset.n() * _Mma::Shape::kN
-    };
-
-    cutlass::MatrixCoord tb_offset_E{
-        threadblock_tile_offset.m() * _Mma::Shape::kM,
-        threadblock_tile_offset.k() * gemm_k_size / _Mma::kSparse
-    };
-
-    // Problem size
-    int problem_size_k = min(problem_size.k(), (threadblock_tile_offset.k() + 1) * gemm_k_size);
-
-    int gemm_k_iterations = (problem_size_k - tb_offset_B.row() + _Mma::Shape::kK - 1) / _Mma::Shape::kK;
-
-    // Compute position within threadblock
-    int thread_idx = threadIdx.x;
-
-    // Construct iterators to A, B, and E operands
-    typename _Mma::IteratorA iterator_A(
-        params_A,
-        //ref_A.data(),
-        ptr_A,
-        {problem_size.m(), problem_size_k / _Mma::kSparse},
-        thread_idx,
-        tb_offset_A
-    );
-
-    typename _Mma::IteratorB iterator_B(
-        params_B,
-        //ref_B.data(),
-        ptr_B,
-        {problem_size_k, problem_size.n()},
-        thread_idx,
-        tb_offset_B
-    );
-
-    typename _Mma::IteratorE iterator_E(
-        params_E,
-        // ref_E.data(),
-        ptr_E,
-        {problem_size.m(),
-        problem_size_k / _Mma::kSparse / _Mma::kElementsPerElementE},
-        thread_idx,
-        tb_offset_E
-    );
-
-    // Broadcast the warp_id computed by lane 0 to ensure dependent code
-    // is compuled as warp-uniform
-    int warp_idx = __shfl_sync(0xffffffff, threadIdx.x / 32, 0);
-    int lane_idx = threadIdx.x % 32;
-
-    //
-    //  Main loop
-    //
-
-    // Construct thread-scoped matrix multiply
-    _Mma mma(shared_storage.main_loop, thread_idx, warp_idx, lane_idx);
-
-    typename _Mma::FragmentC accumulators;
-
-    accumulators.clear();
-
-    if (gemm_k_iterations > 0){
-        mma(gemm_k_iterations, accumulators, iterator_A, iterator_B, iterator_E, accumulators);
-    }
-
-    //
-    //  Epilogue
-    //
-
-    threadblock_tile_offset = threadblock_swizzle.get_tile_offset(grid_tiled_shape);
-
-    // (blockIdx.x * TileM, blockIdx.y * TileN)
-    cutlass::MatrixCoord threadblock_offset(
-        threadblock_tile_offset.m() * _Mma::Shape::kM,
-        threadblock_tile_offset.n() * _Mma::Shape::kN
-    );
-
-    typename _Epilogue::OutputTileIterator iterator_D(
-        params_D,
-        ptr_D,
-        problem_size.mn(),
-        thread_idx,
-        threadblock_offset
-    );
-
-    // ---------------------------------------
-
-    _Epilogue epilogue(
-        shared_storage.epilogue, 
-        thread_idx, 
-        warp_idx, 
-        lane_idx
-    );
-
-    epilogue(iterator_D, accumulators, iterator_D);
-
-    // typename _Epilogue::OutputOp output_op(output_op_);
-
-    
-    // _Epilogue epilogue(
-    //     shared_storage.epilogue,
-    //     thread_idx,
-    //     warp_idx,
-    //     lane_idx
-    // );
-
-    // epilogue(output_op, iterator_D, accumulators, iterator_D);
-}
 
 template<typename _Mma, typename _SharedStorage, typename _Epilogue>
 __global__ void cutlassSpmmKernel_bf16(
@@ -539,12 +388,12 @@ torch::Tensor spmmv2_bf16_ntt_cuda(
 
     int smem_size = int(sizeof(SharedStorage_bf16_ntt));
 
-    cudaFuncSetAttribute(cutlassSpmmKernel_bf16_test<Mma_bf16_ntt, SharedStorage_bf16_ntt, Epilogue_bf16_ntt>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size);
-    cudaFuncSetAttribute(cutlassSpmmKernel_bf16_test<Mma_bf16_ntt, SharedStorage_bf16_ntt, Epilogue_bf16_ntt>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
+    cudaFuncSetAttribute(cutlassSpmmKernel_bf16<Mma_bf16_ntt, SharedStorage_bf16_ntt, Epilogue_bf16_ntt>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size);
+    cudaFuncSetAttribute(cutlassSpmmKernel_bf16<Mma_bf16_ntt, SharedStorage_bf16_ntt, Epilogue_bf16_ntt>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
 
     int gemm_k_size = ((problem_size.k() + Mma_bf16_ntt::Shape::kK - 1) / Mma_bf16_ntt::Shape::kK) * Mma_bf16_ntt::Shape::kK;
 
-    cutlassSpmmKernel_bf16_test<Mma_bf16_ntt, SharedStorage_bf16_ntt, Epilogue_bf16_ntt><<<grid, block, smem_size>>>(
+    cutlassSpmmKernel_bf16<Mma_bf16_ntt, SharedStorage_bf16_ntt, Epilogue_bf16_ntt><<<grid, block, smem_size>>>(
         problem_size, grid_tiled_shape, 
         layout_a, (cutlass::bfloat16_t*)tensor_a.data_ptr(),
         layout_b, (cutlass::bfloat16_t*)tensor_b.data_ptr(),

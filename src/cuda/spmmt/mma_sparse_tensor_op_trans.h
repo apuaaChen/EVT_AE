@@ -206,7 +206,7 @@ public:
 
     MmaOperandAT *ptr_A = reinterpret_cast<MmaOperandAT *>(&A);
     MmaOperandB const *ptr_B = reinterpret_cast<MmaOperandB const *>(&B);
-    MmaOperandB const *ptr_I = reinterpret_cast<MmaOperandB const *>(&I);
+    // MmaOperandB const *ptr_I = reinterpret_cast<MmaOperandB const *>(&I);
     MmaOperandC *ptr_D = reinterpret_cast<MmaOperandC *>(&D);
 
       CUTLASS_PRAGMA_UNROLL

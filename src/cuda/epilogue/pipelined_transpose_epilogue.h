@@ -224,6 +224,7 @@ public:
     /// Streams the results to global memory
     CUTLASS_DEVICE
     void operator()(
+        OutputOp const &output_op,
         OutputTileIterator iterator_D,
         typename Mma::FragmentC &accumulators,
         OutputTileIterator iterator_D_

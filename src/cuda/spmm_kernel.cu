@@ -51,7 +51,7 @@ using Mma_bf16_ntt = typename cutlass::gemm::threadblock::DefaultSparseMma<
     cutlass::bfloat16_t, cutlass::layout::RowMajor, 128 / cutlass::sizeof_bits<cutlass::bfloat16_t>::value,
     cutlass::bfloat16_t, cutlass::layout::ColumnMajor, 128 / cutlass::sizeof_bits<cutlass::bfloat16_t>::value,
     float, cutlass::layout::RowMajor, cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80,
-    ThreadblockShape_bf16, cutlass::gemm::GemmShape<32, 128, 64>, InstructionShape_bf16, NumStages, cutlass::arch::OpMultiplyAdd>::ThreadblockMma;
+    ThreadblockShape_bf16, WarpShape_bf16, InstructionShape_bf16, NumStages, cutlass::arch::OpMultiplyAdd>::ThreadblockMma;
 
 // Epilogue
 
@@ -63,12 +63,12 @@ using Epilogue_bf16_ntn = typename cutlass::epilogue::threadblock::DefaultEpilog
     ThreadblockShape_bf16, typename Mma_bf16_ntn::Operator, ThreadblockShape_bf16::kK / WarpShape_bf16::kK, EpilogueOp_bf16,
     EpilogueOp_bf16::kCount>::Epilogue;
 
-using Epilogue_bf16_ntt = typename cutlass::epilogue::threadblock::DefaultEpilogueTensorOpV2<
+using Epilogue_bf16_ntt_ = typename cutlass::epilogue::threadblock::DefaultEpilogueTensorOpV2<
     ThreadblockShape_bf16, typename Mma_bf16_ntt::Operator, ThreadblockShape_bf16::kK / WarpShape_bf16::kK, EpilogueOp_bf16,
     EpilogueOp_bf16::kCount>::Epilogue;
 
-using TransposeEpilogue = typename cutlass::epilogue::threadblock::PipelinedTransposeEpilogue<
-    ThreadblockShape_bf16, cutlass::gemm::GemmShape<32, 128, 64>, EpilogueOp_bf16, Mma_bf16_ntt>;
+using Epilogue_bf16_ntt = typename cutlass::epilogue::threadblock::DefaultTransposeEpilogue<
+    ThreadblockShape_bf16, WarpShape_bf16, EpilogueOp_bf16, Mma_bf16_ntt>::Epilogue;
 
 // Shared Storage
 
@@ -341,23 +341,26 @@ __global__ void cutlassSpmmKernel_bf16_test(
         threadblock_tile_offset.n() * _Mma::Shape::kN
     );
 
+    typename _Epilogue::OutputTileIterator iterator_D(
+        params_D,
+        ptr_D,
+        problem_size.mn(),
+        thread_idx,
+        threadblock_offset
+    );
+
     // ---------------------------------------
 
-    TransposeEpilogue epilogue(SharedStorageBase, thread_idx, warp_idx, lane_idx, threadblock_offset, ptr_D, problem_size);
+    _Epilogue epilogue(
+        shared_storage.epilogue, 
+        thread_idx, 
+        warp_idx, 
+        lane_idx
+    );
 
-    epilogue(accumulators, problem_size);
+    epilogue(iterator_D, accumulators, iterator_D);
 
-    typename _Epilogue::OutputOp output_op(output_op_);
-
-    threadblock_tile_offset = threadblock_swizzle.get_tile_offset(grid_tiled_shape);
-
-    // typename _Epilogue::OutputTileIterator iterator_D(
-    //     params_D,
-    //     ptr_D,
-    //     problem_size.mn(),
-    //     thread_idx,
-    //     threadblock_offset
-    // );
+    // typename _Epilogue::OutputOp output_op(output_op_);
 
     
     // _Epilogue epilogue(

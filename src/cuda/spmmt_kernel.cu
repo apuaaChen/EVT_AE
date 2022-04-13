@@ -68,10 +68,18 @@ using Epilogue_f16_ntn = typename cutlass::epilogue::threadblock::DefaultEpilogu
 using Epilogue_f16_ntt = typename cutlass::epilogue::threadblock::DefaultTransposeEpilogue<
     ThreadblockShape_f16, WarpShape_f16, EpilogueOp_f16, Mma_f16_ntn>::Epilogue;
 
+using Epilogue_bf16_ntt = typename cutlass::epilogue::threadblock::DefaultTransposeEpilogue<
+    ThreadblockShape_bf16, WarpShape_bf16, EpilogueOp_bf16, Mma_bf16_ntn>::Epilogue;
+
 // Shared Storage
 union SharedStorage_bf16_ntn {
     typename Mma_bf16_ntn::SharedStorage main_loop;
     typename Epilogue_bf16_ntn::SharedStorage epilogue;
+};
+
+union SharedStorage_bf16_ntt {
+    typename Mma_bf16_ntn::SharedStorage main_loop;
+    typename Epilogue_bf16_ntt::SharedStorage epilogue;
 };
 
 union SharedStorage_f16_ntn {
@@ -274,6 +282,69 @@ torch::Tensor spmmt_bf16_ntn_cuda(
     int gemm_k_size = ((problem_size.k() + Mma_bf16_ntn::Shape::kK - 1) / Mma_bf16_ntn::Shape::kK) * Mma_bf16_ntn::Shape::kK;
 
     cutlassSpmmTKernel_16<cutlass::bfloat16_t, Mma_bf16_ntn, SharedStorage_bf16_ntn, Epilogue_bf16_ntn><<<grid, block, smem_size>>>(
+        problem_size, grid_tiled_shape, 
+        layout_a, (cutlass::bfloat16_t*)tensor_a.data_ptr(),
+        layout_b, (cutlass::bfloat16_t*)tensor_b.data_ptr(),
+        layout_d, (cutlass::bfloat16_t*)output_matrix.data_ptr(),
+        layout_e, (Mma_bf16_ntn::ElementE*)tensor_e_reordered.data_ptr(),
+        {alpha, beta}, gemm_k_size);
+
+    return output_matrix;
+}
+
+
+
+////////////////////////////////////////////////////////////////////////////////
+/// Specialized for bf16 data type with transposed output
+////////////////////////////////////////////////////////////////////////////////
+
+/// Args
+//  * tensor_a: N:M sparse matrix with shape k x m/2 in row-major. The sparse pattern is along m
+//  * tensor_b: dense matrix with shape k x n in column-major. (nxk in row-major)
+//  * tensor_e: metadata for tensor a with shape k x (m/2/kElementsPerElementE)
+
+torch::Tensor spmmt_bf16_ntt_cuda(
+    torch::Tensor tensor_a,
+    torch::Tensor tensor_b,
+    torch::Tensor tensor_e_reordered)
+{
+    const int m = tensor_a.size(1) * 2;
+    const int n = tensor_b.size(0);
+    const int k = tensor_b.size(1);
+
+    auto options_val = torch::TensorOptions().dtype(torch::kBFloat16).device(tensor_b.device());
+    auto output_matrix = torch::empty({n, m}, options_val);
+
+    // Create a tuple of problem size for matrix multiplication
+    cutlass::gemm::GemmCoord problem_size(m, n, k);
+
+    auto layout_a = cutlass::layout::RowMajor::packed(cutlass::make_Coord(problem_size.k(), problem_size.m()/2));
+    auto layout_b = cutlass::layout::ColumnMajor::packed(problem_size.kn());
+    auto layout_e = Mma_bf16_ntn::LayoutE::packed(cutlass::make_Coord(problem_size.k(), problem_size.m()/Mma_bf16_ntn::kSparse / Mma_bf16_ntn::kElementsPerElementE));
+    auto layout_d = cutlass::layout::RowMajor::packed(problem_size.mn());
+
+    cutlass::bfloat16_t alpha = cutlass::bfloat16_t(1.0);
+    cutlass::bfloat16_t beta = cutlass::bfloat16_t(0.0);
+    
+    ThreadblockSwizzle threadblock_swizzle;
+
+    cutlass::gemm::GemmCoord grid_tiled_shape = threadblock_swizzle.get_tiled_shape(
+        problem_size,
+        {ThreadblockShape_bf16::kM, ThreadblockShape_bf16::kN, ThreadblockShape_bf16::kK},
+        1
+    );
+
+    dim3 grid = threadblock_swizzle.get_grid_shape(grid_tiled_shape);
+    dim3 block(Mma_bf16_ntn::WarpCount::kCount * 32, 1, 1);
+
+    int smem_size = int(sizeof(SharedStorage_bf16_ntn));
+
+    cudaFuncSetAttribute(cutlassSpmmTKernel_16<cutlass::bfloat16_t, Mma_bf16_ntn, SharedStorage_bf16_ntt, Epilogue_bf16_ntt>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size);
+    cudaFuncSetAttribute(cutlassSpmmTKernel_16<cutlass::bfloat16_t, Mma_bf16_ntn, SharedStorage_bf16_ntt, Epilogue_bf16_ntt>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
+
+    int gemm_k_size = ((problem_size.k() + Mma_bf16_ntn::Shape::kK - 1) / Mma_bf16_ntn::Shape::kK) * Mma_bf16_ntn::Shape::kK;
+
+    cutlassSpmmTKernel_16<cutlass::bfloat16_t, Mma_bf16_ntn, SharedStorage_bf16_ntt, Epilogue_bf16_ntt><<<grid, block, smem_size>>>(
         problem_size, grid_tiled_shape, 
         layout_a, (cutlass::bfloat16_t*)tensor_a.data_ptr(),
         layout_b, (cutlass::bfloat16_t*)tensor_b.data_ptr(),

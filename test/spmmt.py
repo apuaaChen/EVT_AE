@@ -11,6 +11,7 @@ feat_out = 2048
 
 
 dtype = torch.bfloat16
+half = torch.float16
 
 
 class TestSpMM(unittest.TestCase):
@@ -33,20 +34,20 @@ class TestSpMM(unittest.TestCase):
         self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, atol=1.0))
     
     def test_ntn_half(self):
-        dense_matrix = torch.randn(size=(feat_out, feat_in), dtype=dtype, device="cuda")
-        lhs_matrix = torch.randn(size=(batch_size, feat_out), dtype=dtype, device="cuda")
+        dense_matrix = torch.randn(size=(feat_out, feat_in), dtype=half, device="cuda")
+        lhs_matrix = torch.randn(size=(batch_size, feat_out), dtype=half, device="cuda")
         nonzeros, uncompressed, metadata = bdense2sparse_gold(dense_matrix, False)
-        output_matrix_ref = torch.matmul(lhs_matrix.to(torch.float16), uncompressed.to(torch.float16)).t()
-        output_matrix = spmmt_f16_ntn(nonzeros.to(torch.float16), lhs_matrix.to(torch.float16), metadata)
+        output_matrix_ref = torch.matmul(lhs_matrix, uncompressed).t()
+        output_matrix = spmmt_f16_ntn(nonzeros, lhs_matrix, metadata)
 
         self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, atol=1.0))
 
     def test_ntt_half(self):
-        dense_matrix = torch.randn(size=(feat_out, feat_in), dtype=dtype, device="cuda")
-        lhs_matrix = torch.randn(size=(batch_size, feat_out), dtype=dtype, device="cuda")
+        dense_matrix = torch.randn(size=(feat_out, feat_in), dtype=half, device="cuda")
+        lhs_matrix = torch.randn(size=(batch_size, feat_out), dtype=half, device="cuda")
         nonzeros, uncompressed, metadata = bdense2sparse_gold(dense_matrix, False)
-        output_matrix_ref = torch.matmul(lhs_matrix.to(torch.float16), uncompressed.to(torch.float16))
-        output_matrix = spmmt_f16_ntt(nonzeros.to(torch.float16), lhs_matrix.to(torch.float16), metadata)
+        output_matrix_ref = torch.matmul(lhs_matrix, uncompressed)
+        output_matrix = spmmt_f16_ntt(nonzeros, lhs_matrix, metadata)
         
         self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, atol=1.0))
 

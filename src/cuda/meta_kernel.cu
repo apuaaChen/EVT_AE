@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <vector>
 #include "cuda_bf16.h"
+#include "cuda_fp16.h"
 
 
 __device__ __forceinline__ int reorder_index(int row, int col, int m){
@@ -39,6 +40,34 @@ __device__ __forceinline__ float sum<true>(float a, float b){
     return fabsf(a) + fabsf(b);
 }
 
+template <typename Scalar16>
+__device__ __forceinline__ Scalar16 cast(float x);
+
+template <>
+__device__ __forceinline__ __nv_bfloat16 cast<__nv_bfloat16>(float x){
+    return __float2bfloat16(x);
+}
+
+template <>
+__device__ __forceinline__ __half cast<__half>(float x){
+    return __float2half(x);
+}
+
+
+
+template <typename Scalar16>
+__device__ __forceinline__ float cast(Scalar16 x);
+
+template <>
+__device__ __forceinline__ float cast<__nv_bfloat16>(__nv_bfloat16 x){
+    return __bfloat162float(x);
+}
+
+template <>
+__device__ __forceinline__ float cast<__half>(__half x){
+    return __half2float(x);
+}
+
 
 
 template <typename Scalar16, bool ABS>
@@ -70,12 +99,12 @@ __device__ void Dense2Sparse_gold_(
             #pragma unroll
             for (int v = 0; v < 4; v++){
                 data[v] = __ldg(dense_matrix_t + 16 * i + 4 * j + v);
-                data_float[v] = __bfloat162float(data[v]);
+                data_float[v] = cast<Scalar16>(data[v]);
             }
             
             // TTFF
             Scalar16 value_sp[2] = {data[0], data[1]};
-            Scalar16 value_uncompressed[4] = {data[0], data[1], __float2bfloat16(0.0f), __float2bfloat16(0.0f)};
+            Scalar16 value_uncompressed[4] = {data[0], data[1], cast<Scalar16>(0.0f), cast<Scalar16>(0.0f)};
             int16_t meta_bit = 4;
             float max_val = sum<ABS>(data_float[0], data_float[1]);
 
@@ -85,9 +114,9 @@ __device__ void Dense2Sparse_gold_(
                 value_sp[0] = data[0];
                 value_sp[1] = data[2];
                 value_uncompressed[0] = data[0];
-                value_uncompressed[1] = __float2bfloat16(0.0f);
+                value_uncompressed[1] = cast<Scalar16>(0.0f);
                 value_uncompressed[2] = data[2];
-                value_uncompressed[3] = __float2bfloat16(0.0f);
+                value_uncompressed[3] = cast<Scalar16>(0.0f);
                 max_val = sum<ABS>(data_float[0], data_float[2]);
             }
 
@@ -97,8 +126,8 @@ __device__ void Dense2Sparse_gold_(
                 value_sp[0] = data[0];
                 value_sp[1] = data[3];
                 value_uncompressed[0] = data[0];
-                value_uncompressed[1] = __float2bfloat16(0.0f);
-                value_uncompressed[2] = __float2bfloat16(0.0f);
+                value_uncompressed[1] = cast<Scalar16>(0.0f);
+                value_uncompressed[2] = cast<Scalar16>(0.0f);
                 value_uncompressed[3] = data[3];
                 max_val = sum<ABS>(data_float[0], data_float[3]);
             }
@@ -108,10 +137,10 @@ __device__ void Dense2Sparse_gold_(
                 meta_bit = 9;
                 value_sp[0] = data[1];
                 value_sp[1] = data[2];
-                value_uncompressed[0] = __float2bfloat16(0.0f);
+                value_uncompressed[0] = cast<Scalar16>(0.0f);
                 value_uncompressed[1] = data[1];
                 value_uncompressed[2] = data[2];
-                value_uncompressed[3] = __float2bfloat16(0.0f);
+                value_uncompressed[3] = cast<Scalar16>(0.0f);
                 max_val = sum<ABS>(data_float[1], data_float[2]);
             }
 
@@ -120,9 +149,9 @@ __device__ void Dense2Sparse_gold_(
                 meta_bit = 13;
                 value_sp[0] = data[1];
                 value_sp[1] = data[3];
-                value_uncompressed[0] = __float2bfloat16(0.0f);
+                value_uncompressed[0] = cast<Scalar16>(0.0f);
                 value_uncompressed[1] = data[1];
-                value_uncompressed[2] = __float2bfloat16(0.0f);
+                value_uncompressed[2] = cast<Scalar16>(0.0f);
                 value_uncompressed[3] = data[3];
                 max_val = sum<ABS>(data_float[1], data_float[3]);
             }
@@ -132,8 +161,8 @@ __device__ void Dense2Sparse_gold_(
                 meta_bit = 14;
                 value_sp[0] = data[2];
                 value_sp[1] = data[3];
-                value_uncompressed[0] = __float2bfloat16(0.0f);
-                value_uncompressed[1] = __float2bfloat16(0.0f);
+                value_uncompressed[0] = cast<Scalar16>(0.0f);
+                value_uncompressed[1] = cast<Scalar16>(0.0f);
                 value_uncompressed[2] = data[2];
                 value_uncompressed[3] = data[3];
 
@@ -178,7 +207,7 @@ std::vector<torch::Tensor> batched_dense2sparse_gold_cuda(
     int batch_size = dense_matrix.numel() / (m * k);
 
     int meta_ratio;
-    if (dense_matrix.dtype() == torch::kBFloat16){
+    if (dense_matrix.dtype() == torch::kBFloat16 || dense_matrix.dtype() == torch::kFloat16){
         meta_ratio = 16;
     }
     else{
@@ -220,20 +249,39 @@ std::vector<torch::Tensor> batched_dense2sparse_gold_cuda(
     // Launch kernels
     // if (dense_matrix.dtype() == torch::kBFloat16){
     if (abs){
-        printf("abs\n");
-        Dense2Sparse_gold<nv_bfloat16, true><<<grid, block>>>(
-            m, k, 
-            (nv_bfloat16*)dense_matrix.data_ptr(), 
-            (nv_bfloat16*)sparse_matrix.data_ptr(), 
-            (nv_bfloat16*)uncompressed_matrix.data_ptr(), 
-            metadata.data<int16_t>(), metadata_reorder.data<int16_t>());   
+        if (dense_matrix.dtype() == torch::kBFloat16){
+            Dense2Sparse_gold<nv_bfloat16, true><<<grid, block>>>(
+                m, k, 
+                (nv_bfloat16*)dense_matrix.data_ptr(), 
+                (nv_bfloat16*)sparse_matrix.data_ptr(), 
+                (nv_bfloat16*)uncompressed_matrix.data_ptr(), 
+                metadata.data<int16_t>(), metadata_reorder.data<int16_t>());
+        } else {
+            Dense2Sparse_gold<__half, true><<<grid, block>>>(
+                m, k, 
+                (__half*)dense_matrix.data_ptr(), 
+                (__half*)sparse_matrix.data_ptr(), 
+                (__half*)uncompressed_matrix.data_ptr(), 
+                metadata.data<int16_t>(), metadata_reorder.data<int16_t>());
+        }
+           
     } else {
-        Dense2Sparse_gold<nv_bfloat16, false><<<grid, block>>>(
-            m, k, 
-            (nv_bfloat16*)dense_matrix.data_ptr(), 
-            (nv_bfloat16*)sparse_matrix.data_ptr(), 
-            (nv_bfloat16*)uncompressed_matrix.data_ptr(), 
-            metadata.data<int16_t>(), metadata_reorder.data<int16_t>());   
+        if (dense_matrix.dtype() == torch::kBFloat16){
+            Dense2Sparse_gold<nv_bfloat16, false><<<grid, block>>>(
+                m, k, 
+                (nv_bfloat16*)dense_matrix.data_ptr(), 
+                (nv_bfloat16*)sparse_matrix.data_ptr(), 
+                (nv_bfloat16*)uncompressed_matrix.data_ptr(), 
+                metadata.data<int16_t>(), metadata_reorder.data<int16_t>());   
+        } else {
+            Dense2Sparse_gold<__half, false><<<grid, block>>>(
+                m, k, 
+                (__half*)dense_matrix.data_ptr(), 
+                (__half*)sparse_matrix.data_ptr(), 
+                (__half*)uncompressed_matrix.data_ptr(), 
+                metadata.data<int16_t>(), metadata_reorder.data<int16_t>());   
+        }
+       
     }
          
     // }
@@ -276,7 +324,7 @@ __device__ void Dense2Sparse_(
             #pragma unroll
             for (int v = 0; v < 4; v++){
                 data[v] = __ldg(dense_matrix_t + 16 * i + 4 * j + v);
-                data_float[v] = __bfloat162float(data[v]);
+                data_float[v] = cast<Scalar16>(data[v]);
             }
             
             // TTFF
@@ -362,7 +410,7 @@ std::vector<torch::Tensor> batched_dense2sparse_cuda(
     int batch_size = dense_matrix.numel() / (m * k);
 
     int meta_ratio;
-    if (dense_matrix.dtype() == torch::kBFloat16){
+    if (dense_matrix.dtype() == torch::kBFloat16 || dense_matrix.dtype() == torch::kFloat16){
         meta_ratio = 16;
     }
     else{
@@ -398,17 +446,34 @@ std::vector<torch::Tensor> batched_dense2sparse_cuda(
     // Launch kernels
     // if (dense_matrix.dtype() == torch::kBFloat16){
     if (abs){
-        Dense2Sparse<nv_bfloat16, true><<<grid, block>>>(
-            m, k, 
-            (nv_bfloat16*)dense_matrix.data_ptr(), 
-            (nv_bfloat16*)sparse_matrix.data_ptr(), 
-            metadata.data<int16_t>());  
+        if (dense_matrix.dtype() == torch::kBFloat16){
+            Dense2Sparse<nv_bfloat16, true><<<grid, block>>>(
+                m, k, 
+                (nv_bfloat16*)dense_matrix.data_ptr(), 
+                (nv_bfloat16*)sparse_matrix.data_ptr(), 
+                metadata.data<int16_t>()); 
+        } else {
+            Dense2Sparse<__half, true><<<grid, block>>>(
+                m, k, 
+                (__half*)dense_matrix.data_ptr(), 
+                (__half*)sparse_matrix.data_ptr(), 
+                metadata.data<int16_t>()); 
+        }
     } else {
-        Dense2Sparse<nv_bfloat16, false><<<grid, block>>>(
-            m, k, 
-            (nv_bfloat16*)dense_matrix.data_ptr(), 
-            (nv_bfloat16*)sparse_matrix.data_ptr(), 
-            metadata.data<int16_t>());  
+        if (dense_matrix.dtype() == torch::kBFloat16){
+            Dense2Sparse<nv_bfloat16, false><<<grid, block>>>(
+                m, k, 
+                (nv_bfloat16*)dense_matrix.data_ptr(), 
+                (nv_bfloat16*)sparse_matrix.data_ptr(), 
+                metadata.data<int16_t>()); 
+        } else {
+            Dense2Sparse<__half, false><<<grid, block>>>(
+                m, k, 
+                (__half*)dense_matrix.data_ptr(), 
+                (__half*)sparse_matrix.data_ptr(), 
+                metadata.data<int16_t>()); 
+        }
+         
     }
           
     // }

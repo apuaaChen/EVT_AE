@@ -1,0 +1,70 @@
+Looking in indexes: https://pypi.org/simple, https://pypi.ngc.nvidia.com
+Collecting git+https://github.com/NVIDIA/dllogger
+  Cloning https://github.com/NVIDIA/dllogger to /tmp/pip-req-build-bydlzq2a
+  Resolved https://github.com/NVIDIA/dllogger to commit 0540a43971f4a8a16693a9de9de73c1072020769
+Requirement already satisfied: tqdm in /opt/conda/lib/python3.8/site-packages (4.62.3)
+Collecting boto3
+  Downloading boto3-1.21.43-py3-none-any.whl (132 kB)
+Requirement already satisfied: requests in /opt/conda/lib/python3.8/site-packages (2.26.0)
+Requirement already satisfied: six in /opt/conda/lib/python3.8/site-packages (1.16.0)
+Collecting ipdb
+  Downloading ipdb-0.13.9.tar.gz (16 kB)
+Collecting h5py
+  Downloading h5py-3.6.0-cp38-cp38-manylinux_2_12_x86_64.manylinux2010_x86_64.whl (4.5 MB)
+Requirement already satisfied: nltk in /opt/conda/lib/python3.8/site-packages (3.6.5)
+Collecting progressbar
+  Downloading progressbar-2.5.tar.gz (10 kB)
+Collecting onnxruntime
+  Downloading onnxruntime-1.11.0-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (5.2 MB)
+Collecting tokenizers
+  Downloading tokenizers-0.12.1-cp38-cp38-manylinux_2_12_x86_64.manylinux2010_x86_64.whl (6.6 MB)
+Requirement already satisfied: wget in /opt/conda/lib/python3.8/site-packages (3.2)
+Collecting botocore<1.25.0,>=1.24.43
+  Downloading botocore-1.24.43-py3-none-any.whl (8.7 MB)
+Collecting s3transfer<0.6.0,>=0.5.0
+  Downloading s3transfer-0.5.2-py3-none-any.whl (79 kB)
+Collecting jmespath<2.0.0,>=0.7.1
+  Downloading jmespath-1.0.0-py3-none-any.whl (23 kB)
+Requirement already satisfied: certifi>=2017.4.17 in /opt/conda/lib/python3.8/site-packages (from requests) (2021.10.8)
+Requirement already satisfied: charset-normalizer~=2.0.0 in /opt/conda/lib/python3.8/site-packages (from requests) (2.0.0)
+Requirement already satisfied: urllib3<1.27,>=1.21.1 in /opt/conda/lib/python3.8/site-packages (from requests) (1.26.7)
+Requirement already satisfied: idna<4,>=2.5 in /opt/conda/lib/python3.8/site-packages (from requests) (3.1)
+Requirement already satisfied: setuptools in /opt/conda/lib/python3.8/site-packages (from ipdb) (58.5.3)
+Requirement already satisfied: ipython>=7.17.0 in /opt/conda/lib/python3.8/site-packages (from ipdb) (7.29.0)
+Requirement already satisfied: toml>=0.10.2 in /opt/conda/lib/python3.8/site-packages (from ipdb) (0.10.2)
+Requirement already satisfied: decorator in /opt/conda/lib/python3.8/site-packages (from ipdb) (5.1.0)
+Requirement already satisfied: numpy>=1.14.5 in /opt/conda/lib/python3.8/site-packages (from h5py) (1.21.4)
+Requirement already satisfied: joblib in /opt/conda/lib/python3.8/site-packages (from nltk) (1.1.0)
+Requirement already satisfied: regex>=2021.8.3 in /opt/conda/lib/python3.8/site-packages (from nltk) (2021.11.10)
+Requirement already satisfied: click in /opt/conda/lib/python3.8/site-packages (from nltk) (8.0.3)
+Collecting flatbuffers
+  Downloading flatbuffers-2.0-py2.py3-none-any.whl (26 kB)
+Requirement already satisfied: protobuf in /opt/conda/lib/python3.8/site-packages (from onnxruntime) (3.19.1)
+Requirement already satisfied: python-dateutil<3.0.0,>=2.1 in /opt/conda/lib/python3.8/site-packages (from botocore<1.25.0,>=1.24.43->boto3) (2.8.2)
+Requirement already satisfied: pexpect>4.3 in /opt/conda/lib/python3.8/site-packages (from ipython>=7.17.0->ipdb) (4.8.0)
+Requirement already satisfied: backcall in /opt/conda/lib/python3.8/site-packages (from ipython>=7.17.0->ipdb) (0.2.0)
+Requirement already satisfied: prompt-toolkit!=3.0.0,!=3.0.1,<3.1.0,>=2.0.0 in /opt/conda/lib/python3.8/site-packages (from ipython>=7.17.0->ipdb) (3.0.22)
+Requirement already satisfied: traitlets>=4.2 in /opt/conda/lib/python3.8/site-packages (from ipython>=7.17.0->ipdb) (5.1.1)
+Requirement already satisfied: pygments in /opt/conda/lib/python3.8/site-packages (from ipython>=7.17.0->ipdb) (2.10.0)
+Requirement already satisfied: jedi>=0.16 in /opt/conda/lib/python3.8/site-packages (from ipython>=7.17.0->ipdb) (0.18.0)
+Requirement already satisfied: pickleshare in /opt/conda/lib/python3.8/site-packages (from ipython>=7.17.0->ipdb) (0.7.5)
+Requirement already satisfied: matplotlib-inline in /opt/conda/lib/python3.8/site-packages (from ipython>=7.17.0->ipdb) (0.1.3)
+Requirement already satisfied: parso<0.9.0,>=0.8.0 in /opt/conda/lib/python3.8/site-packages (from jedi>=0.16->ipython>=7.17.0->ipdb) (0.8.2)
+Requirement already satisfied: ptyprocess>=0.5 in /opt/conda/lib/python3.8/site-packages (from pexpect>4.3->ipython>=7.17.0->ipdb) (0.7.0)
+Requirement already satisfied: wcwidth in /opt/conda/lib/python3.8/site-packages (from prompt-toolkit!=3.0.0,!=3.0.1,<3.1.0,>=2.0.0->ipython>=7.17.0->ipdb) (0.2.5)
+Building wheels for collected packages: ipdb, progressbar, DLLogger
+  Building wheel for ipdb (setup.py): started
+  Building wheel for ipdb (setup.py): finished with status 'done'
+  Created wheel for ipdb: filename=ipdb-0.13.9-py3-none-any.whl size=11648 sha256=d72bfcf15355633e89d4f5f50356ea29e7ced58e6e776aff0a356226bb717212
+  Stored in directory: /tmp/pip-ephem-wheel-cache-gxwbrv99/wheels/d8/51/8c/3dceedacfd0f743f3736b3840d08b6746b6259deea98207ba4
+  Building wheel for progressbar (setup.py): started
+  Building wheel for progressbar (setup.py): finished with status 'done'
+  Created wheel for progressbar: filename=progressbar-2.5-py3-none-any.whl size=12082 sha256=bc140c49b13784706bf536e6a688342db762e00d49145c7295d4150c31a8bab9
+  Stored in directory: /tmp/pip-ephem-wheel-cache-gxwbrv99/wheels/2c/67/ed/d84123843c937d7e7f5ba88a270d11036473144143355e2747
+  Building wheel for DLLogger (setup.py): started
+  Building wheel for DLLogger (setup.py): finished with status 'done'
+  Created wheel for DLLogger: filename=DLLogger-1.0.0-py3-none-any.whl size=5670 sha256=754f667ca393f08dd76e73930c1835e3f4109972095f9c7aad1738898b511325
+  Stored in directory: /tmp/pip-ephem-wheel-cache-gxwbrv99/wheels/ad/94/cf/8f3396cb8d62d532695ec557e193fada55cd366e14fd9a02be
+Successfully built ipdb progressbar DLLogger
+Installing collected packages: jmespath, botocore, s3transfer, flatbuffers, tokenizers, progressbar, onnxruntime, ipdb, h5py, DLLogger, boto3
+Successfully installed DLLogger-1.0.0 boto3-1.21.43 botocore-1.24.43 flatbuffers-2.0 h5py-3.6.0 ipdb-0.13.9 jmespath-1.0.0 onnxruntime-1.11.0 progressbar-2.5 s3transfer-0.5.2 tokenizers-0.12.1

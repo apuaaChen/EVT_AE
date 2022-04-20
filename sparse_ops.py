@@ -10,7 +10,8 @@ from torch import autograd, nn
 import torch.nn.functional as F
 import nvtx
 from sptrain.meta import bdense2sparse
-from sptrain.spmm import spmmv2_bf16_nnn, spmmv2_bf16_ntn, spmmv2_bf16_ntt
+from sptrain.spmm import spmmv2_f16_nnn, spmmv2_f16_ntn, spmmv2_f16_ntt
+from sptrain.spmmt import spmmt_f16_ntt
 
 
 class Sparse(autograd.Function):
@@ -89,7 +90,7 @@ class SparseV3(autograd.Function):
     @staticmethod
     def backward(ctx, grad_nonzeros, grad_metadata, grad_weight):
         mask_nnz = torch.ones(size=(grad_weight.size(0), int(grad_weight.size(1)/2)), dtype=grad_weight.dtype, device="cuda")
-        mask = spmmv2_bf16_nnn(mask_nnz, torch.eye(grad_weight.size(1), dtype=grad_weight.dtype, device="cuda"), ctx.meta)
+        mask = spmmv2_f16_nnn(mask_nnz, torch.eye(grad_weight.size(1), dtype=grad_weight.dtype, device="cuda"), ctx.meta)
 
         weight, = ctx.saved_tensors
         return grad_weight + ctx.decay * (1-mask) * weight, None, None
@@ -207,7 +208,7 @@ class LinearV3(autograd.Function):
         ctx.save_for_backward(input, sp_weight, sp_meta, bias)
         if bias is not None:
             bias = bias.unsqueeze(0)
-        output = spmmv2_bf16_ntt(sp_weight, input, sp_meta)
+        output = spmmv2_f16_ntt(sp_weight, input, sp_meta)
         if bias is not None:
             return output + bias
         else:
@@ -216,8 +217,7 @@ class LinearV3(autograd.Function):
     @staticmethod
     def backward(ctx, grad_out):
         input, sp_weight, sp_meta, bias = ctx.saved_tensors
-        weight = spmmv2_bf16_nnn(sp_weight, torch.eye(n=sp_weight.size(1) * 2, dtype=sp_weight.dtype, device="cuda"), sp_meta)
-        grad_input = torch.matmul(grad_out, weight)
+        grad_input = spmmt_f16_ntt(sp_weight, grad_out, sp_meta);
         grad_weight = torch.matmul(grad_out.t(), input)
         if bias is not None:
             grad_bias = torch.sum(grad_out, dim=0).view(bias.size())

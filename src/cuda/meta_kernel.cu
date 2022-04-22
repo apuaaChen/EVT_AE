@@ -2,7 +2,6 @@
 #include <torch/extension.h>
 #include <cuda_runtime.h>
 #include <iostream>
-#include "helper.h"
 #include <stdio.h>
 #include <vector>
 #include "cuda_bf16.h"

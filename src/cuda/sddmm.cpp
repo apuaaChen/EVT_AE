@@ -2,11 +2,11 @@
 #include <vector>
 
 
-torch::Tensor sddmm_bf16_ntn_cuda(
+std::vector<torch::Tensor> sddmm_bf16_ntn_cuda(
     torch::Tensor tensor_a_,
     torch::Tensor tensor_b_);
 
-torch::Tensor sddmm_bf16_ntn(
+std::vector<torch::Tensor> sddmm_bf16_ntn(
     torch::Tensor tensor_a_,
     torch::Tensor tensor_b_)
 {
@@ -14,11 +14,11 @@ torch::Tensor sddmm_bf16_ntn(
 }
 
 
-torch::Tensor sddmm_f16_ntn_cuda(
+std::vector<torch::Tensor> sddmm_f16_ntn_cuda(
     torch::Tensor tensor_a_,
     torch::Tensor tensor_b_);
 
-torch::Tensor sddmm_f16_ntn(
+std::vector<torch::Tensor> sddmm_f16_ntn(
     torch::Tensor tensor_a_,
     torch::Tensor tensor_b_)
 {

@@ -14,9 +14,10 @@ template <
   typename Shape_,
   int Threads,
   typename WarpThreadArrangement_,
+  bool Interleaved,
   int ElementsPerAccess = 1
 >
-struct PitchLinearWarpRakedThreadMapV3 {
+struct PitchLinearWarpRakedThreadMapInterleaved {
 
   /// Tensor coordinate
   using TensorCoord = layout::PitchLinearCoord;
@@ -108,6 +109,10 @@ struct PitchLinearWarpRakedThreadMapV3 {
 
     int sub_warp_id = thread_id / Detail::WarpThreadArrangement::kContiguous;
     int lane_id = thread_id % Detail::WarpThreadArrangement::kContiguous;
+
+    if (Interleaved){
+      sub_warp_id =  ((sub_warp_id / 2) % 4) * 4 + (sub_warp_id % 2) + ((sub_warp_id / 8) % 2) * 2 + (sub_warp_id / 16) * 16;
+    }
 
     layout::PitchLinearCoord thread_offset_in_threadblock_tile_base{
       lane_id * kElementsPerAccess,

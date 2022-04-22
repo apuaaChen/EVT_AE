@@ -174,16 +174,22 @@ struct DefaultSDDMmaCore<Shape_, WarpShape_, InstructionShape_, ElementA_,
       IteratorThreadMapA>;
 
   /// ThreadMap of iterator B
-  using IteratorThreadMapB = transform::PitchLinearWarpRakedThreadMapV3<
+  using IteratorThreadMapB = transform::PitchLinearWarpRakedThreadMapInterleaved<
       layout::PitchLinearShape<Shape::kK, Shape::kN>, kThreads,
       layout::PitchLinearShape<kWarpThreadArrangementContiguousB,
-                               kWarpThreadArrangementStridedB>,
+                               kWarpThreadArrangementStridedB>, true,
+      kAccessSizeInBits / sizeof_bits<ElementB>::value>;
+  /// ThreadMap of iterator B in shared memory
+  using IteratorThreadMapB_Shmem = transform::PitchLinearWarpRakedThreadMapInterleaved<
+      layout::PitchLinearShape<Shape::kK, Shape::kN>, kThreads,
+      layout::PitchLinearShape<kWarpThreadArrangementContiguousB,
+                               kWarpThreadArrangementStridedB>, false,
       kAccessSizeInBits / sizeof_bits<ElementB>::value>;
 
   /// Shared memory iterator to B operand
   using SmemIteratorB = transform::threadblock::RegularTileAccessIteratorV3<
       MatrixShape<Shape::kK, Shape::kN>, ElementB, SmemLayoutB, 1,
-      IteratorThreadMapB>;
+      IteratorThreadMapB_Shmem>;
 
   //
   // Warp-level matrix multiply operator

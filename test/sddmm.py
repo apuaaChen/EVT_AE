@@ -20,14 +20,11 @@ class TestSDDMM(unittest.TestCase):
         dense_matrix_ref = torch.matmul(query, key.t())
 
         nonzeros_ref, uncompressed, metadata_ref = bdense2sparse_gold(dense_matrix_ref, False)
-        dense_matrix, metadata = sddmm_bf16_ntn(query, key)
-
-        # print(metadata_ref)
-
-        # print(torch.ne(metadata, metadata_ref).sum())
-        # print(torch.eq(metadata, metadata_ref).sum())
+        nonzeros, metadata = sddmm_bf16_ntn(query, key)
 
         self.assertTrue(torch.ne(metadata, metadata_ref).sum() / metadata.numel() < 5e-3)
+        self.assertTrue(torch.ne(nonzeros, nonzeros_ref).sum() / nonzeros.numel() < 1e-3)
+
     
     def test_sddmm_f16(self):
         query = torch.randn(size=(sequence_length, embedding), dtype=half, device="cuda")
@@ -35,9 +32,10 @@ class TestSDDMM(unittest.TestCase):
         dense_matrix_ref = torch.matmul(query, key.t())
 
         nonzeros_ref, uncompressed, metadata_ref = bdense2sparse_gold(dense_matrix_ref, False)
-        dense_matrix, metadata = sddmm_f16_ntn(query, key)
+        nonzeros, metadata = sddmm_f16_ntn(query, key)
 
         self.assertTrue(torch.ne(metadata, metadata_ref).sum() / metadata.numel() < 5e-3)
+        self.assertTrue(torch.ne(nonzeros, nonzeros_ref).sum() / nonzeros.numel() < 1e-3)
 
 if __name__ == '__main__':
     unittest.main()

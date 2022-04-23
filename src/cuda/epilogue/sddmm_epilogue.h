@@ -45,6 +45,104 @@ public:
 };
 
 
+/// Defines the iterator that writes the nonzeros to the global memory
+template <
+    typename Element_,
+    typename ThreadblockTile_Shape_,
+    typename WarpTile_Shape_
+>
+class NnzTileIterator{
+public:
+    using ThreadblockTile_Shape = ThreadblockTile_Shape_;
+    using WarpTile_Shape = WarpTile_Shape_;
+    using Element = Element_;
+
+    using TensorCoord = MatrixCoord;
+
+    // number of warps along rows and columns
+    using WarpCount = MatrixShape<ThreadblockTile_Shape::kM / WarpTile_Shape::kM,
+                                  ThreadblockTile_Shape::kN / WarpTile_Shape::kN>;
+    
+    // number of threads available
+    static int const kNumThread = WarpCount::kCount * 32;
+
+    // elements per access
+    static int const kElementsPerAccess = 8;
+
+    using ThreadMap = MatrixShape<
+        ThreadblockTile_Shape::kN / 2 / kElementsPerAccess,
+        kNumThread / (ThreadblockTile_Shape::kN / 2 / kElementsPerAccess)>;
+
+    using StoreIteration = MatrixShape<
+        1, ThreadblockTile_Shape::kM / ThreadMap::kColumn>;
+
+    
+    using OutputTileThreadMap = typename cutlass::epilogue::threadblock::DefaultThreadMapTensorOp<
+        ThreadblockTile_Shape,
+        WarpTile_Shape,
+        1,
+        Element,
+        8
+    >::Type;
+
+    using Layout = layout::RowMajor;
+    
+
+    /// Uses a non-template class
+    struct Params : PredicatedTileIteratorParams {
+        using Base = PredicatedTileIteratorParams;
+
+        CUTLASS_HOST_DEVICE
+        Params() { }
+
+        CUTLASS_HOST_DEVICE
+        Params(Layout const &layout): 
+        PredicatedTileIteratorParams(
+            layout.stride(0) * 2,
+            make_OutputTileThreadMapDesc<OutputTileThreadMap>()
+        ) 
+        { }
+
+        CUTLASS_HOST_DEVICE
+        Params(Base const &base) : 
+        Base(base) { }
+    };
+
+    Params params_;
+
+
+
+
+    int stride;
+    float4* global_ptr;
+
+    CUTLASS_DEVICE
+    NnzTileIterator(
+        Element* nnz_pointer,
+        TensorCoord extent,
+        int thread_id,
+        TensorCoord threadblock_offset
+    ):
+    stride(extent.column() / 2)
+    {
+        int lane_id = thread_id % ThreadMap::kRow;
+        int group_id = thread_id / ThreadMap::kRow;
+
+        global_ptr = reinterpret_cast<float4 *>(nnz_pointer + (threadblock_offset.row() + group_id) * stride + threadblock_offset.column() / 2) + lane_id;
+    }
+
+    CUTLASS_DEVICE
+    void store(float4 data){
+        *(global_ptr) = data;
+    }
+
+    CUTLASS_DEVICE
+    void add_pointer_offset(TensorCoord offset){
+        global_ptr += offset.row() * stride / 8 + offset.column();
+    }
+};
+
+
 
 /// Defines the epilogue that dynamically prunes the output of GEMM kernel to 2:4 sparsity
 template <
@@ -52,7 +150,8 @@ template <
     typename WarpTile_Shape_,
     typename OutputOp_,
     typename Mma_,
-    typename MetaIterator_
+    typename MetaIterator_,
+    typename NnzTileIterator_
 >
 class DP24Epilogue{
 public:
@@ -61,6 +160,7 @@ public:
     using OutputOp = OutputOp_;
     using Mma = Mma_;
     using MetaIterator = MetaIterator_;
+    using NnzIterator = NnzTileIterator_;
 
     // number of warps along rows and columns
     using WarpCount = MatrixShape<ThreadblockTile_Shape::kM / WarpTile_Shape::kM,
@@ -82,12 +182,85 @@ public:
 
     using ElementOutput = typename OutputOp::ElementOutput;
 
-    int thread_id;
+    static int const kSkew = 8;
+
+
+    struct SharedStorage {
+        /// Element type of shared memory
+        using Element = ElementOutput;
+
+        /// Layout of shared memory allocation
+        using Layout = layout::RowMajor;
+
+        /// Tensor reference to shared memory allocation
+        using TensorRef = TensorRef<Element, Layout>;
+
+        /// Logical shape of the shared memory tile written to by all warps
+        using Shape = MatrixShape<
+            ThreadblockTile_Shape::kM, 
+            ThreadblockTile_Shape::kN / 2>;
+        
+        using StorageShape = MatrixShape<
+            Shape::kRow,
+            Shape::kColumn + kSkew
+        >;
+
+        //
+        // Data members
+        //
+
+        AlignedBuffer<Element, StorageShape::kCount> storage;
+
+        //
+        // Methods
+        //
+
+        /// Returns a pointer to the shared memory buffer
+        CUTLASS_DEVICE
+        Element *data() {
+            return storage.data();
+        }
+
+        /// Returns a tensor reference to the shared memory buffer
+        CUTLASS_DEVICE
+        TensorRef reference() {
+        return TensorRef(
+            storage.data(), 
+            Layout::packed({StorageShape::kRow, StorageShape::kColumn}));
+        }
+    };
+
+    /// The pointer that loads data from register to shared memory
+    float* shared_load_ptr;
+
+    /// The pointer that accesses the data in shared memory for global store
+    float4* shared_store_ptr;
 
 
     /// Constructor
     CUTLASS_DEVICE
-    DP24Epilogue(int thread_id_):thread_id(thread_id_){}
+    DP24Epilogue(
+        SharedStorage &shared_storage,
+        int thread_id_,
+        int warp_id,
+        int lane_id
+    ){
+
+        int warp_row_id = warp_id % WarpCount::kRow;
+        int warp_col_id = warp_id / WarpCount::kRow;
+        int th_group_id = lane_id / 4;
+        int group_lane_id = lane_id % 4;
+
+        int shmem_init_offset = (warp_row_id * WarpTile_Shape::kM + th_group_id) * SharedStorage::StorageShape::kColumn + warp_col_id * WarpTile_Shape::kN / 2 + group_lane_id * 2;
+
+        shared_load_ptr = reinterpret_cast<float*>(shared_storage.data()) + shmem_init_offset / 2;
+
+        // set the shared_store_ptr
+        int sub_warp_lane_id = thread_id_ % NnzIterator::ThreadMap::kRow;
+        int sub_warp_id = thread_id_ / NnzIterator::ThreadMap::kRow;
+
+        shared_store_ptr = reinterpret_cast<float4*>(shared_storage.data()) + (sub_warp_id * SharedStorage::StorageShape::kColumn) / 8 + sub_warp_lane_id;
+    }
 
 
     /// generate the metadata
@@ -164,6 +337,7 @@ public:
                             meta[4 * i + 2 * j + k] = meta_bit << (th_group_id * 4);
 
                             // TODO: write the value to shared memory
+                            *(shared_load_ptr + ((m_i * FragmentShape::kRow) * SharedStorage::StorageShape::kColumn + n_i * FragmentShape::kColumn / 2) / 2) = *reinterpret_cast<float*>(value);
                         }
                         // Collect the meta dat at the target thread.
                         #pragma unroll
@@ -199,6 +373,18 @@ public:
         }
 
     }
+
+    CUTLASS_DEVICE
+    void store_nnz(
+        NnzIterator iterator_D
+    ){
+        #pragma unroll
+        for (int m=0; m < NnzIterator::StoreIteration::kColumn; m++){
+            iterator_D.store(*shared_store_ptr);
+            shared_store_ptr += NnzIterator::ThreadMap::kColumn * SharedStorage::StorageShape::kColumn / 8;
+            iterator_D.add_pointer_offset({NnzIterator::ThreadMap::kColumn, 0});
+        }
+    }
 };
 
 template <
@@ -215,7 +401,8 @@ struct DefaultSddmmEpilogue {
     using Mma = Mma_;
 
     using MetaIterator = MetaTileIterator<ThreadblockTile_Shape, WarpTile_Shape>;
-    using Epilogue = DP24Epilogue<ThreadblockTile_Shape, WarpTile_Shape, OutputOp, Mma, MetaIterator>;
+    using NnzIterator = NnzTileIterator<ElementOutput, ThreadblockTile_Shape, WarpTile_Shape>;
+    using Epilogue = DP24Epilogue<ThreadblockTile_Shape, WarpTile_Shape, OutputOp, Mma, MetaIterator, NnzIterator>;
 };
 
 }  // namespace threadblock

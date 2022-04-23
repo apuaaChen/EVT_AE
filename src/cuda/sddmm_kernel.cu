@@ -48,13 +48,13 @@ using Mma_f16_ntn = typename cutlass::gemm::threadblock::DefaultSDDMma<
     ThreadblockShape_16, WarpShape_16, InstructionShape_16, NumStages, cutlass::arch::OpMultiplyAdd>::ThreadblockMma;
 
 /// Eplilogue
-using Epilogue_bf16_ntn = typename cutlass::epilogue::threadblock::DefaultEpilogueTensorOp<
-    ThreadblockShape_16, typename Mma_bf16_ntn::Operator, ThreadblockShape_16::kK / WarpShape_16::kK, EpilogueOp_bf16,
-    EpilogueOp_bf16::kCount>::Epilogue;
+// using Epilogue_bf16_ntn = typename cutlass::epilogue::threadblock::DefaultEpilogueTensorOp<
+//     ThreadblockShape_16, typename Mma_bf16_ntn::Operator, ThreadblockShape_16::kK / WarpShape_16::kK, EpilogueOp_bf16,
+//     EpilogueOp_bf16::kCount>::Epilogue;
 
-using Epilogue_f16_ntn = typename cutlass::epilogue::threadblock::DefaultEpilogueTensorOp<
-    ThreadblockShape_16, typename Mma_f16_ntn::Operator, ThreadblockShape_16::kK / WarpShape_16::kK, EpilogueOp_f16,
-    EpilogueOp_f16::kCount>::Epilogue;
+// using Epilogue_f16_ntn = typename cutlass::epilogue::threadblock::DefaultEpilogueTensorOp<
+//     ThreadblockShape_16, typename Mma_f16_ntn::Operator, ThreadblockShape_16::kK / WarpShape_16::kK, EpilogueOp_f16,
+//     EpilogueOp_f16::kCount>::Epilogue;
 
 using SDDMM_Epilogue_bf16 = typename cutlass::epilogue::threadblock::DefaultSddmmEpilogue<
     ThreadblockShape_16, WarpShape_16, EpilogueOp_bf16, Mma_bf16_ntn>::Epilogue;
@@ -65,16 +65,16 @@ using SDDMM_Epilogue_f16 = typename cutlass::epilogue::threadblock::DefaultSddmm
 /// Shared Storage
 union SharedStorage_bf16_ntn {
     typename Mma_bf16_ntn::SharedStorage main_loop;
-    typename Epilogue_bf16_ntn::SharedStorage epilogue;
+    typename SDDMM_Epilogue_bf16::SharedStorage epilogue;
 };
 
 union SharedStorage_f16_ntn {
     typename Mma_f16_ntn::SharedStorage main_loop;
-    typename Epilogue_f16_ntn::SharedStorage epilogue;
+    typename SDDMM_Epilogue_f16::SharedStorage epilogue;
 };
 
 
-template<typename Element, typename _Mma, typename _SharedStorage, typename _Epilogue, typename _Epilogue_SDDMM>
+template<typename Element, typename _Mma, typename _SharedStorage, typename _Epilogue_SDDMM>
 __global__ void cutlassSddmmKernel_16(
     cutlass::gemm::GemmCoord problem_size,
     cutlass::gemm::GemmCoord grid_tiled_shape,
@@ -82,10 +82,10 @@ __global__ void cutlassSddmmKernel_16(
     Element* __restrict__ ptr_A,
     typename _Mma::IteratorB::Params params_B,
     Element* __restrict__ ptr_B,
-    typename _Epilogue::OutputTileIterator::Params params_D,
+    typename _Epilogue_SDDMM::NnzIterator::Params params_D,
     Element* __restrict__ ptr_D,
     int16_t* __restrict__ metadata,
-    typename _Epilogue::OutputOp::Params output_op_,
+    typename _Epilogue_SDDMM::OutputOp::Params output_op_,
     int gemm_k_size)
 {
     extern __shared__ int SharedStorageBase[];
@@ -165,7 +165,7 @@ __global__ void cutlassSddmmKernel_16(
     //  Epilogue
     //
 
-    typename _Epilogue::OutputOp output_op(output_op_);
+    typename _Epilogue_SDDMM::OutputOp output_op(output_op_);
 
     threadblock_tile_offset = threadblock_swizzle.get_tile_offset(grid_tiled_shape);
 
@@ -177,13 +177,13 @@ __global__ void cutlassSddmmKernel_16(
 
     int block_idx = threadblock_tile_offset.m() + threadblock_tile_offset.n() * grid_tiled_shape.m();
     
-    typename _Epilogue::OutputTileIterator iterator_D(
-        params_D,
-        ptr_D,
-        problem_size.mn(),
-        thread_idx,
-        threadblock_offset
-    );
+    // typename _Epilogue::OutputTileIterator iterator_D(
+    //     params_D,
+    //     ptr_D,
+    //     problem_size.mn(),
+    //     thread_idx,
+    //     threadblock_offset
+    // );
 
     cutlass::MatrixCoord meta_shape(
         problem_size.m(), problem_size.n()/16
@@ -198,18 +198,30 @@ __global__ void cutlassSddmmKernel_16(
         threadblock_offset
     );
 
-    _Epilogue_SDDMM epilogue_sddmm(thread_idx);
+    typename _Epilogue_SDDMM::NnzIterator iterator_D(
+        ptr_D,
+        problem_size.mn(),
+        thread_idx,
+        threadblock_offset
+    );
 
-    epilogue_sddmm.get_meta_data(accumulators, lane_idx, iterator_E);
-    
-    _Epilogue epilogue(
+    _Epilogue_SDDMM epilogue_sddmm(
         shared_storage.epilogue,
         thread_idx,
         warp_idx,
-        lane_idx
-    );
+        lane_idx);
 
-    epilogue(output_op, iterator_D, accumulators, iterator_D);
+    epilogue_sddmm.get_meta_data(accumulators, lane_idx, iterator_E);
+    epilogue_sddmm.store_nnz(iterator_D);
+    
+    // _Epilogue epilogue(
+    //     shared_storage.epilogue,
+    //     thread_idx,
+    //     warp_idx,
+    //     lane_idx
+    // );
+
+    // epilogue(output_op, iterator_D, accumulators, iterator_D);
 }
 
 
@@ -222,7 +234,7 @@ std::vector<torch::Tensor> sddmm_bf16_ntn_cuda(
     const int k = tensor_b.size(1);
 
     auto options_val = torch::TensorOptions().dtype(torch::kBFloat16).device(tensor_b.device());
-    auto output_matrix = torch::empty({m, n}, options_val);
+    auto output_matrix = torch::empty({m, n/2}, options_val);
 
     auto options_meta = torch::TensorOptions().dtype(torch::kInt16).device(tensor_a.device());
     auto metadata = torch::empty({m, n/16}, options_meta);
@@ -232,7 +244,7 @@ std::vector<torch::Tensor> sddmm_bf16_ntn_cuda(
 
     auto layout_a = cutlass::layout::RowMajor::packed(cutlass::make_Coord(problem_size.m(), problem_size.k()));
     auto layout_b = cutlass::layout::ColumnMajor::packed(problem_size.kn());
-    auto layout_d = cutlass::layout::RowMajor::packed(problem_size.mn());
+    auto layout_d = cutlass::layout::RowMajor::packed(cutlass::make_Coord(problem_size.m(), problem_size.n() / 2));
 
     cutlass::bfloat16_t alpha = cutlass::bfloat16_t(1.0);
     cutlass::bfloat16_t beta = cutlass::bfloat16_t(0.0);
@@ -250,12 +262,12 @@ std::vector<torch::Tensor> sddmm_bf16_ntn_cuda(
 
     int smem_size = int(sizeof(SharedStorage_bf16_ntn));
 
-    cudaFuncSetAttribute(cutlassSddmmKernel_16<cutlass::bfloat16_t, Mma_bf16_ntn, SharedStorage_bf16_ntn, Epilogue_bf16_ntn, SDDMM_Epilogue_bf16>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size);
-    cudaFuncSetAttribute(cutlassSddmmKernel_16<cutlass::bfloat16_t, Mma_bf16_ntn, SharedStorage_bf16_ntn, Epilogue_bf16_ntn, SDDMM_Epilogue_bf16>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
+    cudaFuncSetAttribute(cutlassSddmmKernel_16<cutlass::bfloat16_t, Mma_bf16_ntn, SharedStorage_bf16_ntn, SDDMM_Epilogue_bf16>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size);
+    cudaFuncSetAttribute(cutlassSddmmKernel_16<cutlass::bfloat16_t, Mma_bf16_ntn, SharedStorage_bf16_ntn, SDDMM_Epilogue_bf16>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
 
     int gemm_k_size = ((problem_size.k() + Mma_bf16_ntn::Shape::kK - 1) / Mma_bf16_ntn::Shape::kK) * Mma_bf16_ntn::Shape::kK;
 
-    cutlassSddmmKernel_16<cutlass::bfloat16_t, Mma_bf16_ntn, SharedStorage_bf16_ntn, Epilogue_bf16_ntn, SDDMM_Epilogue_bf16><<<grid, block, smem_size>>>(
+    cutlassSddmmKernel_16<cutlass::bfloat16_t, Mma_bf16_ntn, SharedStorage_bf16_ntn, SDDMM_Epilogue_bf16><<<grid, block, smem_size>>>(
         problem_size, grid_tiled_shape, 
         layout_a, (cutlass::bfloat16_t*)tensor_a.data_ptr(),
         layout_b, (cutlass::bfloat16_t*)tensor_b.data_ptr(),
@@ -275,7 +287,7 @@ std::vector<torch::Tensor> sddmm_f16_ntn_cuda(
     const int k = tensor_b.size(1);
 
     auto options_val = torch::TensorOptions().dtype(torch::kFloat16).device(tensor_b.device());
-    auto output_matrix = torch::empty({m, n}, options_val);
+    auto output_matrix = torch::empty({m, n/2}, options_val);
 
     auto options_meta = torch::TensorOptions().dtype(torch::kInt16).device(tensor_a.device());
     auto metadata = torch::empty({m, n/16}, options_meta);
@@ -285,7 +297,7 @@ std::vector<torch::Tensor> sddmm_f16_ntn_cuda(
 
     auto layout_a = cutlass::layout::RowMajor::packed(cutlass::make_Coord(problem_size.m(), problem_size.k()));
     auto layout_b = cutlass::layout::ColumnMajor::packed(problem_size.kn());
-    auto layout_d = cutlass::layout::RowMajor::packed(problem_size.mn());
+    auto layout_d = cutlass::layout::RowMajor::packed(cutlass::make_Coord(problem_size.m(), problem_size.n() / 2));
 
     cutlass::half_t alpha = cutlass::half_t(1.0);
     cutlass::half_t beta = cutlass::half_t(0.0);
@@ -303,12 +315,12 @@ std::vector<torch::Tensor> sddmm_f16_ntn_cuda(
 
     int smem_size = int(sizeof(SharedStorage_f16_ntn));
 
-    cudaFuncSetAttribute(cutlassSddmmKernel_16<cutlass::half_t, Mma_f16_ntn, SharedStorage_f16_ntn, Epilogue_f16_ntn, SDDMM_Epilogue_f16>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size);
-    cudaFuncSetAttribute(cutlassSddmmKernel_16<cutlass::half_t, Mma_f16_ntn, SharedStorage_f16_ntn, Epilogue_f16_ntn, SDDMM_Epilogue_f16>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
+    cudaFuncSetAttribute(cutlassSddmmKernel_16<cutlass::half_t, Mma_f16_ntn, SharedStorage_f16_ntn, SDDMM_Epilogue_f16>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size);
+    cudaFuncSetAttribute(cutlassSddmmKernel_16<cutlass::half_t, Mma_f16_ntn, SharedStorage_f16_ntn, SDDMM_Epilogue_f16>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
 
     int gemm_k_size = ((problem_size.k() + Mma_f16_ntn::Shape::kK - 1) / Mma_f16_ntn::Shape::kK) * Mma_f16_ntn::Shape::kK;
 
-    cutlassSddmmKernel_16<cutlass::half_t, Mma_f16_ntn, SharedStorage_f16_ntn, Epilogue_f16_ntn, SDDMM_Epilogue_f16><<<grid, block, smem_size>>>(
+    cutlassSddmmKernel_16<cutlass::half_t, Mma_f16_ntn, SharedStorage_f16_ntn, SDDMM_Epilogue_f16><<<grid, block, smem_size>>>(
         problem_size, grid_tiled_shape, 
         layout_a, (cutlass::half_t*)tensor_a.data_ptr(),
         layout_b, (cutlass::half_t*)tensor_b.data_ptr(),

@@ -35,17 +35,18 @@ template <
     typename LayoutC_,
     /// Policy describing tuning details (concept: MmaPolicy)
     typename Policy_,
-    /// Number of stages,
-    int Stages,
     /// Use zfill or predicate for out-of-bound cp.async
-    SharedMemoryClearOption SharedMemoryClear = SharedMemoryClearOption::kNone,
+    SharedMemoryClearOption SharedMemoryClear,
     /// Used for partial specialization
-    typename Enable = bool>
-class MmaSinglestage : 
-  public MmaBase<Shape_, Policy_, Stages> {
+    typename Enable>
+class MmaMultistage<
+    Shape_, IteratorA_, SmemIteratorA_, CacheOpA, IteratorB_,
+    SmemIteratorB_, CacheOpB, ElementC_, LayoutC_, Policy_, 1, 
+    SharedMemoryClear, Enable> : 
+  public MmaBase<Shape_, Policy_, 1> {
 public:
   ///< Base class
-  using Base = MmaBase<Shape_, Policy_, Stages>;
+  using Base = MmaBase<Shape_, Policy_, 1>;
   ///< Size of the Gemm problem - concept: gemm::GemmShape<>
   using Shape = Shape_;
   ///< Iterates over tiles of A operand in global memory
@@ -58,6 +59,9 @@ public:
   using LayoutC = LayoutC_;
   ///< Policy describing tuning details
   using Policy = Policy_;
+
+//   using SharedMemoryClearOption = SharedMemoryClearOption::kNone;
+//   using Enable = typename bool;
 
   using SmemIteratorA = SmemIteratorA_;
   using SmemIteratorB = SmemIteratorB_;
@@ -100,7 +104,7 @@ public:
         IteratorB::ThreadMap::Iterations::kCount;
 
     /// Number of stages
-    static int const kStages = Stages;
+    static int const kStages = 1;
 
     /// Number of cp.async instructions to load on group of operand A
     static int const kAccessesPerGroupA =
@@ -134,7 +138,7 @@ public:
 
   /// Construct from tensor references
   CUTLASS_DEVICE
-  MmaSinglestage(
+  MmaMultistage(
       ///< Shared storage needed for internal use by threadblock-scoped GEMM
       typename Base::SharedStorage &shared_storage,
       ///< ID within the threadblock
@@ -253,14 +257,6 @@ public:
       IteratorB iterator_B,
       ///< initial value of accumulator
       FragmentC const &src_accum) {
-
-    
-    // Issue the first stage
-    
-
-    //
-    // Prologue
-    //
 
     // Issue several complete stages
     iterator_A.clear_mask(gemm_k_iterations == 0);

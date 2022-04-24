@@ -1,4 +1,5 @@
 #include "default_sddmma_core_sm80.h"
+#include "mma_singlestage.h"
 ////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
@@ -122,7 +123,7 @@ struct DefaultSDDMma<ElementA, LayoutA, kAlignmentA, ElementB, LayoutB,
           ElementB, LayoutB, 0, ThreadMapB, AccessTypeB>;
 
   // Define the threadblock-scoped multistage matrix multiply
-  using ThreadblockMma = cutlass::gemm::threadblock::MmaMultistage<
+  using ThreadblockMma = cutlass::gemm::threadblock::MmaSinglestage<
       typename MmaCore::Shape, IteratorA, typename MmaCore::SmemIteratorA,
       MmaCore::kCacheOpA, IteratorB, typename MmaCore::SmemIteratorB,
       MmaCore::kCacheOpB, ElementAccumulator, LayoutC,

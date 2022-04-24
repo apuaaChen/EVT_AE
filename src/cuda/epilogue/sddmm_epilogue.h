@@ -70,11 +70,11 @@ public:
     static int const kElementsPerAccess = 8;
 
     using ThreadMap = MatrixShape<
-        ThreadblockTile_Shape::kN / 2 / kElementsPerAccess,
-        kNumThread / (ThreadblockTile_Shape::kN / 2 / kElementsPerAccess)>;
+        kNumThread / (ThreadblockTile_Shape::kN / 2 / kElementsPerAccess),
+        ThreadblockTile_Shape::kN / 2 / kElementsPerAccess>;
 
     using StoreIteration = MatrixShape<
-        1, ThreadblockTile_Shape::kM / ThreadMap::kColumn>;
+        ThreadblockTile_Shape::kM / ThreadMap::kRow, 1>;
 
     
     using OutputTileThreadMap = typename cutlass::epilogue::threadblock::DefaultThreadMapTensorOp<
@@ -125,8 +125,8 @@ public:
     ):
     stride(extent.column() / 2)
     {
-        int lane_id = thread_id % ThreadMap::kRow;
-        int group_id = thread_id / ThreadMap::kRow;
+        int lane_id = thread_id % ThreadMap::kColumn;
+        int group_id = thread_id / ThreadMap::kColumn;
 
         global_ptr = reinterpret_cast<float4 *>(nnz_pointer + (threadblock_offset.row() + group_id) * stride + threadblock_offset.column() / 2) + lane_id;
     }
@@ -256,8 +256,8 @@ public:
         shared_load_ptr = reinterpret_cast<float*>(shared_storage.data()) + shmem_init_offset / 2;
 
         // set the shared_store_ptr
-        int sub_warp_lane_id = thread_id_ % NnzIterator::ThreadMap::kRow;
-        int sub_warp_id = thread_id_ / NnzIterator::ThreadMap::kRow;
+        int sub_warp_lane_id = thread_id_ % NnzIterator::ThreadMap::kColumn;
+        int sub_warp_id = thread_id_ / NnzIterator::ThreadMap::kColumn;
 
         shared_store_ptr = reinterpret_cast<float4*>(shared_storage.data()) + (sub_warp_id * SharedStorage::StorageShape::kColumn) / 8 + sub_warp_lane_id;
     }
@@ -379,10 +379,10 @@ public:
         NnzIterator iterator_D
     ){
         #pragma unroll
-        for (int m=0; m < NnzIterator::StoreIteration::kColumn; m++){
+        for (int m=0; m < NnzIterator::StoreIteration::kRow; m++){
             iterator_D.store(*shared_store_ptr);
-            shared_store_ptr += NnzIterator::ThreadMap::kColumn * SharedStorage::StorageShape::kColumn / 8;
-            iterator_D.add_pointer_offset({NnzIterator::ThreadMap::kColumn, 0});
+            shared_store_ptr += NnzIterator::ThreadMap::kRow * SharedStorage::StorageShape::kColumn / 8;
+            iterator_D.add_pointer_offset({NnzIterator::ThreadMap::kRow, 0});
         }
     }
 };

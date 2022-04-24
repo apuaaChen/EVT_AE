@@ -32,7 +32,7 @@ using EpilogueOp_f16 = cutlass::epilogue::thread::LinearCombination<
     cutlass::epilogue::thread::ScaleType::OnlyAlphaScaling>;
 
 // Pipeline stages in GEMM
-constexpr int NumStages = 3;
+constexpr int NumStages = 1;
 
 /// Mma
 using Mma_bf16_ntn = typename cutlass::gemm::threadblock::DefaultSDDMma<
@@ -176,14 +176,6 @@ __global__ void cutlassSddmmKernel_16(
     );
 
     int block_idx = threadblock_tile_offset.m() + threadblock_tile_offset.n() * grid_tiled_shape.m();
-    
-    // typename _Epilogue::OutputTileIterator iterator_D(
-    //     params_D,
-    //     ptr_D,
-    //     problem_size.mn(),
-    //     thread_idx,
-    //     threadblock_offset
-    // );
 
     cutlass::MatrixCoord meta_shape(
         problem_size.m(), problem_size.n()/16
@@ -212,16 +204,8 @@ __global__ void cutlassSddmmKernel_16(
         lane_idx);
 
     epilogue_sddmm.get_meta_data(accumulators, lane_idx, iterator_E);
+    __syncthreads();
     epilogue_sddmm.store_nnz(iterator_D);
-    
-    // _Epilogue epilogue(
-    //     shared_storage.epilogue,
-    //     thread_idx,
-    //     warp_idx,
-    //     lane_idx
-    // );
-
-    // epilogue(output_op, iterator_D, accumulators, iterator_D);
 }
 
 

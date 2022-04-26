@@ -76,6 +76,11 @@ public:
     void add_pointer_offset(TensorCoord offset){
         global_ptr += offset.row() * stride + offset.column();
     }
+
+    CUTLASS_DEVICE
+    void add_pointer_offset(int64_t offset){
+        global_ptr += offset / kShmemLoadElementsPerAccess;
+    }
 };
 
 

@@ -21,7 +21,7 @@ using WarpShape_bf16 = cutlass::gemm::GemmShape<64, 64, 64>;
 using InstructionShape_bf16 = cutlass::gemm::GemmShape<16, 8, 32>;
 
 // Define MMA & Epilogue
-using ThreadblockSwizzle = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>;
+using ThreadblockSwizzle = cutlass::gemm::threadblock::GemmBatchedIdentityThreadblockSwizzle;
 
 // DefaultConfigurations for float & bf16
 using DefaultConfig = cutlass::gemm::device::DefaultGemmConfiguration<
@@ -92,24 +92,26 @@ __device__ void cutlassSpmmKernel_16_(
         return;
     }
 
+    int batch_idx = threadblock_swizzle.get_batch_idx();
+
     // Compute initial location in logical coordinates
     cutlass::MatrixCoord tb_offset_A{
         threadblock_tile_offset.m() * _Mma::Shape::kM,
-        threadblock_tile_offset.k() * gemm_k_size / _Mma::kSparse
+        0
     };
 
     cutlass::MatrixCoord tb_offset_B{
-        threadblock_tile_offset.k() * gemm_k_size,
+        0,
         threadblock_tile_offset.n() * _Mma::Shape::kN
     };
 
     cutlass::MatrixCoord tb_offset_E{
         threadblock_tile_offset.m() * _Mma::Shape::kM,
-        threadblock_tile_offset.k() * gemm_k_size / _Mma::kSparse
+        0
     };
 
     // Problem size
-    int problem_size_k = min(problem_size.k(), (threadblock_tile_offset.k() + 1) * gemm_k_size);
+    int problem_size_k = problem_size.k(); //min(problem_size.k(), (threadblock_tile_offset.k() + 1) * gemm_k_size);
 
     int gemm_k_iterations = (problem_size_k - tb_offset_B.row() + _Mma::Shape::kK - 1) / _Mma::Shape::kK;
 
@@ -126,6 +128,9 @@ __device__ void cutlassSpmmKernel_16_(
         tb_offset_A
     );
 
+    int64_t a_stride = problem_size.m() * problem_size.k() / _Mma::kSparse;
+    iterator_A.add_pointer_offset(batch_idx * a_stride);
+
     typename _Mma::IteratorB iterator_B(
         params_B,
         //ref_B.data(),
@@ -134,6 +139,9 @@ __device__ void cutlassSpmmKernel_16_(
         thread_idx,
         tb_offset_B
     );
+
+    int64_t b_stride = problem_size.n() * problem_size.k();
+    iterator_B.add_pointer_offset(batch_idx * b_stride);
 
     typename _Mma::IteratorE iterator_E(
         params_E,
@@ -144,6 +152,9 @@ __device__ void cutlassSpmmKernel_16_(
         thread_idx,
         tb_offset_E
     );
+
+    int64_t e_stride = problem_size.m() * problem_size.k() / _Mma::kSparse / _Mma::kElementsPerElementE;
+    iterator_E.add_pointer_offset(batch_idx * e_stride);
 
     // Broadcast the warp_id computed by lane 0 to ensure dependent code
     // is compuled as warp-uniform
@@ -188,6 +199,9 @@ __device__ void cutlassSpmmKernel_16_(
         threadblock_offset
     );
 
+    int64_t d_stride = problem_size.m() * problem_size.n();
+    iterator_D.add_pointer_offset(batch_idx * d_stride);
+
     
     _Epilogue epilogue(
         shared_storage.epilogue,
@@ -231,21 +245,23 @@ torch::Tensor spmm_cuda(
     torch::Tensor tensor_e)
 {
     int m, n, k;
-    m = tensor_a.size(0);
+    m = tensor_a.size(-2);
     if (std::is_same<typename Config::LayoutB, cutlass::layout::RowMajor>::value){
-        n = tensor_b.size(1); 
-        k = tensor_b.size(0);   
+        n = tensor_b.size(-1); 
+        k = tensor_b.size(-2);   
     } else {
-        n = tensor_b.size(0);
-        k = tensor_b.size(1);
+        n = tensor_b.size(-2);
+        k = tensor_b.size(-1);
     }
+
+    int batch_size = tensor_b.numel() / n / k;
 
     auto options_val = torch::TensorOptions().dtype(tensor_a.dtype()).device(tensor_b.device());
     torch::Tensor output_matrix;
     if (Config::Trans){
-        output_matrix = torch::empty({n, m}, options_val);
+        output_matrix = torch::empty({batch_size, n, m}, options_val);
     } else {
-        output_matrix = torch::empty({m, n}, options_val);
+        output_matrix = torch::empty({batch_size, m, n}, options_val);
     }
 
     // Create a tuple of problem size for matrix multiplication
@@ -264,7 +280,7 @@ torch::Tensor spmm_cuda(
     cutlass::gemm::GemmCoord grid_tiled_shape = threadblock_swizzle.get_tiled_shape(
         problem_size,
         {ThreadblockShape_bf16::kM, ThreadblockShape_bf16::kN, ThreadblockShape_bf16::kK},
-        1
+        batch_size
     );
 
     dim3 grid = threadblock_swizzle.get_grid_shape(grid_tiled_shape);

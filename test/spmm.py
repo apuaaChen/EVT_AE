@@ -5,6 +5,7 @@ from sptrain.spmm import spmmv2_bf16_nnn, spmmv2_bf16_ntn, spmmv2_bf16_ntt, spmm
 import torch.nn.functional as F
 
 
+L = 4
 batch_size = 4096
 feat_in = 1024
 feat_out = 2048
@@ -140,55 +141,55 @@ class TestPruning(unittest.TestCase):
 
 class TestSpMM(unittest.TestCase):
     def test_nnn(self):
-        dense_matrix = torch.randn(size=(batch_size, feat_in), dtype=dtype, device="cuda")
-        rhs_matrix = torch.randn(size=(feat_in, feat_out), dtype=dtype, device="cuda")
+        dense_matrix = torch.randn(size=(L, batch_size, feat_in), dtype=dtype, device="cuda")
+        rhs_matrix = torch.randn(size=(L, feat_in, feat_out), dtype=dtype, device="cuda")
         nonzeros, uncompressed, metadata = bdense2sparse_gold(dense_matrix, False)
-        output_matrix_ref = torch.matmul(uncompressed, rhs_matrix)
+        output_matrix_ref = torch.bmm(uncompressed, rhs_matrix)
         output_matrix = spmmv2_bf16_nnn(nonzeros, rhs_matrix, metadata)
 
         self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, atol=0.5))
 
     def test_ntn(self):
-        dense_matrix = torch.randn(size=(batch_size, feat_in), dtype=dtype, device="cuda")
-        rhs_matrix = torch.randn(size=(feat_out, feat_in), dtype=dtype, device="cuda")
+        dense_matrix = torch.randn(size=(L, batch_size, feat_in), dtype=dtype, device="cuda")
+        rhs_matrix = torch.randn(size=(L, feat_out, feat_in), dtype=dtype, device="cuda")
         nonzeros, uncompressed, metadata = bdense2sparse_gold(dense_matrix, False)
-        output_matrix_ref = torch.matmul(uncompressed, rhs_matrix.t())
+        output_matrix_ref = torch.bmm(uncompressed, rhs_matrix.transpose(1, 2))
         output_matrix = spmmv2_bf16_ntn(nonzeros, rhs_matrix, metadata)
 
         self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, atol=0.5))
     
     def test_ntt(self):
-        dense_matrix = torch.randn(size=(batch_size, feat_in), dtype=dtype, device="cuda")
-        rhs_matrix = torch.randn(size=(feat_out, feat_in), dtype=dtype, device="cuda")
+        dense_matrix = torch.randn(size=(L, batch_size, feat_in), dtype=dtype, device="cuda")
+        rhs_matrix = torch.randn(size=(L, feat_out, feat_in), dtype=dtype, device="cuda")
         nonzeros, uncompressed, metadata = bdense2sparse_gold(dense_matrix, False)
-        output_matrix_ref = torch.matmul(uncompressed, rhs_matrix.t()).t()
+        output_matrix_ref = torch.bmm(uncompressed, rhs_matrix.transpose(1, 2)).transpose(1, 2)
         output_matrix = spmmv2_bf16_ntt(nonzeros, rhs_matrix, metadata)
 
         self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, atol=0.5))
     
     def test_nnn_half(self):
-        dense_matrix = torch.randn(size=(batch_size, feat_in), dtype=half, device="cuda")
-        rhs_matrix = torch.randn(size=(feat_in, feat_out), dtype=half, device="cuda")
+        dense_matrix = torch.randn(size=(L, batch_size, feat_in), dtype=half, device="cuda")
+        rhs_matrix = torch.randn(size=(L, feat_in, feat_out), dtype=half, device="cuda")
         nonzeros, uncompressed, metadata = bdense2sparse_gold(dense_matrix, False)
-        output_matrix_ref = torch.matmul(uncompressed, rhs_matrix)
+        output_matrix_ref = torch.bmm(uncompressed, rhs_matrix)
         output_matrix = spmmv2_f16_nnn(nonzeros, rhs_matrix, metadata)
 
         self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, atol=0.5))
 
     def test_ntn_half(self):
-        dense_matrix = torch.randn(size=(batch_size, feat_in), dtype=half, device="cuda")
-        rhs_matrix = torch.randn(size=(feat_out, feat_in), dtype=half, device="cuda")
+        dense_matrix = torch.randn(size=(L, batch_size, feat_in), dtype=half, device="cuda")
+        rhs_matrix = torch.randn(size=(L, feat_out, feat_in), dtype=half, device="cuda")
         nonzeros, uncompressed, metadata = bdense2sparse_gold(dense_matrix, False)
-        output_matrix_ref = torch.matmul(uncompressed, rhs_matrix.t())
+        output_matrix_ref = torch.bmm(uncompressed, rhs_matrix.transpose(1, 2))
         output_matrix = spmmv2_f16_ntn(nonzeros, rhs_matrix, metadata)
 
         self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, atol=0.5))
     
     def test_ntt_half(self):
-        dense_matrix = torch.randn(size=(batch_size, feat_in), dtype=half, device="cuda")
-        rhs_matrix = torch.randn(size=(feat_out, feat_in), dtype=half, device="cuda")
+        dense_matrix = torch.randn(size=(L, batch_size, feat_in), dtype=half, device="cuda")
+        rhs_matrix = torch.randn(size=(L, feat_out, feat_in), dtype=half, device="cuda")
         nonzeros, uncompressed, metadata = bdense2sparse_gold(dense_matrix, False)
-        output_matrix_ref = torch.matmul(uncompressed, rhs_matrix.t()).t()
+        output_matrix_ref = torch.bmm(uncompressed, rhs_matrix.transpose(1, 2)).transpose(1, 2)
         output_matrix = spmmv2_f16_ntt(nonzeros, rhs_matrix, metadata)
 
         self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, atol=0.5))

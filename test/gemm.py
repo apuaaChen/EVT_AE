@@ -13,10 +13,10 @@ dtype = torch.bfloat16
 class TestGemm(unittest.TestCase):
 
     def test_gemm(self):
-        lhs_matrix = torch.randn(size=(batch_size, feat_in), dtype=dtype, device="cuda")
-        rhs_matrix = torch.randn(size=(feat_in, feat_out), dtype=dtype, device="cuda")
+        lhs_matrix = torch.randn(size=(4, batch_size, feat_in), dtype=dtype, device="cuda")
+        rhs_matrix = torch.randn(size=(4, feat_in, feat_out), dtype=dtype, device="cuda")
 
-        output_ref = torch.matmul(lhs_matrix, rhs_matrix)
+        output_ref = torch.bmm(lhs_matrix, rhs_matrix)
         output = gemm_bf16_nnn(lhs_matrix, rhs_matrix)
 
         self.assertTrue(torch.allclose(output_ref, output, atol=0.5))

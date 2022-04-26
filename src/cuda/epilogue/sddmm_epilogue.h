@@ -42,6 +42,11 @@ public:
     void store_with_offset(TensorCoord offset, int data){
         *(global_ptr + offset.column() * stride + offset.row()) = data;
     }
+
+    CUTLASS_DEVICE
+    void add_pointer_offset(int64_t offset){
+        global_ptr += offset / 2;
+    }
 };
 
 
@@ -138,7 +143,12 @@ public:
 
     CUTLASS_DEVICE
     void add_pointer_offset(TensorCoord offset){
-        global_ptr += offset.row() * stride / 8 + offset.column();
+        global_ptr += offset.row() * stride / kElementsPerAccess + offset.column();
+    }
+
+    CUTLASS_DEVICE
+    void add_pointer_offset(int64_t offset){
+        global_ptr += offset / kElementsPerAccess;
     }
 };
 

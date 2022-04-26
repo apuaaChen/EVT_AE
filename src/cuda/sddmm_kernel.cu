@@ -9,14 +9,13 @@
 #include "sddmm/default_sddmma.h"
 #include "epilogue/sddmm_epilogue.h"
 
-
 /// Tiling
 using ThreadblockShape_16 = cutlass::gemm::GemmShape<128, 128, 64>;
 using WarpShape_16 = cutlass::gemm::GemmShape<64, 64, 64>;
 using InstructionShape_16 = cutlass::gemm::GemmShape<16, 8, 16>;
 
 /// Define MMA & Epilogue
-using ThreadblockSwizzle = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>;
+using ThreadblockSwizzle = cutlass::gemm::threadblock::GemmBatchedIdentityThreadblockSwizzle;
 
 /// DefaultConfigurations for float & bf16
 using DefaultConfig = cutlass::gemm::device::DefaultGemmConfiguration<
@@ -76,19 +75,21 @@ __global__ void cutlassSddmmKernel_16(
         return;
     }
 
+    int batch_idx = threadblock_swizzle.get_batch_idx();
+
     // Compute initial location in logical coordinates
     cutlass::MatrixCoord tb_offset_A{
         threadblock_tile_offset.m() * _Mma::Shape::kM,
-        threadblock_tile_offset.k() * gemm_k_size
+        0// threadblock_tile_offset.k() * gemm_k_size
     };
 
     cutlass::MatrixCoord tb_offset_B{
-        threadblock_tile_offset.k() * gemm_k_size,
+        0, //threadblock_tile_offset.k() * gemm_k_size,
         threadblock_tile_offset.n() * _Mma::Shape::kN
     };
 
     // Problem size
-    int problem_size_k = min(problem_size.k(), (threadblock_tile_offset.k() + 1) * gemm_k_size);
+    int problem_size_k = problem_size.k(); //min(problem_size.k(), (threadblock_tile_offset.k() + 1) * gemm_k_size);
 
     int gemm_k_iterations = (problem_size_k - tb_offset_B.row() + _Mma::Shape::kK - 1) / _Mma::Shape::kK;
 
@@ -105,6 +106,10 @@ __global__ void cutlassSddmmKernel_16(
         tb_offset_A
     );
 
+    int64_t a_stride = problem_size.m() * problem_size.k();
+
+    iterator_A.add_pointer_offset(batch_idx * a_stride);
+
     typename _Mma::IteratorB iterator_B(
         params_B,
         //ref_B.data(),
@@ -113,6 +118,10 @@ __global__ void cutlassSddmmKernel_16(
         thread_idx,
         tb_offset_B
     );
+
+    int64_t b_stride = problem_size.n() * problem_size.k();
+
+    iterator_B.add_pointer_offset(batch_idx * b_stride);
 
     // Broadcast the warp_id computed by lane 0 to ensure dependent code
     // is compuled as warp-uniform
@@ -163,12 +172,20 @@ __global__ void cutlassSddmmKernel_16(
         threadblock_offset
     );
 
+    int64_t e_stride = problem_size.m() * problem_size.n()/16;
+
+    iterator_E.add_pointer_offset(batch_idx * e_stride);
+
     typename _Epilogue_SDDMM::NnzIterator iterator_D(
         ptr_D,
         problem_size.mn(),
         thread_idx,
         threadblock_offset
     );
+
+    int64_t d_stride = problem_size.m() * problem_size.n()/2;
+
+    iterator_D.add_pointer_offset(batch_idx * d_stride);
 
     _Epilogue_SDDMM epilogue_sddmm(
         shared_storage.epilogue,
@@ -186,15 +203,19 @@ std::vector<torch::Tensor> sddmm_bf16_ntn_cuda(
     torch::Tensor tensor_a,
     torch::Tensor tensor_b)
 {
-    const int m = tensor_a.size(0);
-    const int n = tensor_b.size(0);
-    const int k = tensor_b.size(1);
+    const int m = tensor_a.size(-2);
+    const int n = tensor_b.size(-2);
+    const int k = tensor_b.size(-1);
+    
+    int batch_size = tensor_a.numel() / m / k;
+    int batch_size_b = tensor_b.numel() / n / k;
+    assert (batch_size == batch_size_b);
 
     auto options_val = torch::TensorOptions().dtype(torch::kBFloat16).device(tensor_b.device());
-    auto output_matrix = torch::empty({m, n/2}, options_val);
+    auto output_matrix = torch::zeros({batch_size, m, n/2}, options_val);
 
     auto options_meta = torch::TensorOptions().dtype(torch::kInt16).device(tensor_a.device());
-    auto metadata = torch::empty({m, n/16}, options_meta);
+    auto metadata = torch::zeros({batch_size, m, n/16}, options_meta);
 
     // Create a tuple of problem size for matrix multiplication
     cutlass::gemm::GemmCoord problem_size(m, n, k);
@@ -211,7 +232,7 @@ std::vector<torch::Tensor> sddmm_bf16_ntn_cuda(
     cutlass::gemm::GemmCoord grid_tiled_shape = threadblock_swizzle.get_tiled_shape(
         problem_size,
         {ThreadblockShape_16::kM, ThreadblockShape_16::kN, ThreadblockShape_16::kK},
-        1
+        batch_size
     );
 
     if (k == 64){
@@ -280,15 +301,19 @@ std::vector<torch::Tensor> sddmm_f16_ntn_cuda(
     torch::Tensor tensor_a,
     torch::Tensor tensor_b)
 {
-    const int m = tensor_a.size(0);
-    const int n = tensor_b.size(0);
-    const int k = tensor_b.size(1);
+    const int m = tensor_a.size(-2);
+    const int n = tensor_b.size(-2);
+    const int k = tensor_b.size(-1);
+    
+    int batch_size = tensor_a.numel() / m / k;
+    int batch_size_b = tensor_b.numel() / n / k;
+    assert (batch_size == batch_size_b);
 
     auto options_val = torch::TensorOptions().dtype(torch::kFloat16).device(tensor_b.device());
-    auto output_matrix = torch::empty({m, n/2}, options_val);
+    auto output_matrix = torch::empty({batch_size, m, n/2}, options_val);
 
     auto options_meta = torch::TensorOptions().dtype(torch::kInt16).device(tensor_a.device());
-    auto metadata = torch::empty({m, n/16}, options_meta);
+    auto metadata = torch::empty({batch_size, m, n/16}, options_meta);
 
     // Create a tuple of problem size for matrix multiplication
     cutlass::gemm::GemmCoord problem_size(m, n, k);
@@ -305,7 +330,7 @@ std::vector<torch::Tensor> sddmm_f16_ntn_cuda(
     cutlass::gemm::GemmCoord grid_tiled_shape = threadblock_swizzle.get_tiled_shape(
         problem_size,
         {ThreadblockShape_16::kM, ThreadblockShape_16::kN, ThreadblockShape_16::kK},
-        1
+        batch_size
     );
 
     if (k == 64){

@@ -195,6 +195,27 @@ __global__ void Dense2Sparse_gold(
     Dense2Sparse_gold_<Scalar, ABS>(m, k, dense_matrix, sparse_matrix, uncompressed_matrix, metadata, metadata_reorder);
 }
 
+template <typename Scalar, bool ABS>
+__global__ void BatchedDense2Sparse_gold(
+    int m, int k,
+    const Scalar* __restrict__ dense_matrix_b, int dense_stride,
+    Scalar* __restrict__ sparse_matrix_b, int sparse_stride,
+    Scalar* __restrict__ uncompressed_matrix_b, int uncompressed_stride,
+    int16_t * __restrict__ metadata_b, int meta_stride,
+    int16_t * __restrict__ metadata_reorder_b, int meta_r_stride)
+{   
+    int entry_idx = blockIdx.z;
+
+    // Get the input pointers
+    const Scalar* dense_matrix = dense_matrix_b + entry_idx * dense_stride;
+    Scalar* sparse_matrix = sparse_matrix_b + entry_idx * sparse_stride;
+    Scalar* uncompressed_matrix = uncompressed_matrix_b + entry_idx * uncompressed_stride;
+    int16_t* metadata = metadata_b + entry_idx * meta_stride;
+    int16_t* metadata_reorder = metadata_reorder_b + entry_idx * meta_r_stride;
+
+    Dense2Sparse_gold_<Scalar, ABS>(m, k, dense_matrix, sparse_matrix, uncompressed_matrix, metadata, metadata_reorder);
+}
+
 
 std::vector<torch::Tensor> batched_dense2sparse_gold_cuda(
     torch::Tensor dense_matrix,
@@ -249,36 +270,81 @@ std::vector<torch::Tensor> batched_dense2sparse_gold_cuda(
     // if (dense_matrix.dtype() == torch::kBFloat16){
     if (abs){
         if (dense_matrix.dtype() == torch::kBFloat16){
-            Dense2Sparse_gold<nv_bfloat16, true><<<grid, block>>>(
-                m, k, 
-                (nv_bfloat16*)dense_matrix.data_ptr(), 
-                (nv_bfloat16*)sparse_matrix.data_ptr(), 
-                (nv_bfloat16*)uncompressed_matrix.data_ptr(), 
-                metadata.data<int16_t>(), metadata_reorder.data<int16_t>());
+            if (batch_size > 1){
+                BatchedDense2Sparse_gold<nv_bfloat16, true><<<grid, block>>>(
+                    m, k, 
+                    (nv_bfloat16*)dense_matrix.data_ptr(),  m * k,
+                    (nv_bfloat16*)sparse_matrix.data_ptr(), m * k / 2,
+                    (nv_bfloat16*)uncompressed_matrix.data_ptr(), m * k,
+                    metadata.data<int16_t>(), m * k / meta_ratio, 
+                    metadata_reorder.data<int16_t>(), m * k / meta_ratio);
+
+            } else {
+                Dense2Sparse_gold<nv_bfloat16, true><<<grid, block>>>(
+                    m, k, 
+                    (nv_bfloat16*)dense_matrix.data_ptr(), 
+                    (nv_bfloat16*)sparse_matrix.data_ptr(), 
+                    (nv_bfloat16*)uncompressed_matrix.data_ptr(), 
+                    metadata.data<int16_t>(), metadata_reorder.data<int16_t>());
+            }
+            
         } else {
-            Dense2Sparse_gold<__half, true><<<grid, block>>>(
-                m, k, 
-                (__half*)dense_matrix.data_ptr(), 
-                (__half*)sparse_matrix.data_ptr(), 
-                (__half*)uncompressed_matrix.data_ptr(), 
-                metadata.data<int16_t>(), metadata_reorder.data<int16_t>());
+            if (batch_size > 1){
+                BatchedDense2Sparse_gold<__half, true><<<grid, block>>>(
+                    m, k, 
+                    (__half*)dense_matrix.data_ptr(), m * k,
+                    (__half*)sparse_matrix.data_ptr(), m * k / 2,
+                    (__half*)uncompressed_matrix.data_ptr(), m * k,
+                    metadata.data<int16_t>(), m * k / meta_ratio,
+                    metadata_reorder.data<int16_t>(), m * k / meta_ratio);
+
+            } else {
+                Dense2Sparse_gold<__half, true><<<grid, block>>>(
+                    m, k, 
+                    (__half*)dense_matrix.data_ptr(), 
+                    (__half*)sparse_matrix.data_ptr(), 
+                    (__half*)uncompressed_matrix.data_ptr(), 
+                    metadata.data<int16_t>(), metadata_reorder.data<int16_t>());
+            }
+            
         }
            
     } else {
         if (dense_matrix.dtype() == torch::kBFloat16){
-            Dense2Sparse_gold<nv_bfloat16, false><<<grid, block>>>(
-                m, k, 
-                (nv_bfloat16*)dense_matrix.data_ptr(), 
-                (nv_bfloat16*)sparse_matrix.data_ptr(), 
-                (nv_bfloat16*)uncompressed_matrix.data_ptr(), 
-                metadata.data<int16_t>(), metadata_reorder.data<int16_t>());   
+            if (batch_size > 1){
+                BatchedDense2Sparse_gold<nv_bfloat16, false><<<grid, block>>>(
+                    m, k, 
+                    (nv_bfloat16*)dense_matrix.data_ptr(),  m * k,
+                    (nv_bfloat16*)sparse_matrix.data_ptr(), m * k / 2,
+                    (nv_bfloat16*)uncompressed_matrix.data_ptr(), m * k,
+                    metadata.data<int16_t>(), m * k / meta_ratio, 
+                    metadata_reorder.data<int16_t>(), m * k / meta_ratio);
+            } else {
+                Dense2Sparse_gold<nv_bfloat16, false><<<grid, block>>>(
+                    m, k, 
+                    (nv_bfloat16*)dense_matrix.data_ptr(), 
+                    (nv_bfloat16*)sparse_matrix.data_ptr(), 
+                    (nv_bfloat16*)uncompressed_matrix.data_ptr(), 
+                    metadata.data<int16_t>(), metadata_reorder.data<int16_t>());  
+            }
         } else {
-            Dense2Sparse_gold<__half, false><<<grid, block>>>(
-                m, k, 
-                (__half*)dense_matrix.data_ptr(), 
-                (__half*)sparse_matrix.data_ptr(), 
-                (__half*)uncompressed_matrix.data_ptr(), 
-                metadata.data<int16_t>(), metadata_reorder.data<int16_t>());   
+            if (batch_size > 1){
+                BatchedDense2Sparse_gold<__half, false><<<grid, block>>>(
+                    m, k, 
+                    (__half*)dense_matrix.data_ptr(), m * k,
+                    (__half*)sparse_matrix.data_ptr(), m * k / 2,
+                    (__half*)uncompressed_matrix.data_ptr(), m * k,
+                    metadata.data<int16_t>(), m * k / meta_ratio,
+                    metadata_reorder.data<int16_t>(), m * k / meta_ratio);
+            } else {
+                Dense2Sparse_gold<__half, false><<<grid, block>>>(
+                    m, k, 
+                    (__half*)dense_matrix.data_ptr(), 
+                    (__half*)sparse_matrix.data_ptr(), 
+                    (__half*)uncompressed_matrix.data_ptr(), 
+                    metadata.data<int16_t>(), metadata_reorder.data<int16_t>());  
+            }
+             
         }
        
     }
@@ -398,6 +464,24 @@ __global__ void Dense2Sparse(
     Dense2Sparse_<Scalar, ABS>(m, k, dense_matrix, sparse_matrix, metadata);
 }
 
+template <typename Scalar, bool ABS>
+__global__ void BatchedDense2Sparse(
+    int m, int k,
+    const Scalar* __restrict__ dense_matrix_b, int dense_stride,
+    Scalar* __restrict__ sparse_matrix_b, int sparse_stride,
+    int16_t* __restrict__ metadata_b, int meta_stride)
+{
+    // Get the entry index
+    int entry_idx = blockIdx.z;
+
+    // Get the input pointers for the current entry in the batch
+    const Scalar* dense_matrix = dense_matrix_b + entry_idx * dense_stride;
+    Scalar* sparse_matrix = sparse_matrix_b + entry_idx * sparse_stride;
+    int16_t* metadata = metadata_b + entry_idx * meta_stride;
+
+    Dense2Sparse_<Scalar, ABS>(m, k, dense_matrix, sparse_matrix, metadata);
+}
+
 
 std::vector<torch::Tensor> batched_dense2sparse_cuda(
     torch::Tensor dense_matrix, 
@@ -446,41 +530,71 @@ std::vector<torch::Tensor> batched_dense2sparse_cuda(
     // if (dense_matrix.dtype() == torch::kBFloat16){
     if (abs){
         if (dense_matrix.dtype() == torch::kBFloat16){
-            Dense2Sparse<nv_bfloat16, true><<<grid, block>>>(
-                m, k, 
-                (nv_bfloat16*)dense_matrix.data_ptr(), 
-                (nv_bfloat16*)sparse_matrix.data_ptr(), 
-                metadata.data<int16_t>()); 
+            if (batch_size > 1){
+                BatchedDense2Sparse<nv_bfloat16, true><<<grid, block>>>(
+                    m, k, 
+                    (nv_bfloat16*)dense_matrix.data_ptr(), m * k,
+                    (nv_bfloat16*)sparse_matrix.data_ptr(), m * k / 2,
+                    metadata.data<int16_t>(), m * k / meta_ratio); 
+            } else {
+                Dense2Sparse<nv_bfloat16, true><<<grid, block>>>(
+                    m, k, 
+                    (nv_bfloat16*)dense_matrix.data_ptr(), 
+                    (nv_bfloat16*)sparse_matrix.data_ptr(), 
+                    metadata.data<int16_t>());
+            } 
         } else {
-            Dense2Sparse<__half, true><<<grid, block>>>(
-                m, k, 
-                (__half*)dense_matrix.data_ptr(), 
-                (__half*)sparse_matrix.data_ptr(), 
-                metadata.data<int16_t>()); 
+            if (batch_size > 1){
+                BatchedDense2Sparse<__half, true><<<grid, block>>>(
+                    m, k, 
+                    (__half*)dense_matrix.data_ptr(), m * k, 
+                    (__half*)sparse_matrix.data_ptr(), m * k / 2,
+                    metadata.data<int16_t>(), m * k / meta_ratio); 
+
+            } else {
+                Dense2Sparse<__half, true><<<grid, block>>>(
+                    m, k, 
+                    (__half*)dense_matrix.data_ptr(), 
+                    (__half*)sparse_matrix.data_ptr(), 
+                    metadata.data<int16_t>()); 
+            }
+            
         }
     } else {
         if (dense_matrix.dtype() == torch::kBFloat16){
-            Dense2Sparse<nv_bfloat16, false><<<grid, block>>>(
-                m, k, 
-                (nv_bfloat16*)dense_matrix.data_ptr(), 
-                (nv_bfloat16*)sparse_matrix.data_ptr(), 
-                metadata.data<int16_t>()); 
+            if (batch_size > 1){
+                BatchedDense2Sparse<nv_bfloat16, false><<<grid, block>>>(
+                    m, k, 
+                    (nv_bfloat16*)dense_matrix.data_ptr(), m * k, 
+                    (nv_bfloat16*)sparse_matrix.data_ptr(), m * k / 2,
+                    metadata.data<int16_t>(), m * k / meta_ratio); 
+
+            } else {
+                Dense2Sparse<nv_bfloat16, false><<<grid, block>>>(
+                    m, k, 
+                    (nv_bfloat16*)dense_matrix.data_ptr(), 
+                    (nv_bfloat16*)sparse_matrix.data_ptr(), 
+                    metadata.data<int16_t>()); 
+            }
+            
         } else {
-            Dense2Sparse<__half, false><<<grid, block>>>(
-                m, k, 
-                (__half*)dense_matrix.data_ptr(), 
-                (__half*)sparse_matrix.data_ptr(), 
-                metadata.data<int16_t>()); 
+            if (batch_size > 1){
+                BatchedDense2Sparse<__half, false><<<grid, block>>>(
+                    m, k, 
+                    (__half*)dense_matrix.data_ptr(), m * k,
+                    (__half*)sparse_matrix.data_ptr(), m * k / 2,
+                    metadata.data<int16_t>(), m * k / meta_ratio);
+            } else {
+                Dense2Sparse<__half, false><<<grid, block>>>(
+                    m, k, 
+                    (__half*)dense_matrix.data_ptr(), 
+                    (__half*)sparse_matrix.data_ptr(), 
+                    metadata.data<int16_t>());
+            }
+             
         }
          
     }
-          
-    // }
-    // else{
-    //     Dense2Sparse<float><<<grid, block>>>(
-    //         m, k, dense_matrix.data<float>(), sparse_matrix.data<float>(), 
-    //         uncompressed_matrix.data<float>(), metadata.data<int16_t>(), metadata_reorder.data<int16_t>());
-    // }
 
     return {sparse_matrix, metadata};
 }

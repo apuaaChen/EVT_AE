@@ -298,12 +298,14 @@ sequence_length = 1024
 hidden = config.hidden_size
 
 hidden_states = torch.randn(size=(sequence_length, batch_size, hidden), dtype=torch.float16, device="cuda", requires_grad=True)
+hidden_states_sparse = hidden_states.detach().clone().requires_grad_(True)
+
 prob = torch.ones(size=(batch_size, 1, 1, sequence_length), dtype=torch.float16, device="cuda") * 0.2
 mask = torch.bernoulli(prob) * 1e-16
 
 ## forward pass
 output = model(hidden_states, mask)
-output_sparse = model_sparse(hidden_states, mask)
+output_sparse = model_sparse(hidden_states_sparse, mask)
 
 assert torch.allclose(output, output_sparse, rtol=1e-5)
 
@@ -311,6 +313,16 @@ grad_output = torch.randn(size=(sequence_length, batch_size, hidden), dtype=torc
 
 ## backward pass
 output.backward(grad_output)
+output_sparse.backward(grad_output)
+
+assert torch.allclose(hidden_states_sparse.grad, hidden_states.grad, rtol=1e-5)
+assert torch.allclose(model_sparse.query.weight.grad, model.query.weight.grad, rtol=1e-5)
+assert torch.allclose(model_sparse.key.weight.grad, model.key.weight.grad, rtol=1e-5)
+assert torch.allclose(model_sparse.value.weight.grad, model.value.weight.grad, rtol=1e-5)
+
+assert torch.allclose(model_sparse.query.bias.grad, model.query.bias.grad, rtol=1e-5)
+assert torch.allclose(model_sparse.key.bias.grad, model.key.bias.grad, rtol=1e-5)
+assert torch.allclose(model_sparse.value.bias.grad, model.value.bias.grad, rtol=1e-5)
 
 
 #######################################################

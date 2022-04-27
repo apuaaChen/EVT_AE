@@ -9,6 +9,7 @@
 #include "sddmm/default_sddmma.h"
 #include "epilogue/sddmm_epilogue.h"
 #include "epilogue/broadcast_mask_epilogue.h"
+#include "helper.h"
 
 /// Tiling
 using ThreadblockShape_16 = cutlass::gemm::GemmShape<128, 128, 64>;
@@ -27,7 +28,7 @@ template<typename Element_, int Stages>
 struct SDDMMConfigure{
     using Element = Element_;
     using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
-        Element, 128 / cutlass::sizeof_bits<Element>::value, float, float,
+        Element, 128 / cutlass::sizeof_bits<Element>::value, float, Element,
         cutlass::epilogue::thread::ScaleType::OnlyAlphaScaling>;
     
     using Mma = typename cutlass::gemm::threadblock::DefaultSDDMma<
@@ -223,7 +224,7 @@ __global__ void cutlassSddmmKernel_16(
         warp_idx,
         lane_idx);
 
-    epilogue_sddmm.get_meta_data(accumulators, lane_idx, iterator_E);
+    epilogue_sddmm.get_meta_data(accumulators, lane_idx, iterator_E, output_op_);
     __syncthreads();
     epilogue_sddmm.store_nnz(iterator_D);
 }
@@ -233,7 +234,8 @@ template<typename Config>
 std::vector<torch::Tensor> sddmm_cuda(
     torch::Tensor tensor_a,
     torch::Tensor tensor_b,
-    torch::optional<torch::Tensor> mask)
+    torch::optional<torch::Tensor> mask,
+    const float alpha_)
 {
     const int m = tensor_a.size(-2);
     const int n = tensor_b.size(-2);
@@ -256,7 +258,7 @@ std::vector<torch::Tensor> sddmm_cuda(
     auto layout_b = cutlass::layout::ColumnMajor::packed(problem_size.kn());
     auto layout_d = cutlass::layout::RowMajor::packed(cutlass::make_Coord(problem_size.m(), problem_size.n() / 2));
 
-    typename Config::Element alpha = typename Config::Element(1.0);
+    typename Config::Element alpha = typename Config::Element(alpha_);
     typename Config::Element beta = typename Config::Element(0.0);
     
     ThreadblockSwizzle threadblock_swizzle;
@@ -310,19 +312,19 @@ std::vector<torch::Tensor> sddmm_cuda(
 std::vector<torch::Tensor> sddmm_bf16_ntn_cuda(
     torch::Tensor tensor_a,
     torch::Tensor tensor_b,
-    torch::optional<torch::Tensor> mask)
+    torch::optional<torch::Tensor> mask, const float alpha)
 {
     const int k = tensor_b.size(-1);
 
     if (k == 64){
         using Config = SDDMMConfigure<cutlass::bfloat16_t, 1>;
-        return sddmm_cuda<Config>(tensor_a, tensor_b, mask);
+        return sddmm_cuda<Config>(tensor_a, tensor_b, mask, alpha);
     } else if (k == 128){
         using Config = SDDMMConfigure<cutlass::bfloat16_t, 2>;
-        return sddmm_cuda<Config>(tensor_a, tensor_b, mask);
+        return sddmm_cuda<Config>(tensor_a, tensor_b, mask, alpha);
     } else {
         using Config = SDDMMConfigure<cutlass::bfloat16_t, 3>;
-        return sddmm_cuda<Config>(tensor_a, tensor_b, mask);
+        return sddmm_cuda<Config>(tensor_a, tensor_b, mask, alpha);
     }
 }
 
@@ -330,17 +332,17 @@ std::vector<torch::Tensor> sddmm_bf16_ntn_cuda(
 std::vector<torch::Tensor> sddmm_f16_ntn_cuda(
     torch::Tensor tensor_a,
     torch::Tensor tensor_b,
-    torch::optional<torch::Tensor> mask)
+    torch::optional<torch::Tensor> mask, const float alpha)
 {
     const int k = tensor_b.size(-1);
     if (k == 64){
         using Config = SDDMMConfigure<cutlass::half_t, 1>;
-        return sddmm_cuda<Config>(tensor_a, tensor_b, mask);
+        return sddmm_cuda<Config>(tensor_a, tensor_b, mask, alpha);
     } else if (k == 128){
         using Config = SDDMMConfigure<cutlass::half_t, 2>;
-        return sddmm_cuda<Config>(tensor_a, tensor_b, mask);
+        return sddmm_cuda<Config>(tensor_a, tensor_b, mask, alpha);
     } else {
         using Config = SDDMMConfigure<cutlass::half_t, 3>;
-        return sddmm_cuda<Config>(tensor_a, tensor_b, mask);
+        return sddmm_cuda<Config>(tensor_a, tensor_b, mask, alpha);
     }
 }

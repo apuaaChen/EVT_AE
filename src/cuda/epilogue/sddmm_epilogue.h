@@ -278,7 +278,8 @@ public:
     void get_meta_data(
         typename Mma::FragmentC &accumulators,
         int lane_id,
-        MetaIterator iterator_E
+        MetaIterator iterator_E,
+        typename OutputOp::Params output_op
     ){
         float2* frag_ptr = reinterpret_cast<float2*>(&accumulators);
         int th_group_id = lane_id % 4;
@@ -345,7 +346,8 @@ public:
                             }
 
                             meta[4 * i + 2 * j + k] = meta_bit << (th_group_id * 4);
-
+                            value[0] *= output_op.alpha;
+                            value[1] *= output_op.alpha;
                             // TODO: write the value to shared memory
                             *(shared_load_ptr + ((m_i * FragmentShape::kRow) * SharedStorage::StorageShape::kColumn + n_i * FragmentShape::kColumn / 2) / 2) = *reinterpret_cast<float*>(value);
                         }

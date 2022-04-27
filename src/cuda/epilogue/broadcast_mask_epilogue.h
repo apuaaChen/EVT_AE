@@ -33,8 +33,8 @@ public:
     {   
         if (thread_id < kNumActiveThread){
             int mask_id = batch_id / extent.row();
-            int col_id = (thread_id - thread_id % 8) + (thread_id % 4) * 2 + (thread_id % 8) / 4;
-            // TODO: this should be interleaved
+            // int col_id = (thread_id - thread_id % 8) + (thread_id % 4) * 2 + (thread_id % 8) / 4;
+            int col_id = (thread_id & 0xff8) | ((thread_id & 3) << 1) | ((thread_id & 4) >> 2);
             global_ptr = reinterpret_cast<float*>(mask_pointer + mask_id * stride + threadblock_offset.column()) + col_id;
         }
     }
@@ -129,6 +129,10 @@ public:
     float4* shared_load_ptr;
 
     /// Constructor
+
+    CUTLASS_DEVICE
+    BroadcastMaskPrologue(){}
+    
     CUTLASS_DEVICE
     BroadcastMaskPrologue(
         SharedStorage &shared_storage,
@@ -147,8 +151,6 @@ public:
         int group_id = lane_id / 8;
 
         shared_load_ptr = reinterpret_cast<float4*>(shared_storage.data() + warp_col_id * WarpTile_Shape::kN + group_id * FragmentShape::kColumn);
-
-        __syncthreads();
     }
 
     /// Fill the fragments
@@ -156,6 +158,8 @@ public:
     void fill(
         typename Mma::FragmentC &accumulators
     ){
+        __syncthreads();
+
         ElementOutput tmp[ShmemLoadIterations::kColumn * 8];
         int* tmp_int = reinterpret_cast<int*>(tmp);
         #pragma unroll

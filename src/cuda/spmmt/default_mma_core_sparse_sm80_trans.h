@@ -60,7 +60,7 @@ struct DefaultSparseMmaCoreTrans;
 /// Partial specialization:
 ///
 ///   A: row-major
-///   B: column-major
+///   B: row-major / column-major
 ///   Operator: tensor op class
 ///
 /// This uses the default warp-level operator given tile sizes
@@ -74,6 +74,8 @@ template <
     typename InstructionShape_,
     /// Data type of A operand
     typename ElementA_,
+    /// Layout of B operand
+    typename LayoutB_,
     /// Data type of B operand
     typename ElementB_,
     /// Data type of accumulator
@@ -89,11 +91,11 @@ template <
     /// Cache operation of operand B
     cutlass::arch::CacheOperation::Kind CacheOpB>
 struct DefaultSparseMmaCoreTrans<Shape_, WarpShape_, InstructionShape_, ElementA_,
-                      layout::RowMajor, ElementB_, layout::ColumnMajor,
+                      layout::RowMajor, ElementB_, LayoutB_,
                       ElementC_, LayoutC_, arch::OpClassTensorOp, Stages,
                       Operator_, false, CacheOpA, CacheOpB> {
   using Base = cutlass::gemm::threadblock::DefaultSparseMmaCore<Shape_, WarpShape_, InstructionShape_, ElementA_,
-                      layout::RowMajor, ElementB_, layout::ColumnMajor,
+                      layout::RowMajor, ElementB_, LayoutB_,
                       ElementC_, LayoutC_, arch::OpClassTensorOp, Stages,
                       Operator_, false, CacheOpA, CacheOpB>;
   using Shape = typename Base::Shape;

@@ -32,9 +32,10 @@ constexpr int NumStages = 3;
 
 
 // A structure to switch between different configurations
-template<typename Element_, bool Trans_>
+template<typename Element_, typename LayoutB_, bool Trans_>
 struct SpMMTConfigure{
     static const bool Trans = Trans_;
+    using LayoutB = LayoutB_;
     using Element = Element_;
 
     using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
@@ -43,7 +44,7 @@ struct SpMMTConfigure{
     
     using Mma = typename cutlass::gemm::threadblock::DefaultSparseMmaTrans<
         Element, cutlass::layout::RowMajor, 128 / cutlass::sizeof_bits<Element>::value,
-        Element, cutlass::layout::ColumnMajor, 128 / cutlass::sizeof_bits<Element>::value,
+        Element, LayoutB, 128 / cutlass::sizeof_bits<Element>::value,
         float, cutlass::layout::RowMajor, cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80,
         ThreadblockShape_16, WarpShape_16, InstructionShape_16, NumStages, cutlass::arch::OpMultiplyAdd>::ThreadblockMma;
     
@@ -221,8 +222,14 @@ torch::Tensor spmmt_cuda(
     torch::Tensor tensor_e)
 {
     const int m = tensor_a.size(-1) * 2;
-    const int n = tensor_b.size(-2);
-    const int k = tensor_b.size(-1);
+    int n, k;
+    if (std::is_same<typename Config::LayoutB, cutlass::layout::ColumnMajor>::value){
+        n = tensor_b.size(-2);
+        k = tensor_b.size(-1);
+    } else {
+        n = tensor_b.size(-1);
+        k = tensor_b.size(-2);
+    }
 
     int batch_size = tensor_b.numel() / n / k;
 
@@ -238,7 +245,7 @@ torch::Tensor spmmt_cuda(
     cutlass::gemm::GemmCoord problem_size(m, n, k);
 
     auto layout_a = cutlass::layout::RowMajor::packed(cutlass::make_Coord(problem_size.k(), problem_size.m()/2));
-    auto layout_b = cutlass::layout::ColumnMajor::packed(problem_size.kn());
+    auto layout_b = Config::LayoutB::packed(problem_size.kn());
     auto layout_e = Config::Mma::LayoutE::packed(cutlass::make_Coord(problem_size.k(), problem_size.m()/Config::Mma::kSparse / Config::Mma::kElementsPerElementE));
     auto layout_d = cutlass::layout::RowMajor::packed(problem_size.mn());
 
@@ -280,7 +287,7 @@ torch::Tensor spmmt_bf16_ntn_cuda(
     torch::Tensor tensor_b,
     torch::Tensor tensor_e_reordered)
 {
-    using Config = SpMMTConfigure<cutlass::bfloat16_t, false>;
+    using Config = SpMMTConfigure<cutlass::bfloat16_t, cutlass::layout::ColumnMajor, false>;
     return spmmt_cuda<Config>(tensor_a, tensor_b, tensor_e_reordered);
 }
 
@@ -289,7 +296,7 @@ torch::Tensor spmmt_bf16_ntt_cuda(
     torch::Tensor tensor_b,
     torch::Tensor tensor_e_reordered)
 {
-    using Config = SpMMTConfigure<cutlass::bfloat16_t, true>;
+    using Config = SpMMTConfigure<cutlass::bfloat16_t, cutlass::layout::ColumnMajor, true>;
     return spmmt_cuda<Config>(tensor_a, tensor_b, tensor_e_reordered);
 }
 
@@ -298,7 +305,7 @@ torch::Tensor spmmt_f16_ntn_cuda(
     torch::Tensor tensor_b,
     torch::Tensor tensor_e_reordered)
 {
-    using Config = SpMMTConfigure<cutlass::half_t, false>;
+    using Config = SpMMTConfigure<cutlass::half_t, cutlass::layout::ColumnMajor, false>;
     return spmmt_cuda<Config>(tensor_a, tensor_b, tensor_e_reordered);
 }
 
@@ -307,6 +314,43 @@ torch::Tensor spmmt_f16_ntt_cuda(
     torch::Tensor tensor_b,
     torch::Tensor tensor_e_reordered)
 {
-    using Config = SpMMTConfigure<cutlass::half_t, true>;
+    using Config = SpMMTConfigure<cutlass::half_t, cutlass::layout::ColumnMajor, true>;
+    return spmmt_cuda<Config>(tensor_a, tensor_b, tensor_e_reordered);
+}
+
+
+torch::Tensor spmmt_bf16_nnn_cuda(
+    torch::Tensor tensor_a,
+    torch::Tensor tensor_b,
+    torch::Tensor tensor_e_reordered)
+{
+    using Config = SpMMTConfigure<cutlass::bfloat16_t, cutlass::layout::RowMajor, false>;
+    return spmmt_cuda<Config>(tensor_a, tensor_b, tensor_e_reordered);
+}
+
+torch::Tensor spmmt_bf16_nnt_cuda(
+    torch::Tensor tensor_a,
+    torch::Tensor tensor_b,
+    torch::Tensor tensor_e_reordered)
+{
+    using Config = SpMMTConfigure<cutlass::bfloat16_t, cutlass::layout::RowMajor, true>;
+    return spmmt_cuda<Config>(tensor_a, tensor_b, tensor_e_reordered);
+}
+
+torch::Tensor spmmt_f16_nnn_cuda(
+    torch::Tensor tensor_a,
+    torch::Tensor tensor_b,
+    torch::Tensor tensor_e_reordered)
+{
+    using Config = SpMMTConfigure<cutlass::half_t, cutlass::layout::RowMajor, false>;
+    return spmmt_cuda<Config>(tensor_a, tensor_b, tensor_e_reordered);
+}
+
+torch::Tensor spmmt_f16_nnt_cuda(
+    torch::Tensor tensor_a,
+    torch::Tensor tensor_b,
+    torch::Tensor tensor_e_reordered)
+{
+    using Config = SpMMTConfigure<cutlass::half_t, cutlass::layout::RowMajor, true>;
     return spmmt_cuda<Config>(tensor_a, tensor_b, tensor_e_reordered);
 }

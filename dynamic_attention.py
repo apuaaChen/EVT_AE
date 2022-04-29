@@ -272,7 +272,7 @@ class SparseBertSelfAttention(nn.Module):
 
     def transpose_key_for_scores(self, x):
         # seq: x.size(0), bsz: x.size(0)
-        x = x.view(x.size(0), x.size(1) * self.num_attention_heads, self.attention_head_size).permute(1, 2, 0)
+        x = x.view(x.size(0), x.size(1) * self.num_attention_heads, self.attention_head_size).transpose(0, 1)
         return x
 
     def forward(self, hidden_states, attention_mask):

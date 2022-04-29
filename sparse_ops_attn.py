@@ -2,6 +2,7 @@ from torch import autograd, nn
 import torch.nn.functional as F
 from sptrain.sddmm import sddmm_f16_ntn
 from sptrain.spmm import spmmv2_f16_nnn, spmmv2_f16_ntn
+from sptrain.spmmt import spmmt_f16_ntn, spmmt_f16_ntt, spmmt_f16_nnn, spmmt_f16_nnt
 from sptrain.meta import bdense2sparse
 import math
 import torch
@@ -57,7 +58,7 @@ class Sddmm(autograd.Function):
         num_attention_heads = int(query_layer.size(0) / batch_size)
         seq_length = query_layer.size(1)
 
-        nonzeros, metadata = sddmm_f16_ntn(query_layer.contiguous(), key_layer.transpose(1, 2).contiguous(), mask, alpha)
+        nonzeros, metadata = sddmm_f16_ntn(query_layer.contiguous(), key_layer.contiguous(), mask, alpha)
 
         ctx.seq_length = seq_length
         ctx.batch_size = batch_size
@@ -72,22 +73,13 @@ class Sddmm(autograd.Function):
     
     @staticmethod
     def backward(ctx, grad_attention_scores, grad_metadata):
-        
-        eyes = []
-        for i in range(ctx.batch_size * ctx.num_attention_heads):
-            eyes.append(torch.eye(n=ctx.seq_length, dtype=torch.float16, device="cuda").unsqueeze(0))
 
-        eyes = torch.cat(eyes, dim=0)
         query_layer, key_layer, metadata = ctx.saved_tensors
 
-        grad_attention_scores = spmmv2_f16_nnn(grad_attention_scores, eyes, metadata)
-
-        grad_attn_score = grad_attention_scores * ctx.alpha
-
-        # Notably, we don't need the backpropagation code for the pruning. As the grad_attention_scores is naturally sparse
-        grad_attn_score = grad_attn_score.view(ctx.batch_size * ctx.num_attention_heads, ctx.seq_length, ctx.seq_length)
-        grad_query = torch.bmm(grad_attn_score, key_layer.transpose(1, 2))
-        grad_key = torch.bmm(query_layer.transpose(1, 2).contiguous(), grad_attn_score.contiguous())
+        grad_attention_scores *= ctx.alpha
+        # TODO: fuse the *ctx.alpha into the spmm and spmmt kernel
+        grad_query = spmmv2_f16_nnn(grad_attention_scores, key_layer.contiguous(), metadata)
+        grad_key = spmmt_f16_nnn(grad_attention_scores, query_layer.contiguous(), metadata)
         
         return grad_query, grad_key, None, None
 
@@ -132,14 +124,19 @@ class Spmm(autograd.Function):
 
         eyes = torch.cat(eyes, dim=0)
         lhs_matrix, rhs_matrix, metadata = ctx.saved_tensors
-        grad_lhs_matrix = torch.bmm(grad_out.contiguous(), rhs_matrix.transpose(1, 2).contiguous())
-        lhs_matrix_dense = spmmv2_f16_nnn(lhs_matrix, eyes, metadata)
-        grad_rhs_matrix = torch.bmm(lhs_matrix_dense.transpose(1, 2).contiguous(), grad_out)
+        
 
+        # The naive implementation of the kernel
+        # lhs_matrix_dense = spmmv2_f16_nnn(lhs_matrix, eyes, metadata)
+        # grad_rhs_matrix = torch.bmm(lhs_matrix_dense.transpose(1, 2).contiguous(), grad_out)
+
+        grad_rhs_matrix = spmmt_f16_nnn(lhs_matrix.contiguous(), grad_out.contiguous(), metadata)
+    
+        # TODO: handle this part with a fused kernel
         # prune the lhs_matrix
+        grad_lhs_matrix = torch.bmm(grad_out.contiguous(), rhs_matrix.transpose(1, 2).contiguous())
         mask = spmmv2_f16_nnn(torch.ones_like(lhs_matrix), eyes, metadata)
         grad_lhs_matrix *= mask
-
         grad_lhs_matrix, _ = bdense2sparse(grad_lhs_matrix, True)
 
         return grad_lhs_matrix.view(lhs_matrix.size()), grad_rhs_matrix.view(rhs_matrix.size()), None

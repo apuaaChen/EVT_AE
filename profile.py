@@ -1,4 +1,3 @@
-from re import I
 import torch
 from sparse_ops import SparseLinear, SparseLinearV2, SparseLinearV3
 import nvtx

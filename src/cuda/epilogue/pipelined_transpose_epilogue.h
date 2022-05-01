@@ -262,6 +262,8 @@ public:
                 res[0] = *tmp_share;
                 res[1] = ElementOutput((*(frag_ptr_t)).y);
             }
+            res[0] *= output_op.alpha_;
+            res[1] *= output_op.alpha_;
             // Store the results to shared memory
             *(shared_store_ptr_t) = *(res_vec);
             frag_ptr_t += 1;
@@ -295,6 +297,8 @@ public:
                     res[0] = *tmp_share;
                     res[1] = ElementOutput((*(frag_ptr_t)).y);
                 }
+                res[0] *= output_op.alpha_;
+                res[1] *= output_op.alpha_;
                 *(shared_store_ptr_t) = *(res_vec);
                 frag_ptr_t += 1;
                 shared_store_ptr_t += FragmentShape::kRow / kShmemStoreElementsPerAccess;

@@ -13,6 +13,7 @@
 
 #include "spmmt/default_sparse_mma_trans.h"
 #include "epilogue/pipelined_transpose_epilogue.h"
+#include "epilogue/linear_combination.h"
 
 // Define the Tile Size in different levels
 
@@ -38,8 +39,8 @@ struct SpMMTConfigure{
     using LayoutB = LayoutB_;
     using Element = Element_;
 
-    using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
-        Element, 128 / cutlass::sizeof_bits<Element>::value, float, float,
+    using EpilogueOp = cutlass::epilogue::thread::LinearCombination_<
+        Element, 128 / cutlass::sizeof_bits<Element>::value, float, Element,
         cutlass::epilogue::thread::ScaleType::OnlyAlphaScaling>;  
     
     using Mma = typename cutlass::gemm::threadblock::DefaultSparseMmaTrans<
@@ -219,7 +220,8 @@ template<typename Config>
 torch::Tensor spmmt_cuda(
     torch::Tensor tensor_a,
     torch::Tensor tensor_b,
-    torch::Tensor tensor_e)
+    torch::Tensor tensor_e,
+    const float alpha_)
 {
     const int m = tensor_a.size(-1) * 2;
     int n, k;
@@ -249,7 +251,7 @@ torch::Tensor spmmt_cuda(
     auto layout_e = Config::Mma::LayoutE::packed(cutlass::make_Coord(problem_size.k(), problem_size.m()/Config::Mma::kSparse / Config::Mma::kElementsPerElementE));
     auto layout_d = cutlass::layout::RowMajor::packed(problem_size.mn());
 
-    typename Config::Element alpha = typename Config::Element(1.0);
+    typename Config::Element alpha = typename Config::Element(alpha_);
     typename Config::Element beta = typename Config::Element(0.0);
     
     ThreadblockSwizzle threadblock_swizzle;
@@ -285,72 +287,80 @@ torch::Tensor spmmt_cuda(
 torch::Tensor spmmt_bf16_ntn_cuda(
     torch::Tensor tensor_a,
     torch::Tensor tensor_b,
-    torch::Tensor tensor_e_reordered)
+    torch::Tensor tensor_e,
+    const float alpha)
 {
     using Config = SpMMTConfigure<cutlass::bfloat16_t, cutlass::layout::ColumnMajor, false>;
-    return spmmt_cuda<Config>(tensor_a, tensor_b, tensor_e_reordered);
+    return spmmt_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
 }
 
 torch::Tensor spmmt_bf16_ntt_cuda(
     torch::Tensor tensor_a,
     torch::Tensor tensor_b,
-    torch::Tensor tensor_e_reordered)
+    torch::Tensor tensor_e,
+    const float alpha)
 {
     using Config = SpMMTConfigure<cutlass::bfloat16_t, cutlass::layout::ColumnMajor, true>;
-    return spmmt_cuda<Config>(tensor_a, tensor_b, tensor_e_reordered);
+    return spmmt_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
 }
 
 torch::Tensor spmmt_f16_ntn_cuda(
     torch::Tensor tensor_a,
     torch::Tensor tensor_b,
-    torch::Tensor tensor_e_reordered)
+    torch::Tensor tensor_e,
+    const float alpha)
 {
     using Config = SpMMTConfigure<cutlass::half_t, cutlass::layout::ColumnMajor, false>;
-    return spmmt_cuda<Config>(tensor_a, tensor_b, tensor_e_reordered);
+    return spmmt_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
 }
 
 torch::Tensor spmmt_f16_ntt_cuda(
     torch::Tensor tensor_a,
     torch::Tensor tensor_b,
-    torch::Tensor tensor_e_reordered)
+    torch::Tensor tensor_e,
+    const float alpha)
 {
     using Config = SpMMTConfigure<cutlass::half_t, cutlass::layout::ColumnMajor, true>;
-    return spmmt_cuda<Config>(tensor_a, tensor_b, tensor_e_reordered);
+    return spmmt_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
 }
 
 
 torch::Tensor spmmt_bf16_nnn_cuda(
     torch::Tensor tensor_a,
     torch::Tensor tensor_b,
-    torch::Tensor tensor_e_reordered)
+    torch::Tensor tensor_e,
+    const float alpha)
 {
     using Config = SpMMTConfigure<cutlass::bfloat16_t, cutlass::layout::RowMajor, false>;
-    return spmmt_cuda<Config>(tensor_a, tensor_b, tensor_e_reordered);
+    return spmmt_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
 }
 
 torch::Tensor spmmt_bf16_nnt_cuda(
     torch::Tensor tensor_a,
     torch::Tensor tensor_b,
-    torch::Tensor tensor_e_reordered)
+    torch::Tensor tensor_e,
+    const float alpha)
 {
     using Config = SpMMTConfigure<cutlass::bfloat16_t, cutlass::layout::RowMajor, true>;
-    return spmmt_cuda<Config>(tensor_a, tensor_b, tensor_e_reordered);
+    return spmmt_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
 }
 
 torch::Tensor spmmt_f16_nnn_cuda(
     torch::Tensor tensor_a,
     torch::Tensor tensor_b,
-    torch::Tensor tensor_e_reordered)
+    torch::Tensor tensor_e,
+    const float alpha)
 {
     using Config = SpMMTConfigure<cutlass::half_t, cutlass::layout::RowMajor, false>;
-    return spmmt_cuda<Config>(tensor_a, tensor_b, tensor_e_reordered);
+    return spmmt_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
 }
 
 torch::Tensor spmmt_f16_nnt_cuda(
     torch::Tensor tensor_a,
     torch::Tensor tensor_b,
-    torch::Tensor tensor_e_reordered)
+    torch::Tensor tensor_e,
+    const float alpha)
 {
     using Config = SpMMTConfigure<cutlass::half_t, cutlass::layout::RowMajor, true>;
-    return spmmt_cuda<Config>(tensor_a, tensor_b, tensor_e_reordered);
+    return spmmt_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
 }

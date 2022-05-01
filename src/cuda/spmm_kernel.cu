@@ -12,6 +12,7 @@
 
 #include "epilogue/default_epilogue_tensor_op.h"
 #include "epilogue/pipelined_transpose_epilogue.h"
+#include "epilogue/linear_combination.h"
 
 
 // Define the Tile Size in different levels
@@ -38,8 +39,8 @@ struct SpMMConfigure{
     using LayoutB = LayoutB_;
     using Element = Element_;
 
-    using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
-    Element, 128 / cutlass::sizeof_bits<Element>::value, float, float,
+    using EpilogueOp = cutlass::epilogue::thread::LinearCombination_<
+    Element, 128 / cutlass::sizeof_bits<Element>::value, float, Element,
     cutlass::epilogue::thread::ScaleType::OnlyAlphaScaling>;
 
     using Mma = typename cutlass::gemm::threadblock::DefaultSparseMma<
@@ -242,7 +243,8 @@ template<typename Config>
 torch::Tensor spmm_cuda(
     torch::Tensor tensor_a,
     torch::Tensor tensor_b,
-    torch::Tensor tensor_e)
+    torch::Tensor tensor_e,
+    const float alpha_)
 {
     int m, n, k;
     m = tensor_a.size(-2);
@@ -272,7 +274,7 @@ torch::Tensor spmm_cuda(
     auto layout_e = Config::Mma::LayoutE::packed(cutlass::make_Coord(problem_size.m(), problem_size.k()/Config::Mma::kSparse / Config::Mma::kElementsPerElementE));
     auto layout_d = cutlass::layout::RowMajor::packed(problem_size.mn());
 
-    typename Config::Element alpha = typename Config::Element(1.0);
+    typename Config::Element alpha = typename Config::Element(alpha_);
     typename Config::Element beta = typename Config::Element(0.0);
     
     ThreadblockSwizzle threadblock_swizzle;
@@ -308,58 +310,64 @@ torch::Tensor spmm_cuda(
 torch::Tensor spmmv2_bf16_nnn_cuda(
     torch::Tensor tensor_a,
     torch::Tensor tensor_b,
-    torch::Tensor tensor_e_reordered)
+    torch::Tensor tensor_e,
+    const float alpha)
 {
     using Config = SpMMConfigure<cutlass::bfloat16_t, cutlass::layout::RowMajor, false>;
-    return spmm_cuda<Config>(tensor_a, tensor_b, tensor_e_reordered);
+    return spmm_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
 }
 
 
 torch::Tensor spmmv2_bf16_ntn_cuda(
     torch::Tensor tensor_a,
     torch::Tensor tensor_b,
-    torch::Tensor tensor_e_reordered)
+    torch::Tensor tensor_e,
+    const float alpha)
 {
     using Config = SpMMConfigure<cutlass::bfloat16_t, cutlass::layout::ColumnMajor, false>;
-    return spmm_cuda<Config>(tensor_a, tensor_b, tensor_e_reordered);
+    return spmm_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
 }
 
 
 torch::Tensor spmmv2_bf16_ntt_cuda(
     torch::Tensor tensor_a,
     torch::Tensor tensor_b,
-    torch::Tensor tensor_e_reordered)
+    torch::Tensor tensor_e,
+    const float alpha)
 {
     using Config = SpMMConfigure<cutlass::bfloat16_t, cutlass::layout::ColumnMajor, true>;
-    return spmm_cuda<Config>(tensor_a, tensor_b, tensor_e_reordered);
+    return spmm_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
 }
 
 
 torch::Tensor spmmv2_f16_nnn_cuda(
     torch::Tensor tensor_a,
     torch::Tensor tensor_b,
-    torch::Tensor tensor_e_reordered)
+    torch::Tensor tensor_e,
+    const float alpha)
 {
     using Config = SpMMConfigure<cutlass::half_t, cutlass::layout::RowMajor, false>;
-    return spmm_cuda<Config>(tensor_a, tensor_b, tensor_e_reordered);
+    return spmm_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
 }
 
 
 torch::Tensor spmmv2_f16_ntn_cuda(
     torch::Tensor tensor_a,
     torch::Tensor tensor_b,
-    torch::Tensor tensor_e_reordered)
+    torch::Tensor tensor_e,
+    const float alpha)
 {
     using Config = SpMMConfigure<cutlass::half_t, cutlass::layout::ColumnMajor, false>;
-    return spmm_cuda<Config>(tensor_a, tensor_b, tensor_e_reordered);
+    return spmm_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
 }
 
 
 torch::Tensor spmmv2_f16_ntt_cuda(
     torch::Tensor tensor_a,
     torch::Tensor tensor_b,
-    torch::Tensor tensor_e_reordered)
+    torch::Tensor tensor_e,
+    const float alpha)
 {
     using Config = SpMMConfigure<cutlass::half_t, cutlass::layout::ColumnMajor, true>;
-    return spmm_cuda<Config>(tensor_a, tensor_b, tensor_e_reordered);
+    return spmm_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
 }

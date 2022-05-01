@@ -14,6 +14,8 @@ feat_out = 2048
 dtype = torch.bfloat16
 half = torch.float16
 
+alpha = 0.5
+
 
 class TestPruning(unittest.TestCase):
 
@@ -34,7 +36,7 @@ class TestPruning(unittest.TestCase):
         self.assertTrue(torch.allclose(uncompressed, uncompressed_ref, rtol=1e-9))
 
         output_matrix_ref = torch.matmul(uncompressed, rhs_matrix)
-        output_matrix = spmmv2_bf16_nnn(nonzeros, rhs_matrix, metadata)
+        output_matrix = spmmv2_bf16_nnn(nonzeros, rhs_matrix, metadata, 1.)
         
         # Check if the metadata and nonzeros are correct
         self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, rtol=1e-9))
@@ -56,7 +58,7 @@ class TestPruning(unittest.TestCase):
         self.assertTrue(torch.allclose(uncompressed, uncompressed_ref, rtol=1e-9))
 
         output_matrix_ref = torch.matmul(uncompressed, rhs_matrix)
-        output_matrix = spmmv2_bf16_nnn(nonzeros, rhs_matrix, metadata)
+        output_matrix = spmmv2_bf16_nnn(nonzeros, rhs_matrix, metadata, 1.)
         
         # Check if the metadata and nonzeros are correct
         self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, rtol=1e-9))
@@ -94,7 +96,7 @@ class TestPruning(unittest.TestCase):
         self.assertTrue(torch.allclose(uncompressed, uncompressed_ref, rtol=1e-9))
 
         output_matrix_ref = torch.matmul(uncompressed, rhs_matrix)
-        output_matrix = spmmv2_f16_nnn(nonzeros, rhs_matrix, metadata)
+        output_matrix = spmmv2_f16_nnn(nonzeros, rhs_matrix, metadata, 1.)
         
         # Check if the metadata and nonzeros are correct
         self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, rtol=1e-9))
@@ -116,7 +118,7 @@ class TestPruning(unittest.TestCase):
         self.assertTrue(torch.allclose(uncompressed, uncompressed_ref, rtol=1e-9))
 
         output_matrix_ref = torch.matmul(uncompressed, rhs_matrix)
-        output_matrix = spmmv2_f16_nnn(nonzeros, rhs_matrix, metadata)
+        output_matrix = spmmv2_f16_nnn(nonzeros, rhs_matrix, metadata, 1.)
         
         # Check if the metadata and nonzeros are correct
         self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, rtol=1e-9))
@@ -144,8 +146,8 @@ class TestSpMM(unittest.TestCase):
         dense_matrix = torch.randn(size=(L, batch_size, feat_in), dtype=dtype, device="cuda")
         rhs_matrix = torch.randn(size=(L, feat_in, feat_out), dtype=dtype, device="cuda")
         nonzeros, uncompressed, metadata = bdense2sparse_gold(dense_matrix, False)
-        output_matrix_ref = torch.bmm(uncompressed, rhs_matrix)
-        output_matrix = spmmv2_bf16_nnn(nonzeros, rhs_matrix, metadata)
+        output_matrix_ref = torch.bmm(uncompressed, rhs_matrix) * alpha
+        output_matrix = spmmv2_bf16_nnn(nonzeros, rhs_matrix, metadata, alpha)
 
         self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, atol=0.5))
 
@@ -153,8 +155,8 @@ class TestSpMM(unittest.TestCase):
         dense_matrix = torch.randn(size=(L, batch_size, feat_in), dtype=dtype, device="cuda")
         rhs_matrix = torch.randn(size=(L, feat_out, feat_in), dtype=dtype, device="cuda")
         nonzeros, uncompressed, metadata = bdense2sparse_gold(dense_matrix, False)
-        output_matrix_ref = torch.bmm(uncompressed, rhs_matrix.transpose(1, 2))
-        output_matrix = spmmv2_bf16_ntn(nonzeros, rhs_matrix, metadata)
+        output_matrix_ref = torch.bmm(uncompressed, rhs_matrix.transpose(1, 2)) * alpha
+        output_matrix = spmmv2_bf16_ntn(nonzeros, rhs_matrix, metadata, alpha)
 
         self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, atol=0.5))
     
@@ -162,8 +164,8 @@ class TestSpMM(unittest.TestCase):
         dense_matrix = torch.randn(size=(L, batch_size, feat_in), dtype=dtype, device="cuda")
         rhs_matrix = torch.randn(size=(L, feat_out, feat_in), dtype=dtype, device="cuda")
         nonzeros, uncompressed, metadata = bdense2sparse_gold(dense_matrix, False)
-        output_matrix_ref = torch.bmm(uncompressed, rhs_matrix.transpose(1, 2)).transpose(1, 2)
-        output_matrix = spmmv2_bf16_ntt(nonzeros, rhs_matrix, metadata)
+        output_matrix_ref = torch.bmm(uncompressed, rhs_matrix.transpose(1, 2)).transpose(1, 2) * alpha
+        output_matrix = spmmv2_bf16_ntt(nonzeros, rhs_matrix, metadata, alpha)
 
         self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, atol=0.5))
     
@@ -171,8 +173,8 @@ class TestSpMM(unittest.TestCase):
         dense_matrix = torch.randn(size=(L, batch_size, feat_in), dtype=half, device="cuda")
         rhs_matrix = torch.randn(size=(L, feat_in, feat_out), dtype=half, device="cuda")
         nonzeros, uncompressed, metadata = bdense2sparse_gold(dense_matrix, False)
-        output_matrix_ref = torch.bmm(uncompressed, rhs_matrix)
-        output_matrix = spmmv2_f16_nnn(nonzeros, rhs_matrix, metadata)
+        output_matrix_ref = torch.bmm(uncompressed, rhs_matrix) * alpha
+        output_matrix = spmmv2_f16_nnn(nonzeros, rhs_matrix, metadata, alpha)
 
         self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, atol=0.5))
 
@@ -180,8 +182,8 @@ class TestSpMM(unittest.TestCase):
         dense_matrix = torch.randn(size=(L, batch_size, feat_in), dtype=half, device="cuda")
         rhs_matrix = torch.randn(size=(L, feat_out, feat_in), dtype=half, device="cuda")
         nonzeros, uncompressed, metadata = bdense2sparse_gold(dense_matrix, False)
-        output_matrix_ref = torch.bmm(uncompressed, rhs_matrix.transpose(1, 2))
-        output_matrix = spmmv2_f16_ntn(nonzeros, rhs_matrix, metadata)
+        output_matrix_ref = torch.bmm(uncompressed, rhs_matrix.transpose(1, 2)) * alpha
+        output_matrix = spmmv2_f16_ntn(nonzeros, rhs_matrix, metadata, alpha)
 
         self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, atol=0.5))
     
@@ -189,8 +191,8 @@ class TestSpMM(unittest.TestCase):
         dense_matrix = torch.randn(size=(L, batch_size, feat_in), dtype=half, device="cuda")
         rhs_matrix = torch.randn(size=(L, feat_out, feat_in), dtype=half, device="cuda")
         nonzeros, uncompressed, metadata = bdense2sparse_gold(dense_matrix, False)
-        output_matrix_ref = torch.bmm(uncompressed, rhs_matrix.transpose(1, 2)).transpose(1, 2)
-        output_matrix = spmmv2_f16_ntt(nonzeros, rhs_matrix, metadata)
+        output_matrix_ref = torch.bmm(uncompressed, rhs_matrix.transpose(1, 2)).transpose(1, 2) * alpha
+        output_matrix = spmmv2_f16_ntt(nonzeros, rhs_matrix, metadata, alpha)
 
         self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, atol=0.5))
 

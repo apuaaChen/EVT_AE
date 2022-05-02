@@ -44,8 +44,8 @@ public:
     }
 
     CUTLASS_DEVICE
-    void load_with_offset(TensorCoord offset, volatile int* data){
-       *(data) = *(global_ptr + offset.column() * stride + offset.row());
+    int load_with_offset(TensorCoord offset){
+       return *(global_ptr + offset.column() * stride + offset.row());
     }
 
     CUTLASS_DEVICE
@@ -411,7 +411,7 @@ public:
                 // Step 1: load the metadata to registers
                 int16_t meta[2];
                 int* meta_vec = reinterpret_cast<int*>(meta);
-                iteratorE.load_with_offset({m_step * 32, n_step}, meta_vec);
+                *(meta_vec) = iteratorE.load_with_offset({m_step * 32, n_step});
                 // Step 2: prune the results in the register file
                 // The pruning first occurs in 8 x 16 Tile
                 #pragma unroll

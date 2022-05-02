@@ -44,6 +44,11 @@ public:
     }
 
     CUTLASS_DEVICE
+    void load_with_offset(TensorCoord offset, volatile int* data){
+       *(data) = *(global_ptr + offset.column() * stride + offset.row());
+    }
+
+    CUTLASS_DEVICE
     void add_pointer_offset(int64_t offset){
         global_ptr += offset / 2;
     }
@@ -384,6 +389,96 @@ public:
             }
         }
 
+    }
+
+
+    /// prune the result based on the metadata
+    CUTLASS_DEVICE
+    void pruning(
+        typename Mma::FragmentC &accumulators,
+        int lane_id,
+        MetaIterator iteratorE,
+        typename OutputOp::Params output_op
+    ){
+        float2* frag_ptr = reinterpret_cast<float2*>(&accumulators);
+        int th_group_id = lane_id % 4;
+
+        #pragma unroll
+        for (int m_step = 0; m_step < MetaIterations::kRow; m_step ++){
+            #pragma unroll
+            for (int n_step = 0; n_step < MetaIterations::kColumn; n_step ++){
+                // Each step processes a 32 x 32 Tile
+                // Step 1: load the metadata to registers
+                int16_t meta[2];
+                int* meta_vec = reinterpret_cast<int*>(meta);
+                iteratorE.load_with_offset({m_step * 32, n_step}, meta_vec);
+                // Step 2: prune the results in the register file
+                // The pruning first occurs in 8 x 16 Tile
+                #pragma unroll
+                for (int i = 0; i < 2; i ++){
+                    #pragma unroll
+                    for (int j = 0; j < 2; j++){
+                        #pragma unroll
+                        for (int k = 0; k < 2; k++){
+                            int m_i = m_step * 4 + i * 2 + k;
+                            int n_i = n_step * 4 + j * 2;
+                            float2* frag1 = frag_ptr + n_i * FragmentCount::kRow + m_i;
+                            float2* frag2 = frag_ptr + (n_i + 1) * FragmentCount::kRow + m_i;
+
+                            // // get the elements
+                            // ElementOutput data_16[4] = {
+                            //     ElementOutput((*frag1).x), ElementOutput((*frag1).y),
+                            //     ElementOutput((*frag2).x), ElementOutput((*frag2).y)
+                            // };
+
+                            float data[4] = {(*frag1).x, (*frag1).y, (*frag2).x, (*frag2).y};
+                            ElementOutput data_16[4] = {
+                                ElementOutput(data[0]), ElementOutput(data[1]),
+                                ElementOutput(data[2]), ElementOutput(data[3])
+                            };
+
+
+                            // get the meta bits
+                            int src_lane = (lane_id / 4) * 4 + j + i * 2;
+                            int16_t meta_bit = __shfl_sync(0xffffffff, meta[k], src_lane);
+                            meta_bit = (meta_bit >> (th_group_id * 4)) & 0xf;
+
+                            ElementOutput value[2] = {data_16[0], data_16[1]};
+
+                            // get the values
+                            if (meta_bit == 8){
+                                value[1] = data_16[2];
+                            }
+
+                            if (meta_bit == 12){
+                                value[1] = data_16[3];
+                            }
+
+                            if (meta_bit == 9){
+                                value[0] = data_16[1];
+                                value[1] = data_16[2];
+                            }
+
+                            if (meta_bit == 13){
+                                value[0] = data_16[1];
+                                value[1] = data_16[3];
+                            }
+
+                            if (meta_bit == 14){
+                                value[0] = data_16[2];
+                                value[1] = data_16[3];
+                            }
+
+                            value[0] *= output_op.alpha;
+                            value[1] *= output_op.alpha;
+                            // TODO: write the value to shared memory
+                            *(shared_load_ptr + ((m_i * FragmentShape::kRow) * SharedStorage::StorageShape::kColumn + n_i * FragmentShape::kColumn / 2) / 2) = *reinterpret_cast<float*>(value);
+                        }
+
+                    }
+                }
+            }
+        }
     }
 
     CUTLASS_DEVICE

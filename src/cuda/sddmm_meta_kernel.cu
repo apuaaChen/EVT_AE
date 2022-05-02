@@ -7,7 +7,7 @@
 #include <vector>
 #include "cuda_bf16.h"
 #include "sddmm/default_sddmma.h"
-#include "epilogue/sddmm_epilogue_meta.h"
+#include "epilogue/sddmm_epilogue.h"
 #include "helper.h"
 
 /// Tiling
@@ -36,7 +36,7 @@ struct SDDMMConfigure{
         float, cutlass::layout::RowMajor, cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80,
         ThreadblockShape_16, WarpShape_16, InstructionShape_16, Stages, cutlass::arch::OpMultiplyAdd>::ThreadblockMma;
     
-    using Epilogue = typename cutlass::epilogue::threadblock::DefaultSddmmEpilogueMeta<
+    using Epilogue = typename cutlass::epilogue::threadblock::DefaultSddmmEpilogue<
         ThreadblockShape_16, WarpShape_16, EpilogueOp, Mma>::Epilogue;
     
     

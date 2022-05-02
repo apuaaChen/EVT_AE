@@ -35,6 +35,11 @@ setup(
                       extra_cuda_cflags=['-lineinfo'],
                       extra_compile_args={'cxx':['-lineinfo'], 'nvcc':['-arch=sm_80', '--ptxas-options=-v', '-lineinfo', '-lcublass', '-use_fast_math']},
                       include_dirs=['/home/chenzd15thu/cutlass/include', '/home/chenzd15thu/cutlass/tools/util/include', '/home/chenzd15thu/cutlass/examples/common']),
+        CUDAExtension('sptrain.sddmm_meta', 
+                      ['src/cuda/sddmm_meta.cpp', 'src/cuda/sddmm_meta_kernel.cu'],
+                      extra_cuda_cflags=['-lineinfo'],
+                      extra_compile_args={'cxx':['-lineinfo'], 'nvcc':['-arch=sm_80', '--ptxas-options=-v', '-lineinfo', '-lcublass', '-use_fast_math']},
+                      include_dirs=['/home/chenzd15thu/cutlass/include', '/home/chenzd15thu/cutlass/tools/util/include', '/home/chenzd15thu/cutlass/examples/common']),
         ],
     cmdclass={'build_ext': BuildExtension},
     install_requires=['torch']

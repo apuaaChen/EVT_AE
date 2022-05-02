@@ -3,6 +3,7 @@ import torch.nn.functional as F
 from sptrain.sddmm import sddmm_f16_ntn
 from sptrain.spmm import spmmv2_f16_nnn, spmmv2_f16_ntn
 from sptrain.spmmt import spmmt_f16_ntn, spmmt_f16_ntt, spmmt_f16_nnn, spmmt_f16_nnt
+from sptrain.sddmm_meta import sddmm_meta_f16_ntn
 from sptrain.meta import bdense2sparse
 import math
 import torch
@@ -117,26 +118,19 @@ class Spmm(autograd.Function):
     @staticmethod
     def backward(ctx, grad_out):
         with nvtx.annotate("Grad Spmm"):
-            eyes = []
-            for i in range(ctx.batch_size * ctx.num_attention_heads):
-                eyes.append(torch.eye(n=ctx.seq_length, dtype=torch.float16, device="cuda").unsqueeze(0))
-
-            eyes = torch.cat(eyes, dim=0)
             lhs_matrix, rhs_matrix, metadata = ctx.saved_tensors
             
 
             # The naive implementation of the kernel
             # lhs_matrix_dense = spmmv2_f16_nnn(lhs_matrix, eyes, metadata)
             # grad_rhs_matrix = torch.bmm(lhs_matrix_dense.transpose(1, 2).contiguous(), grad_out)
-
-            grad_rhs_matrix = spmmt_f16_nnn(lhs_matrix.contiguous(), grad_out.contiguous(), metadata, 1.)
+            with nvtx.annotate("grad_rhs"):
+                grad_rhs_matrix = spmmt_f16_nnn(lhs_matrix.contiguous(), grad_out.contiguous(), metadata, 1.)
         
             # TODO: handle this part with a fused kernel
             # prune the lhs_matrix
-            grad_lhs_matrix = torch.bmm(grad_out.contiguous(), rhs_matrix.transpose(1, 2).contiguous())
-            mask = spmmv2_f16_nnn(torch.ones_like(lhs_matrix), eyes, metadata, 1.)
-            grad_lhs_matrix *= mask
-            grad_lhs_matrix, _ = bdense2sparse(grad_lhs_matrix, True)
+            with nvtx.annotate("grad_lhs"):
+                grad_lhs_matrix = sddmm_meta_f16_ntn(grad_out.contiguous(), rhs_matrix.contiguous(), metadata, 1.)
 
             return grad_lhs_matrix.view(lhs_matrix.size()), grad_rhs_matrix.view(rhs_matrix.size()), None
 

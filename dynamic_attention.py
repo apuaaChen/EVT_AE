@@ -364,7 +364,7 @@ model, optimizer = amp.initialize(model, optimizer, opt_level="O2", keep_batchno
 model_sparse, optimizer_sparse = amp.initialize(model_sparse, optimizer_sparse, opt_level="O2", keep_batchnorm_fp32=False, loss_scale="dynamic")
 
 ## Create the inputs
-batch_size = 2
+batch_size = 8
 sequence_length = 1024
 hidden = config.hidden_size
 

@@ -2,9 +2,6 @@
 https://github.com/NM-sparsity/NM-sparsity/blob/main/devkit/sparse_ops/sparse_ops.py
 """
 
-from curses import meta
-from random import weibullvariate
-from turtle import forward
 import torch
 from torch import autograd, nn
 import torch.nn.functional as F
@@ -217,7 +214,7 @@ class LinearV3(autograd.Function):
     @staticmethod
     def backward(ctx, grad_out):
         input, sp_weight, sp_meta, bias = ctx.saved_tensors
-        grad_input = spmmt_f16_ntt(sp_weight, grad_out, sp_meta);
+        grad_input = spmmt_f16_ntt(sp_weight, grad_out, sp_meta)
         grad_weight = torch.matmul(grad_out.t(), input)
         if bias is not None:
             grad_bias = torch.sum(grad_out, dim=0).view(bias.size())

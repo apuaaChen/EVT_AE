@@ -15,9 +15,10 @@
 
 echo "Container nvidia build = " $NVIDIA_BUILD_ID
 
-init_checkpoint=${1:-"/data/datasets/users/zdchen/pretrained/BERT/bert_base.pt"}
+init_checkpoint=${1:-"/data/datasets/users/zdchen/pretrained/BERT/bert_large_pretrained_amp.pt"}
 epochs=${2:-"2.0"}
-batch_size=${3:-"4"}
+# this configs the training batch size per GPU
+batch_size=${3:-"16"}
 learning_rate=${4:-"3e-5"}
 warmup_proportion=${5:-"0.1"}
 precision=${6:-"fp16"}
@@ -25,9 +26,9 @@ num_gpu=${7:-"2"}
 seed=${8:-"1"}
 squad_dir=${9:-"$BERT_PREP_WORKING_DIR/download/squad/v1.1"}
 vocab_file=${10:-"$BERT_PREP_WORKING_DIR/download/google_pretrained_weights/uncased_L-24_H-1024_A-16/vocab.txt"}
-OUT_DIR=${11:-"$WORKDIR/results/SQuAD"}
+OUT_DIR=${11:-"$WORKDIR/results/bert_large_SQuAD_wodropout"}
 mode=${12:-"train eval"}
-CONFIG_FILE=${13:-"./bert_configs/base.json"}
+CONFIG_FILE=${13:-"./bert_configs/large.json"}
 max_steps=${14:-"-1"}
 
 echo "out dir is $OUT_DIR"
@@ -44,7 +45,7 @@ if [ "$precision" = "fp16" ] ; then
 fi
 
 if [ "$num_gpu" = "1" ] ; then
-  export CUDA_VISIBLE_DEVICES=0
+  export CUDA_VISIBLE_DEVICES=7
   mpi_command=""
 else
   # unset CUDA_VISIBLE_DEVICES

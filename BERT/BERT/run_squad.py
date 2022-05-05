@@ -1070,8 +1070,6 @@ def main():
             # Each Epoch
             #############################################
             for step, batch in enumerate(train_iter):
-                if step == 10:
-                    exit()
                 # Terminate early for benchmarking
 
                 if args.max_steps > 0 and global_step > args.max_steps:

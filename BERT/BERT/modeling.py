@@ -28,6 +28,7 @@ import tempfile
 import sys
 from io import open
 from typing import Final
+import nvtx
 
 import torch
 from torch import nn
@@ -42,6 +43,8 @@ from torch.nn.parameter import Parameter
 import torch.nn.functional as F
 import torch.nn.init as init
 from collections import OrderedDict
+
+from sparse_ops_attn import Sddmm, Spmm
 
 logger = logging.getLogger(__name__)
 
@@ -372,6 +375,84 @@ class BertSelfAttention(nn.Module):
 
         context_layer = torch.bmm(attention_probs, value_layer)
         context_layer = context_layer.transpose(0, 1).contiguous()
+        # (seq, bsz, hidden)
+        context_layer = context_layer.view(seq_length, batch_size, self.all_head_size)
+
+        #Cache states if running distillation
+        if self.distillation:
+            if self.distill_config["use_attention_scores"]:
+                self.distill_state_dict["attention_scores"] = attention_scores
+            if self.distill_config["use_value_states"]:
+                self.distill_state_dict["value_states"] = context_layer
+        return context_layer
+
+class BertSelfAttention_(nn.Module):
+    distillation : Final[bool]
+    def __init__(self, config):
+        super(BertSelfAttention_, self).__init__()
+        if config.hidden_size % config.num_attention_heads != 0:
+            raise ValueError(
+                "The hidden size (%d) is not a multiple of the number of attention "
+                "heads (%d)" % (config.hidden_size, config.num_attention_heads))
+        self.num_attention_heads = config.num_attention_heads
+        self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
+        self.all_head_size = self.num_attention_heads * self.attention_head_size
+
+        self.query = nn.Linear(config.hidden_size, self.all_head_size)
+        self.key = nn.Linear(config.hidden_size, self.all_head_size)
+        self.value = nn.Linear(config.hidden_size, self.all_head_size)
+
+        self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
+
+        #Distillation specific
+        self.distillation = getattr(config, 'distillation', False)
+        if self.distillation:
+            self.distill_state_dict = OrderedDict()
+            self.distill_config = config.distillation_config
+        else :
+            self.distill_config = { 'use_attention_scores' : False, 'use_value_states' : False }
+
+    def transpose_for_scores(self, x):
+        # seq: x.size(0), bsz: x.size(0)
+        x = x.view(x.size(0), x.size(1) * self.num_attention_heads, self.attention_head_size).transpose(0, 1).contiguous()
+        return x
+
+    def transpose_key_for_scores(self, x):
+        # seq: x.size(0), bsz: x.size(0)
+        x = x.view(x.size(0), x.size(1) * self.num_attention_heads, self.attention_head_size).transpose(0, 1).contiguous()
+        return x
+
+    def forward(self, hidden_states, attention_mask):
+        # (seq, bsz, hidden)
+        batch_size = hidden_states.size(1)
+        seq_length = hidden_states.size(0)
+        with nvtx.annotate("Q,K,V"):
+            mixed_query_layer = self.query(hidden_states)
+            mixed_key_layer = self.key(hidden_states)
+            mixed_value_layer = self.value(hidden_states)
+
+            query_layer = self.transpose_for_scores(mixed_query_layer)
+            key_layer = self.transpose_key_for_scores(mixed_key_layer)
+            value_layer = self.transpose_for_scores(mixed_value_layer)
+
+        with nvtx.annotate("sddmm"):
+            attention_scores, metadata = Sddmm.apply(query_layer, key_layer, attention_mask, 1./ math.sqrt(self.attention_head_size))
+
+        with nvtx.annotate("softmax"):
+            # Normalize the attention scores to probabilities.
+            attention_probs = F.softmax(attention_scores, dim=-1)
+
+        with nvtx.annotate("dropout"):
+            # This is actually dropping out entire tokens to attend to, which might
+            # seem a bit unusual, but is taken from the original Transformer paper.
+            # (bsz, heads, seq, seq)
+            attention_probs = self.dropout(attention_probs)
+
+        with nvtx.annotate("AV"):
+            context_layer = Spmm.apply(attention_probs, value_layer, metadata)
+            context_layer = context_layer.view(batch_size * self.num_attention_heads,
+                                                 seq_length, self.attention_head_size)
+            context_layer = context_layer.transpose(0, 1).contiguous()
         # (seq, bsz, hidden)
         context_layer = context_layer.view(seq_length, batch_size, self.all_head_size)
 

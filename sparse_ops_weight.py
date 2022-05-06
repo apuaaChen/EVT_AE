@@ -7,7 +7,7 @@ import nvtx
 
 from sptrain.spmm import spmmv2_f16_nnn, spmmv2_f16_ntt
 from sptrain.spmmt import spmmt_f16_ntt
-from sptrain.sddmm_meta import sddmm_meta_f16_ntn
+from sptrain.sddmm_meta import sddmm_meta_f16_tnn
 from sptrain.meta import bdense2sparse
 
 
@@ -41,8 +41,9 @@ class Linear(autograd.Function):
 class SpLinearFn(autograd.Function):
 
     @staticmethod
-    def forward(ctx, input, weight, metadata, bias):
+    def forward(ctx, input, weight, metadata, bias, stream):
         ctx.save_for_backward(input, weight, metadata, bias)
+        ctx.stream = stream
         if bias is not None:
             bias = bias.unsqueeze(0)
         
@@ -65,21 +66,29 @@ class SpLinearFn(autograd.Function):
         input, weight, metadata, bias = ctx.saved_tensors
         feat_out, feat_in = weight.size()
         feat_in *= 2
+        s = ctx.stream
+        s.wait_stream(torch.cuda.current_stream())
+        
+        with nvtx.annotate("grad_weight"):
+            # s = torch.cuda.Stream()
+            with torch.cuda.stream(s):
+                grad_weight = sddmm_meta_f16_tnn(grad_out.view(-1, feat_out), input.view(-1, feat_in), metadata, 1.)
+            # grad_weight = torch.matmul(grad_out.view(-1, feat_out).t(), input.view(-1, feat_in)).squeeze_()
+            # mask = spmmv2_f16_nnn(torch.ones_like(weight), torch.eye(n=feat_in, dtype=torch.float16, device="cuda"), metadata, 1.)
+            # grad_weight *= mask.squeeze_()
+            # grad_weight, _ = bdense2sparse(grad_weight, True)
         with nvtx.annotate("grad_input"):
             grad_input = spmmt_f16_ntt(weight, grad_out.view(-1, feat_out), metadata, 1.)
-        with nvtx.annotate("grad_weight"):
-            grad_weight = torch.matmul(grad_out.view(-1, feat_out).t(), input.view(-1, feat_in)).squeeze_()
-            mask = spmmv2_f16_nnn(torch.ones_like(weight), torch.eye(n=feat_in, dtype=torch.float16, device="cuda"), metadata, 1.)
-            grad_weight *= mask.squeeze_()
-            grad_weight, _ = bdense2sparse(grad_weight, True)
 
         if bias is not None:
             with nvtx.annotate("grad_sum"):
                 grad_bias = torch.sum(grad_out.view(-1, feat_out), dim=0).view(bias.size())
         else:
             grad_bias = None
+        
+        torch.cuda.current_stream().wait_stream(s)
 
-        return grad_input.view(input.size()), grad_weight.view(weight.size()), None, grad_bias
+        return grad_input.view(input.size()), grad_weight.view(weight.size()), None, grad_bias, None
 
 
 
@@ -101,6 +110,7 @@ class SpLinear(nn.Module):
             self.bias = nn.Parameter(torch.empty(out_features, **factory_kwargs))
         else:
             self.register_parameter('bias', None)
+        self.s = torch.cuda.Stream()
     
     def get_dense_weight(self) -> torch.Tensor:
         return spmmv2_f16_nnn(self.weight, torch.eye(n=self.in_features, dtype=torch.float16, device="cuda"), self.metadata, 1.)
@@ -125,7 +135,7 @@ class SpLinear(nn.Module):
         self.weight = nn.Parameter(nnz)
     
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        return SpLinearFn.apply(input, self.weight, self.metadata, self.bias)
+        return SpLinearFn.apply(input, self.weight, self.metadata, self.bias, self.s)
 
 
 

@@ -8,6 +8,7 @@
 #include "cuda_bf16.h"
 #include "sddmm/default_sddmma.h"
 #include "epilogue/sddmm_epilogue.h"
+#include <ATen/cuda/CUDAContext.h>
 #include "helper.h"
 
 /// Tiling
@@ -254,9 +255,10 @@ torch::Tensor sddmm_meta_cuda(
     cudaFuncSetAttribute(cutlassSddmmMetaKernel_16<typename Config::Element, typename Config::Mma, typename Config::SharedStorage, typename Config::Epilogue>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size);
     cudaFuncSetAttribute(cutlassSddmmMetaKernel_16<typename Config::Element, typename Config::Mma, typename Config::SharedStorage, typename Config::Epilogue>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
 
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     cutlassSddmmMetaKernel_16<
     typename Config::Element, typename Config::Mma, 
-    typename Config::SharedStorage, typename Config::Epilogue><<<grid, block, smem_size>>>(
+    typename Config::SharedStorage, typename Config::Epilogue><<<grid, block, smem_size, stream>>>(
         problem_size, grid_tiled_shape, 
         layout_a, (typename Config::Element*)tensor_a.data_ptr(),
         layout_b, (typename Config::Element*)tensor_b.data_ptr(),

@@ -47,6 +47,9 @@ class SparseBertSelfOutput(nn.Module):
 model = BertSelfOutput(config).to("cuda")
 model_sparse = SparseBertSelfOutput(config).to("cuda")
 
+# We need to setup the parameters before applying amp
+model_sparse.dense.set_parameters(model.dense.weight, model.dense.bias)
+
 # Prepare optimizer
 param_optimizer = list(model.named_parameters())
 param_optimizer = [n for n in param_optimizer if 'pooler' not in n[0]]
@@ -70,10 +73,8 @@ optimizer_sparse = FusedAdam(optimizer_grouped_parameters_sparse, lr=0.1, bias_c
 model, optimizer = amp.initialize(model, optimizer, opt_level="O2", keep_batchnorm_fp32=False, loss_scale="dynamic")
 model_sparse, optimizer_sparse = amp.initialize(model_sparse, optimizer_sparse, opt_level="O2", keep_batchnorm_fp32=False, loss_scale="dynamic")
 
-model_sparse.dense.set_parameters(model.dense.weight, model.dense.bias)
-
 ## Create the inputs
-batch_size = 4
+batch_size = 8
 sequence_length = 2048
 hidden = config.hidden_size
 
@@ -118,27 +119,51 @@ def scale_loss(loss,
 ASP.compute_sparse_masks()
 
 optimizer.zero_grad()
+optimizer_sparse.zero_grad()
 
-# forward pass
-output = model(hidden_states, input_tensor)
-output_sparse = model_sparse(hidden_states_sparse, input_tensor_sparse)
+# for functional verification
+# # forward pass
+# output = model(hidden_states, input_tensor)
+# output_sparse = model_sparse(hidden_states_sparse, input_tensor_sparse)
 
-with scale_loss(output, optimizer) as scaled_loss:
-    scaled_loss.backward(grad_output)
+# with scale_loss(output, optimizer) as scaled_loss:
+#     scaled_loss.backward(grad_output)
 
-with scale_loss(output_sparse, optimizer_sparse) as scaled_loss:
-    scaled_loss.backward(grad_output)
+# with scale_loss(output_sparse, optimizer_sparse) as scaled_loss:
+#     scaled_loss.backward(grad_output)
 
-optimizer.step()
 
-# output_sparse.backward()
-# print(output)
+# optimizer.step()
+# optimizer_sparse.step()
 
-allclose(output_sparse, output, 5e-2, 5e-2)
-allclose(model_sparse.dense.get_dense_weight_grad(), model.dense.weight.grad, 5e-2, 5e-2)
-allclose(model_sparse.dense.bias.grad, model.dense.bias.grad, 5e-2, 5e-2)
-allclose(hidden_states_sparse.grad, hidden_states.grad, 5e-2, 1e-1)
-allclose(input_tensor_sparse.grad, input_tensor.grad, 5e-2, 5e-2)
+# allclose(output_sparse, output, 5e-2, 5e-2)
+# allclose(model_sparse.dense.get_dense_weight_grad(), model.dense.weight.grad, 5e-2, 5e-2)
+# allclose(model_sparse.dense.bias.grad, model.dense.bias.grad, 5e-2, 5e-2)
+# allclose(hidden_states_sparse.grad, hidden_states.grad, 5e-2, 1e-1)
+# allclose(input_tensor_sparse.grad, input_tensor.grad, 5e-2, 5e-2)
+
+# optimizer.zero_grad()
+# optimizer_sparse.zero_grad()
+
+# # forward pass
+# output = model(hidden_states, input_tensor)
+# output_sparse = model_sparse(hidden_states_sparse, input_tensor_sparse)
+
+# with scale_loss(output, optimizer) as scaled_loss:
+#     scaled_loss.backward(grad_output)
+
+# with scale_loss(output_sparse, optimizer_sparse) as scaled_loss:
+#     scaled_loss.backward(grad_output)
+
+
+# optimizer.step()
+# optimizer_sparse.step()
+
+# allclose(output_sparse, output, 5e-2, 1.5e-1)
+# allclose(model_sparse.dense.get_dense_weight_grad(), model.dense.weight.grad, 5e-2, 5e-2)
+# allclose(model_sparse.dense.bias.grad, model.dense.bias.grad, 5e-2, 1e-1)
+# allclose(hidden_states_sparse.grad, hidden_states.grad, 5e-2, 1.5e-1)
+# allclose(input_tensor_sparse.grad, input_tensor.grad, 5e-2, 5e-2)
 
 
 # profling

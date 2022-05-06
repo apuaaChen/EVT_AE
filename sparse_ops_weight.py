@@ -68,6 +68,9 @@ class SpLinearFn(autograd.Function):
         feat_in *= 2
         s = ctx.stream
         s.wait_stream(torch.cuda.current_stream())
+
+        with nvtx.annotate("grad_input"):
+            grad_input = spmmt_f16_ntt(weight, grad_out.view(-1, feat_out), metadata, 1.)
         
         with nvtx.annotate("grad_weight"):
             # s = torch.cuda.Stream()
@@ -77,8 +80,6 @@ class SpLinearFn(autograd.Function):
             # mask = spmmv2_f16_nnn(torch.ones_like(weight), torch.eye(n=feat_in, dtype=torch.float16, device="cuda"), metadata, 1.)
             # grad_weight *= mask.squeeze_()
             # grad_weight, _ = bdense2sparse(grad_weight, True)
-        with nvtx.annotate("grad_input"):
-            grad_input = spmmt_f16_ntt(weight, grad_out.view(-1, feat_out), metadata, 1.)
 
         if bias is not None:
             with nvtx.annotate("grad_sum"):
@@ -130,9 +131,9 @@ class SpLinear(nn.Module):
             init.uniform_(self.bias, -bound, bound)
     
     def set_parameters(self, weight, bias):
-        self.bias = nn.Parameter(bias.clone())
+        self.bias = nn.Parameter(bias.clone(), requires_grad=True)
         nnz, self.metadata = bdense2sparse(weight.detach().clone(), True)
-        self.weight = nn.Parameter(nnz)
+        self.weight = nn.Parameter(nnz, requires_grad=True)
     
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         return SpLinearFn.apply(input, self.weight, self.metadata, self.bias, self.s)

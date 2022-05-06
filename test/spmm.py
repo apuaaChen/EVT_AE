@@ -183,6 +183,22 @@ class TestPruning(unittest.TestCase):
 
         self.assertTrue(torch.allclose(nonzeros_ref, nonzeros, rtol=1e-9))
         self.assertTrue(torch.allclose(metadata_ref, metadata, rtol=1e-9))
+    
+    def test_abs_float(self):
+        dense_matrix = torch.randn(size=(batch_size, feat_in), dtype=torch.float, device="cuda")
+        nonzeros_ref, _, metadata_ref = bdense2sparse_gold(dense_matrix, True)
+        nonzeros, metadata = bdense2sparse(dense_matrix, True)
+
+        self.assertTrue(torch.allclose(nonzeros_ref, nonzeros, rtol=1e-9))
+        self.assertTrue(torch.allclose(metadata_ref, metadata, rtol=1e-9))
+
+    def test_no_abs_float(self):
+        dense_matrix = torch.randn(size=(batch_size, feat_in), dtype=torch.float, device="cuda")
+        nonzeros_ref, _, metadata_ref = bdense2sparse_gold(dense_matrix, False)
+        nonzeros, metadata = bdense2sparse(dense_matrix, False)
+
+        self.assertTrue(torch.allclose(nonzeros_ref, nonzeros, rtol=1e-9))
+        self.assertTrue(torch.allclose(metadata_ref, metadata, rtol=1e-9))
 
 
 

@@ -23,21 +23,26 @@ using DefaultConfig = cutlass::gemm::device::DefaultGemmConfiguration<
     cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80, float, float, float, float>;
 
 // A struct to switch between different number of stages
-template<typename Element_, int Stages>
+template<typename Element_, typename LayoutA_, typename LayoutB_, int Stages>
 struct SDDMMConfigure{
     using Element = Element_;
+    using LayoutA = LayoutA_;
+    using LayoutB = LayoutB_;
+
+    static const bool kShfl = std::is_same<LayoutB, typename cutlass::layout::RowMajor>::value;
+
     using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
         Element, 128 / cutlass::sizeof_bits<Element>::value, float, Element,
         cutlass::epilogue::thread::ScaleType::OnlyAlphaScaling>;
     
     using Mma = typename cutlass::gemm::threadblock::DefaultSDDMma<
-        Element, cutlass::layout::RowMajor, 128 / cutlass::sizeof_bits<Element>::value,
-        Element, cutlass::layout::ColumnMajor, 128 / cutlass::sizeof_bits<cutlass::bfloat16_t>::value,
+        Element, LayoutA, 128 / cutlass::sizeof_bits<Element>::value,
+        Element, LayoutB, 128 / cutlass::sizeof_bits<Element>::value,
         float, cutlass::layout::RowMajor, cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80,
         ThreadblockShape_16, WarpShape_16, InstructionShape_16, Stages, cutlass::arch::OpMultiplyAdd>::ThreadblockMma;
     
     using Epilogue = typename cutlass::epilogue::threadblock::DefaultSddmmEpilogue<
-        ThreadblockShape_16, WarpShape_16, EpilogueOp, Mma>::Epilogue;
+        ThreadblockShape_16, WarpShape_16, EpilogueOp, Mma, kShfl>::Epilogue;
     
     
     union SharedStorage {
@@ -200,9 +205,20 @@ torch::Tensor sddmm_meta_cuda(
     torch::Tensor tensor_e,
     const float alpha_)
 {
-    const int m = tensor_a.size(-2);
-    const int n = tensor_b.size(-2);
-    const int k = tensor_b.size(-1);
+    int m, n, k;
+    if (std::is_same<typename Config::LayoutA, cutlass::layout::RowMajor>::value){
+        m = tensor_a.size(-2);
+    } else {
+        m = tensor_a.size(-1);
+    }
+
+    if (std::is_same<typename Config::LayoutB, cutlass::layout::ColumnMajor>::value){
+        n = tensor_b.size(-2);
+        k = tensor_b.size(-1);
+    } else {
+        n = tensor_b.size(-1);
+        k = tensor_b.size(-2);
+    }
     
     int batch_size = tensor_a.numel() / m / k;
     int batch_size_b = tensor_b.numel() / n / k;
@@ -214,8 +230,8 @@ torch::Tensor sddmm_meta_cuda(
     // Create a tuple of problem size for matrix multiplication
     cutlass::gemm::GemmCoord problem_size(m, n, k);
 
-    auto layout_a = cutlass::layout::RowMajor::packed(cutlass::make_Coord(problem_size.m(), problem_size.k()));
-    auto layout_b = cutlass::layout::ColumnMajor::packed(problem_size.kn());
+    auto layout_a = Config::LayoutA::packed(cutlass::make_Coord(problem_size.m(), problem_size.k()));
+    auto layout_b = Config::LayoutB::packed(problem_size.kn());
     auto layout_d = cutlass::layout::RowMajor::packed(cutlass::make_Coord(problem_size.m(), problem_size.n() / 2));
 
     typename Config::Element alpha = typename Config::Element(alpha_);
@@ -261,13 +277,33 @@ torch::Tensor sddmm_meta_bf16_ntn_cuda(
     const int k = tensor_b.size(-1);
 
     if (k == 64){
-        using Config = SDDMMConfigure<cutlass::bfloat16_t, 1>;
+        using Config = SDDMMConfigure<cutlass::bfloat16_t, cutlass::layout::RowMajor, cutlass::layout::ColumnMajor, 1>;
         return sddmm_meta_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
     } else if (k == 128){
-        using Config = SDDMMConfigure<cutlass::bfloat16_t, 2>;
+        using Config = SDDMMConfigure<cutlass::bfloat16_t, cutlass::layout::RowMajor, cutlass::layout::ColumnMajor, 2>;
         return sddmm_meta_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
     } else {
-        using Config = SDDMMConfigure<cutlass::bfloat16_t, 3>;
+        using Config = SDDMMConfigure<cutlass::bfloat16_t, cutlass::layout::RowMajor, cutlass::layout::ColumnMajor, 3>;
+        return sddmm_meta_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
+    }
+}
+
+
+torch::Tensor sddmm_meta_bf16_tnn_cuda(
+    torch::Tensor tensor_a,
+    torch::Tensor tensor_b,
+    torch::Tensor tensor_e,
+    const float alpha)
+{
+    const int k = tensor_b.size(-2);
+    if (k == 64){
+        using Config = SDDMMConfigure<cutlass::bfloat16_t, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor, 1>;
+        return sddmm_meta_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
+    } else if (k == 128){
+        using Config = SDDMMConfigure<cutlass::bfloat16_t, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor, 2>;
+        return sddmm_meta_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
+    } else {
+        using Config = SDDMMConfigure<cutlass::bfloat16_t, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor, 3>;
         return sddmm_meta_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
     }
 }
@@ -281,13 +317,33 @@ torch::Tensor sddmm_meta_f16_ntn_cuda(
 {
     const int k = tensor_b.size(-1);
     if (k == 64){
-        using Config = SDDMMConfigure<cutlass::half_t, 1>;
+        using Config = SDDMMConfigure<cutlass::half_t, cutlass::layout::RowMajor, cutlass::layout::ColumnMajor, 1>;
         return sddmm_meta_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
     } else if (k == 128){
-        using Config = SDDMMConfigure<cutlass::half_t, 2>;
+        using Config = SDDMMConfigure<cutlass::half_t, cutlass::layout::RowMajor, cutlass::layout::ColumnMajor, 2>;
         return sddmm_meta_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
     } else {
-        using Config = SDDMMConfigure<cutlass::half_t, 3>;
+        using Config = SDDMMConfigure<cutlass::half_t, cutlass::layout::RowMajor, cutlass::layout::ColumnMajor, 3>;
+        return sddmm_meta_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
+    }
+}
+
+
+torch::Tensor sddmm_meta_f16_tnn_cuda(
+    torch::Tensor tensor_a,
+    torch::Tensor tensor_b,
+    torch::Tensor tensor_e,
+    const float alpha)
+{
+    const int k = tensor_b.size(-2);
+    if (k == 64){
+        using Config = SDDMMConfigure<cutlass::half_t, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor, 1>;
+        return sddmm_meta_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
+    } else if (k == 128){
+        using Config = SDDMMConfigure<cutlass::half_t, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor, 2>;
+        return sddmm_meta_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
+    } else {
+        using Config = SDDMMConfigure<cutlass::half_t, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor, 3>;
         return sddmm_meta_cuda<Config>(tensor_a, tensor_b, tensor_e, alpha);
     }
 }

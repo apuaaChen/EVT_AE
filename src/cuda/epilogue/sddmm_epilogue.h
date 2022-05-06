@@ -166,7 +166,8 @@ template <
     typename OutputOp_,
     typename Mma_,
     typename MetaIterator_,
-    typename NnzTileIterator_
+    typename NnzTileIterator_,
+    bool kShfl=false
 >
 class DP24Epilogue{
 public:
@@ -425,18 +426,39 @@ public:
                             float2* frag1 = frag_ptr + n_i * FragmentCount::kRow + m_i;
                             float2* frag2 = frag_ptr + (n_i + 1) * FragmentCount::kRow + m_i;
 
-                            // // get the elements
-                            // ElementOutput data_16[4] = {
-                            //     ElementOutput((*frag1).x), ElementOutput((*frag1).y),
-                            //     ElementOutput((*frag2).x), ElementOutput((*frag2).y)
-                            // };
-
-                            float data[4] = {(*frag1).x, (*frag1).y, (*frag2).x, (*frag2).y};
+                            // get the elements
                             ElementOutput data_16[4] = {
-                                ElementOutput(data[0]), ElementOutput(data[1]),
-                                ElementOutput(data[2]), ElementOutput(data[3])
+                                ElementOutput((*frag1).x), ElementOutput((*frag1).y),
+                                ElementOutput((*frag2).x), ElementOutput((*frag2).y)
                             };
 
+                            // Perform shfl here
+                            if (kShfl){
+                                // original: T0{0,1} T1{0,1} T2{0,1} T3{0,1} T0{2,3} T1{2,3} T2{2,3} T3{2,3}
+                                float* data_16_vec = reinterpret_cast<float*>(data_16);
+
+                                // step 1: switch T2{0,1} T3{0,1} with T0{2, 3}, T1{2,3}
+                                float tmp;
+                                int sub_sub_group_id = (lane_id % 4) / 2;
+                                // T0{0,1} T1{0,1} tmp(T2{0,1} T3{0,1}) tmp(T0{2,3} T1{2,3}) T2{2,3} T3{2,3}
+                                if (sub_sub_group_id == 0) tmp = *(data_16_vec + 1);
+                                else tmp = *(data_16_vec);
+
+                                // shfl: T0{0,1} T1{0,1} T0{2,3} T1{2,3} T2{0,1} T3{0,1} T2{2,3} T3{2,3}
+                                tmp = __shfl_xor_sync(0xffffffff, tmp, 2);
+                                if (sub_sub_group_id == 0) *(data_16_vec + 1)=tmp;
+                                else *(data_16_vec)=tmp;
+
+                                // T0{0,1} tmp(T1{0,1}) tmp(T0{2,3}) T1{2,3} T2{0,1} tmp(T3{0,1}) tmp(T2{2,3}) T3{2,3}
+                                int sub_sub_sub_group_id = lane_id % 2;
+                                if (sub_sub_sub_group_id == 0) tmp = *(data_16_vec + 1);
+                                else tmp = *(data_16_vec);
+
+                                // shfl: T0{0,1} T0{2,3} T1{0,1} T1{2,3} T2{0,1} T2{2,3} T3{0,1} T3{2,3}
+                                tmp = __shfl_xor_sync(0xffffffff, tmp, 1);
+                                if (sub_sub_sub_group_id == 0) *(data_16_vec + 1)=tmp;
+                                else *(data_16_vec)=tmp;
+                            }
 
                             // get the meta bits
                             int src_lane = (lane_id / 4) * 4 + j + i * 2;
@@ -498,7 +520,8 @@ template <
     typename ThreadblockTile_Shape_,
     typename WarpTile_Shape_,
     typename OutputOp_,
-    typename Mma_
+    typename Mma_,
+    bool kShfl=false
 >
 struct DefaultSddmmEpilogue {
     using OutputOp = OutputOp_;
@@ -509,7 +532,7 @@ struct DefaultSddmmEpilogue {
 
     using MetaIterator = MetaTileIterator<ThreadblockTile_Shape, WarpTile_Shape>;
     using NnzIterator = NnzTileIterator<ElementOutput, ThreadblockTile_Shape, WarpTile_Shape>;
-    using Epilogue = DP24Epilogue<ThreadblockTile_Shape, WarpTile_Shape, OutputOp, Mma, MetaIterator, NnzIterator>;
+    using Epilogue = DP24Epilogue<ThreadblockTile_Shape, WarpTile_Shape, OutputOp, Mma, MetaIterator, NnzIterator, kShfl>;
 };
 
 }  // namespace threadblock

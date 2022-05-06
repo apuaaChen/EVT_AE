@@ -123,6 +123,51 @@ class TestPruning(unittest.TestCase):
         # Check if the metadata and nonzeros are correct
         self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, rtol=1e-9))
     
+
+    def test_gold_no_abs_float(self):
+        dense_matrix = torch.randn(size=(batch_size, feat_in), dtype=torch.float, device="cuda")
+        rhs_matrix = torch.eye(n=feat_in, dtype=torch.float, device="cuda")
+        nonzeros, uncompressed, metadata = bdense2sparse_gold(dense_matrix, False)
+
+        group = int(dense_matrix.numel()/4)
+        dense_temp = dense_matrix.detach().reshape(group, 4)
+        index = torch.argsort(dense_temp, dim=1)[:, :int(2)]
+
+        w_b = torch.ones(dense_temp.shape, device=dense_temp.device, dtype=dense_temp.dtype)
+        w_b = w_b.scatter_(dim=1, index=index, value=0).reshape(dense_matrix.shape)
+        uncompressed_ref = (dense_matrix * w_b)
+
+        # Check if the selection is correct
+        self.assertTrue(torch.allclose(uncompressed, uncompressed_ref, rtol=1e-5))
+
+        output_matrix_ref = torch.matmul(uncompressed, rhs_matrix)
+        output_matrix = spmmv2_f16_nnn(nonzeros.to(torch.float16), rhs_matrix.to(torch.float16), metadata, 1.).to(torch.float)
+        # Check if the metadata and nonzeros are correct
+        self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, rtol=1e-1))
+    
+    def test_gold_abs_float(self):
+        dense_matrix = torch.randn(size=(batch_size, feat_in), dtype=torch.float, device="cuda")
+        rhs_matrix = torch.eye(n=feat_in, dtype=torch.float, device="cuda")
+        nonzeros, uncompressed, metadata = bdense2sparse_gold(dense_matrix, True)
+
+        group = int(dense_matrix.numel()/4)
+        dense_temp = dense_matrix.abs().detach().reshape(group, 4)
+        index = torch.argsort(dense_temp, dim=1)[:, :int(2)]
+
+        w_b = torch.ones(dense_temp.shape, device=dense_temp.device, dtype=dense_temp.dtype)
+        w_b = w_b.scatter_(dim=1, index=index, value=0).reshape(dense_matrix.shape)
+        uncompressed_ref = (dense_matrix * w_b)
+
+        # Check if the selection is correct
+        self.assertTrue(torch.allclose(uncompressed, uncompressed_ref, rtol=1e-9))
+
+        output_matrix_ref = torch.matmul(uncompressed, rhs_matrix)
+        output_matrix = spmmv2_f16_nnn(nonzeros.to(torch.float16), rhs_matrix.to(torch.float16), metadata, 1.).to(torch.float)
+        
+        # Check if the metadata and nonzeros are correct
+        self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, rtol=1e-2))
+    
+    
     def test_abs_half(self):
         dense_matrix = torch.randn(size=(batch_size, feat_in), dtype=half, device="cuda")
         nonzeros_ref, _, metadata_ref = bdense2sparse_gold(dense_matrix, True)

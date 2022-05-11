@@ -1,0 +1,1 @@
+python -m torch.distributed.launch --nproc_per_node=2 train.py --seed 2 --train-global-batch-size 1024 --dataset-dir /data/datasets/users/zdchen/wmt16_de_en --save-dir /data/datasets/users/zdchen/GNMT

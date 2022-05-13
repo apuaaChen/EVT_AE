@@ -165,7 +165,7 @@ class ResidualRecurrentDecoder(nn.Module):
             nn.init.uniform_(self.embedder.weight.data, -init_weight,
                              init_weight)
 
-        self.classifier = Classifier(hidden_size, vocab_size)
+        # self.classifier = Classifier(hidden_size, vocab_size)
         self.dropout = nn.Dropout(p=dropout)
 
     def init_hidden(self, hidden):
@@ -238,7 +238,7 @@ class ResidualRecurrentDecoder(nn.Module):
             self.append_hidden(h)
             x = x + residual
 
-        x = self.classifier(x)
+        # x = self.classifier(x)
         hidden = self.package_hidden()
 
         return x, scores, [enc_context, enc_len, hidden]

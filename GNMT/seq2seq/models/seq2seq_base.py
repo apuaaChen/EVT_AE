@@ -27,7 +27,7 @@ class Seq2Seq(nn.Module):
     """
     Generic Seq2Seq module, with an encoder and a decoder.
     """
-    def __init__(self, encoder=None, decoder=None, batch_first=False):
+    def __init__(self, encoder=None, decoder=None, criterion=None, batch_first=False, ):
         """
         Constructor for the Seq2Seq module.
 
@@ -40,6 +40,7 @@ class Seq2Seq(nn.Module):
         self.encoder = encoder
         self.decoder = decoder
         self.batch_first = batch_first
+        self.criterion = criterion
 
     def encode(self, inputs, lengths):
         """
@@ -80,6 +81,7 @@ class Seq2Seq(nn.Module):
                 decoder RNN cells
         """
         logits, scores, new_context = self.decode(inputs, context, True)
+        logits = self.criterion.classifier(logits)
         logprobs = log_softmax(logits, dim=-1)
         logprobs, words = logprobs.topk(beam_size, dim=-1)
         return words, logprobs, scores, new_context

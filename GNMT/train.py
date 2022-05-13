@@ -361,15 +361,15 @@ def set_iter_size(train_iter_size, train_global_batch_size, train_batch_size):
     return train_iter_size
 
 
-def build_criterion(vocab_size, padding_idx, smoothing):
-    if smoothing == 0.:
-        logging.info(f'Building CrossEntropyLoss')
-        criterion = nn.CrossEntropyLoss(ignore_index=padding_idx, size_average=False)
-    else:
-        logging.info(f'Building LabelSmoothingLoss (smoothing: {smoothing})')
-        criterion = LabelSmoothing(padding_idx, smoothing)
+# def build_criterion(vocab_size, padding_idx, smoothing):
+#     if smoothing == 0.:
+#         logging.info(f'Building CrossEntropyLoss')
+#         criterion = nn.CrossEntropyLoss(ignore_index=padding_idx, size_average=False)
+#     else:
+#         logging.info(f'Building LabelSmoothingLoss (smoothing: {smoothing})')
+#         criterion = LabelSmoothing(padding_idx, smoothing)
 
-    return criterion
+#     return criterion
 
 
 def main():
@@ -463,6 +463,8 @@ def main():
                     'dropout': args.dropout,
                     'batch_first': False,
                     'share_embedding': args.share_embedding,
+                    'padding_idx': config.PAD,
+                    'smoothing': args.smoothing
                     }
     model = GNMT(**model_config).to(device)
     logging.info(model)
@@ -470,8 +472,8 @@ def main():
     batch_first = model.batch_first
 
     # define loss function (criterion) and optimizer
-    criterion = build_criterion(vocab_size, config.PAD,
-                                args.smoothing).to(device)
+    # criterion = build_criterion(vocab_size, config.PAD,
+    #                             args.smoothing).to(device)
 
     opt_config = {'optimizer': args.optimizer, 'lr': args.lr}
     opt_config.update(literal_eval(args.optimizer_extra))
@@ -535,7 +537,7 @@ def main():
         }
     trainer_options = dict(
         model=model,
-        criterion=criterion,
+        # criterion=criterion,
         grad_clip=args.grad_clip,
         iter_size=args.train_iter_size,
         save_dir=args.save_dir,

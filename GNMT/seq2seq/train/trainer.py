@@ -45,7 +45,7 @@ class Seq2SeqTrainer:
     """
     def __init__(self,
                  model,
-                 criterion,
+                #  criterion,
                  opt_config,
                  scheduler_config,
                  print_freq=10,
@@ -93,7 +93,7 @@ class Seq2SeqTrainer:
         """
         super(Seq2SeqTrainer, self).__init__()
         self.model = model
-        self.criterion = criterion
+        # self.criterion = criterion
         self.epoch = 0
         self.save_info = save_info
         self.save_dir = save_dir
@@ -173,16 +173,13 @@ class Seq2SeqTrainer:
         num_toks['src'] = int(sum(src_length))
 
         if self.batch_first:
-            output = self.model(src, src_length, tgt[:, :-1])
+            input_encoder = tgt[:, :-1]
             tgt_labels = tgt[:, 1:]
-            T, B = output.size(1), output.size(0)
         else:
-            output = self.model(src, src_length, tgt[:-1])
+            input_encoder = tgt[:-1]
             tgt_labels = tgt[1:]
-            T, B = output.size(0), output.size(1)
-
-        loss = self.criterion(output.view(T * B, -1),
-                              tgt_labels.contiguous().view(-1))
+        
+        loss, B = self.model(src, src_length, input_encoder, tgt_labels.contiguous().view(-1), self.batch_first)
 
         loss_per_batch = loss.item()
         loss /= (B * self.iter_size)

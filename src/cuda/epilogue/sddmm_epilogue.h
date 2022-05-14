@@ -21,6 +21,11 @@ public:
 
     int stride;
     int* global_ptr;
+    int row_coord;
+    int column_coord;
+
+    int row_bound;
+    int column_bound;
 
     CUTLASS_DEVICE
     MetaTileIterator(
@@ -31,16 +36,27 @@ public:
         int lane_id,
         TensorCoord threadblock_offset
     ):
-    stride(extent.row())
+    stride(extent.row()),
+    row_bound(extent.row()),
+    column_bound(extent.column())
     {
         int warp_row_id = warp_id % WarpCount::kRow;
         int warp_col_id = warp_id / WarpCount::kRow;
-        global_ptr = reinterpret_cast<int*>(meta_pointer) + ((threadblock_offset.column() / 32) + warp_col_id * (WarpTile_Shape::kN / 32)) * stride + threadblock_offset.row() + warp_row_id * WarpTile_Shape::kM + lane_id;
+
+        column_coord = (threadblock_offset.column() / 32) + warp_col_id * (WarpTile_Shape::kN / 32);
+        row_coord = threadblock_offset.row() + warp_row_id * WarpTile_Shape::kM + lane_id;
+
+        // global_ptr = reinterpret_cast<int*>(meta_pointer) + ((threadblock_offset.column() / 32) + warp_col_id * (WarpTile_Shape::kN / 32)) * stride + threadblock_offset.row() + warp_row_id * WarpTile_Shape::kM + lane_id;
+        global_ptr = reinterpret_cast<int*>(meta_pointer) + column_coord * stride + row_coord;
+
     }
 
     CUTLASS_DEVICE
     void store_with_offset(TensorCoord offset, int data){
-        *(global_ptr + offset.column() * stride + offset.row()) = data;
+        // check predicate
+        if ((column_coord + offset.column() < column_bound) && (row_coord + offset.row() < row_bound)){
+            *(global_ptr + offset.column() * stride + offset.row()) = data;
+        }
     }
 
     CUTLASS_DEVICE
@@ -126,6 +142,12 @@ public:
     int stride;
     float4* global_ptr;
 
+    int row_coord;
+    int column_coord;
+
+    int row_bound;
+    int column_bound;
+
     CUTLASS_DEVICE
     NnzTileIterator(
         Element* nnz_pointer,
@@ -133,12 +155,20 @@ public:
         int thread_id,
         TensorCoord threadblock_offset
     ):
-    stride(extent.column() / 2)
+    stride(extent.column() / 2),
+    row_bound(extent.row()),
+    column_bound(extent.column() / 2)
     {
         int lane_id = thread_id % ThreadMap::kColumn;
         int group_id = thread_id / ThreadMap::kColumn;
 
-        global_ptr = reinterpret_cast<float4 *>(nnz_pointer + (threadblock_offset.row() + group_id) * stride + threadblock_offset.column() / 2) + lane_id;
+        row_coord = threadblock_offset.row() + group_id;
+
+        column_coord = (threadblock_offset.column() / 2) + lane_id * kElementsPerAccess;
+
+        // global_ptr = reinterpret_cast<float4 *>(nnz_pointer + (threadblock_offset.row() + group_id) * stride + threadblock_offset.column() / 2) + lane_id;
+
+        global_ptr = reinterpret_cast<float4 *>(nnz_pointer + row_coord * stride + column_coord);
     }
 
     CUTLASS_DEVICE
@@ -148,7 +178,9 @@ public:
 
     CUTLASS_DEVICE
     void add_pointer_offset(TensorCoord offset){
-        global_ptr += offset.row() * stride / kElementsPerAccess + offset.column();
+        if ((row_coord + offset.row() < row_bound) && (column_coord + offset.column() * kElementsPerAccess < column_bound)){
+            global_ptr += offset.row() * stride / kElementsPerAccess + offset.column();
+        }
     }
 
     CUTLASS_DEVICE

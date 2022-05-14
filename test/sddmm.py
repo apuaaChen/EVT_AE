@@ -43,6 +43,18 @@ class TestSDDMM(unittest.TestCase):
         self.assertTrue(torch.ne(metadata, metadata_ref).sum() / metadata.numel() < 5e-3)
         self.assertTrue(torch.ne(nonzeros, nonzeros_ref).sum() / nonzeros.numel() < 1e-3)
     
+    def test_sddmm_f16_output_predicated(self):
+        mask = None
+        input = torch.randn(size=(28*128, 1024), dtype=half, device="cuda")
+        weight = torch.randn(size=(32320, 1024), dtype=half, device="cuda")
+        dense_matrix_ref = torch.matmul(input, weight.t())
+
+        nonzeros_ref, uncompressed, metadata_ref = bdense2sparse_gold(dense_matrix_ref, False)
+        nonzeros, metadata = sddmm_f16_ntn(input, weight, mask, 1.)
+
+        self.assertTrue(torch.ne(metadata, metadata_ref).sum() / metadata.numel() < 5e-3)
+        self.assertTrue(torch.ne(nonzeros, nonzeros_ref).sum() / nonzeros.numel() < 1e-3)
+    
     def test_batched_sddmm_bf16(self):
         mask = None
         query = torch.randn(size=(batch_size, sequence_length, embedding), dtype=bf16, device="cuda")

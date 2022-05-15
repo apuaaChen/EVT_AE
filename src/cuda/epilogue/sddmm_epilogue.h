@@ -38,7 +38,7 @@ public:
     ):
     stride(extent.row()),
     row_bound(extent.row()),
-    column_bound(extent.column())
+    column_bound(extent.column() / 2)
     {
         int warp_row_id = warp_id % WarpCount::kRow;
         int warp_col_id = warp_id / WarpCount::kRow;
@@ -173,14 +173,16 @@ public:
 
     CUTLASS_DEVICE
     void store(float4 data){
-        *(global_ptr) = data;
+        if ((row_coord < row_bound) && (column_coord < column_bound)){
+            *(global_ptr) = data;
+        }
     }
 
     CUTLASS_DEVICE
     void add_pointer_offset(TensorCoord offset){
-        if ((row_coord + offset.row() < row_bound) && (column_coord + offset.column() * kElementsPerAccess < column_bound)){
-            global_ptr += offset.row() * stride / kElementsPerAccess + offset.column();
-        }
+        row_coord += offset.row();
+        column_coord += offset.column() * kElementsPerAccess;
+        global_ptr += offset.row() * stride / kElementsPerAccess + offset.column();
     }
 
     CUTLASS_DEVICE
@@ -209,6 +211,8 @@ public:
     using Mma = Mma_;
     using MetaIterator = MetaIterator_;
     using NnzIterator = NnzTileIterator_;
+
+    using TensorCoord = MatrixCoord;
 
     // number of warps along rows and columns
     using WarpCount = MatrixShape<ThreadblockTile_Shape::kM / WarpTile_Shape::kM,
@@ -284,6 +288,9 @@ public:
     /// The pointer that accesses the data in shared memory for global store
     float4* shared_store_ptr;
 
+    int warp_row_id;
+    int warp_col_id;
+
 
     /// Constructor
     CUTLASS_DEVICE
@@ -294,8 +301,8 @@ public:
         int lane_id
     ){
 
-        int warp_row_id = warp_id % WarpCount::kRow;
-        int warp_col_id = warp_id / WarpCount::kRow;
+        warp_row_id = warp_id % WarpCount::kRow;
+        warp_col_id = warp_id / WarpCount::kRow;
         int th_group_id = lane_id / 4;
         int group_lane_id = lane_id % 4;
 
@@ -424,6 +431,176 @@ public:
 
     }
 
+
+    /// generate the metadata with target
+    CUTLASS_DEVICE
+    void get_meta_data(
+        typename Mma::FragmentC &accumulators,
+        int lane_id,
+        MetaIterator iterator_E,
+        typename OutputOp::Params output_op,
+        TensorCoord threadblock_offset,
+        int64_t* target,
+        int64_t* target_sp
+    ){
+        float2* frag_ptr = reinterpret_cast<float2*>(&accumulators);
+        int th_group_id = lane_id % 4;
+
+        #pragma unroll
+        for (int m_step = 0; m_step < MetaIterations::kRow; m_step ++){
+            // load the targets
+            int64_t targets[4];
+            int row_idx = threadblock_offset.row() + warp_row_id * WarpTile_Shape::kM + m_step * 32 + lane_id / 4;
+            int row_idx_t = row_idx;
+            #pragma unroll
+            for (int i = 0; i < 4; i++){
+                targets[i] = target[row_idx_t];
+                row_idx_t += 8;
+            }
+
+            #pragma unroll
+            for (int n_step = 0; n_step < MetaIterations::kColumn; n_step ++){
+                // Each step processes a 32 x 32 Tile
+                // Step 1: prun the results in the register file
+                int16_t meta[8] = {0};
+                // The pruning first occurs in 8 x 16 Tile
+                #pragma unroll
+                for (int i = 0; i < 2; i ++){
+                    #pragma unroll
+                    for (int j = 0; j < 2; j++){
+                        #pragma unroll
+                        for (int k = 0; k < 2; k++){
+                            int m_i = m_step * 4 + i * 2 + k;
+                            int n_i = n_step * 4 + j * 2;
+                            float2* frag1 = frag_ptr + n_i * FragmentCount::kRow + m_i;
+                            float2* frag2 = frag_ptr + (n_i + 1) * FragmentCount::kRow + m_i;
+
+                            float data[4] = {(*frag1).x, (*frag1).y, (*frag2).x, (*frag2).y};
+                            ElementOutput data_16[4] = {
+                                ElementOutput(data[0]), ElementOutput(data[1]),
+                                ElementOutput(data[2]), ElementOutput(data[3])
+                            };
+
+                            // check if the target is in the range
+                            // get current column
+                            int column = threadblock_offset.column() + warp_col_id * WarpTile_Shape::kN + n_i * 8 + th_group_id * 4;
+                            int row = i * 2 + k;
+                            int column_relative = targets[row] - column;
+                            // if the target is in the current pruning range
+                            if (column_relative >= 0 && column_relative < 4){
+
+                                if (column_relative == 0){
+                                    data[0] = 2147483.0; // just a very large number 
+                                }
+                                
+                                if (column_relative == 1){
+                                    data[1] = 2147483.0; // just a very large number 
+                                }
+
+                                if (column_relative == 2){
+                                    data[2] = 2147483.0; // just a very large number 
+                                }
+
+                                if (column_relative == 3){
+                                    data[3] = 2147483.0; // just a very large number 
+                                }
+
+                            }
+
+                            ElementOutput value[2] = {data_16[0], data_16[1]};
+                            float value_float[2] = {data[0], data[1]};
+                            
+                            int16_t meta_bit = 4;
+                            float max_val = data[0] + data[1];
+
+                            if (data[0] + data[2] > max_val){
+                                meta_bit = 8;
+                                value[1] = data_16[2];
+                                value_float[1] = data[2];
+                                max_val = data[0] + data[2];
+                            }
+
+                            if (data[0] + data[3] > max_val){
+                                meta_bit = 12;
+                                value[1] = data_16[3];
+                                value_float[1] = data[3];
+                                max_val = data[0] + data[3];
+                            }
+
+                            if (data[1] + data[2] > max_val){
+                                meta_bit = 9;
+                                value[0] = data_16[1];
+                                value[1] = data_16[2];
+                                value_float[0] = data[1];
+                                value_float[1] = data[2];
+                                max_val = data[1] + data[2];
+                            }
+
+                            if (data[1] + data[3] > max_val){
+                                meta_bit = 13;
+                                value[0] = data_16[1];
+                                value[1] = data_16[3];
+                                value_float[0] = data[1];
+                                value_float[1] = data[3];
+                                max_val = data[1] + data[3];
+                            }
+
+                            if (data[2] + data[3] > max_val){
+                                meta_bit = 14;
+                                value[0] = data_16[2];
+                                value[1] = data_16[3];
+                                value_float[0] = data[2];
+                                value_float[1] = data[3];
+                            }
+
+                            meta[4 * i + 2 * j + k] = meta_bit << (th_group_id * 4);
+                            value[0] *= output_op.alpha;
+                            value[1] *= output_op.alpha;
+                            // TODO: write the value to shared memory
+                            *(shared_load_ptr + ((m_i * FragmentShape::kRow) * SharedStorage::StorageShape::kColumn + n_i * FragmentShape::kColumn / 2) / 2) = *reinterpret_cast<float*>(value);
+
+                            if (value_float[0] > 2147480.0){
+                                target_sp[row_idx + row * 8] = column / 2;
+                            }
+
+                            if (value_float[1] > 2147480.0){
+                                target_sp[row_idx + row * 8] = column / 2 + 1;
+                            }
+                        }
+                        // Collect the meta dat at the target thread.
+                        #pragma unroll
+                        for (int k = 0; k < 2; k++){
+                            if (i == 0){
+                                meta[2 * j + k] |= __shfl_down_sync(0xffffffff, meta[2 * j + k], 2); 
+                            }else{
+                                meta[2 * j + k + 4] |= __shfl_up_sync(0xffffffff, meta[2 * j + k + 4], 2);
+                            }
+                            if (j == 0){
+                                meta[i * 4 + k] |= __shfl_down_sync(0xffffffff, meta[i * 4 + k], 1);
+                            }else{
+                                meta[i * 4 + 2 + k] |= __shfl_up_sync(0xffffffff, meta[i * 4 + 2 + k], 1);
+                            }
+                        }
+                        
+                    }
+                    
+                }
+
+                // All the metadat are alreadly collected in meta[8]
+                // Step 2: Switch the meta data (Nothing needs to be done)
+                // Step 3: vectorize
+                int* meta_vec = reinterpret_cast<int *>(meta);
+                // Step 4: put the meta data to the first element of the vec
+                if (th_group_id == 1) meta_vec[0] = meta_vec[1];
+                else if (th_group_id == 2) meta_vec[0] = meta_vec[2];
+                else if (th_group_id == 3) meta_vec[0] = meta_vec[3];
+
+                // TODO: write the value to global memory
+                iterator_E.store_with_offset({m_step * 32, n_step}, meta_vec[0]);
+            }
+        }
+
+    }
 
     /// prune the result based on the metadata
     CUTLASS_DEVICE

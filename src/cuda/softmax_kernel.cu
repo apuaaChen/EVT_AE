@@ -89,6 +89,10 @@ inline dim3 SoftMax_getBlockSize(int ILP, uint64_t dim_size) {
   return dim3(block_size);
 }
 
+__device__ __half operator+(__half a, __half b){
+  return __hadd(a, b);
+}
+
 template<typename T>
 struct Add {
   __device__ __forceinline__ T operator()(T a, T b) const {
@@ -261,7 +265,8 @@ WriteFpropResultsVectorized(
              const int shift,
              scalar_t *input,
              outscalar_t *output,
-             Epilogue<scalar_t, accum_t, outscalar_t> epilogue) {
+             Epilogue<scalar_t, accum_t, outscalar_t> epilogue,
+            int64_t target, outscalar_t confidence) {
   using LoadT = at::native::memory::aligned_vector<scalar_t, ILP>;
   using StoreT = at::native::memory::aligned_vector<outscalar_t, ILP>;
 
@@ -291,10 +296,13 @@ WriteFpropResultsVectorized(
 
   for (; offset * ILP < (size - last); offset += blockDim.x) {
     *in_value = reinterpret_cast<LoadT*>(input)[offset];
+    int64_t index = offset * ILP;
 
     #pragma unroll
     for (int j = 0; j < ILP; ++j) {
       out_v[j] = epilogue(in_v[j]);
+      if (index == target) out_v[j] = out_v[j] + confidence;
+      index ++;
     }
 
     reinterpret_cast<StoreT*>(output)[offset] = *out_value;
@@ -303,7 +311,9 @@ WriteFpropResultsVectorized(
   offset = size - last + threadIdx.x;
   // handle the tail
   for (; offset < size; offset += blockDim.x) {
-    output[offset] = epilogue(input[offset]);
+    outscalar_t result = epilogue(input[offset]);
+    if (offset == target) result = result +confidence;
+    output[offset] = result;
   }
 }
 
@@ -317,7 +327,8 @@ WriteFpropResults(
              int classes,
              scalar_t *input,
              outscalar_t *output,
-             Epilogue<scalar_t, accum_t, outscalar_t> epilogue) {
+             Epilogue<scalar_t, accum_t, outscalar_t> epilogue,
+             int64_t target, outscalar_t confidence) {
   int offset = threadIdx.x;
 
   int last = classes % (ILP * blockDim.x);
@@ -345,7 +356,9 @@ WriteFpropResults(
 
 template <int ILP, typename scalar_t, typename accscalar_t, typename outscalar_t, template <typename, typename, typename> class Epilogue>
 __global__ void
-cunn_SoftMaxForward(outscalar_t *output, scalar_t *input, int classes, float bias)
+cunn_SoftMaxForward(
+  outscalar_t *output, scalar_t *input, int classes, 
+  float bias, int64_t *target, outscalar_t confidence)
 {
   extern __shared__ unsigned char smem[];
   auto sdata = reinterpret_cast<accscalar_t*>(smem);
@@ -357,6 +370,9 @@ cunn_SoftMaxForward(outscalar_t *output, scalar_t *input, int classes, float bia
   // each block handles a sample in the mini-batch
   input += blockIdx.x * classes;
   output += blockIdx.x * classes;
+
+  // get the target index
+  int64_t tar = target[blockIdx.x];
 
   const int shift = ((uint64_t)input) % ALIGN_BYTES / sizeof(scalar_t);
   const int output_shift = ((uint64_t)output) % ALIGN_BYTES / sizeof(outscalar_t);
@@ -376,9 +392,9 @@ cunn_SoftMaxForward(outscalar_t *output, scalar_t *input, int classes, float bia
   Epilogue<scalar_t, accscalar_t, outscalar_t> epilogue(max_k, sumAll, bias);
 
   if (shift == output_shift) {
-    WriteFpropResultsVectorized<ILP, scalar_t, accscalar_t, outscalar_t, Epilogue>(classes, shift, input, output, epilogue);
+    WriteFpropResultsVectorized<ILP, scalar_t, accscalar_t, outscalar_t, Epilogue>(classes, shift, input, output, epilogue, tar, confidence);
   } else {
-    WriteFpropResults<ILP, scalar_t, accscalar_t, outscalar_t, Epilogue>(classes, input, output, epilogue);
+    WriteFpropResults<ILP, scalar_t, accscalar_t, outscalar_t, Epilogue>(classes, input, output, epilogue, tar, confidence);
   }
 }
 
@@ -386,9 +402,15 @@ cunn_SoftMaxForward(outscalar_t *output, scalar_t *input, int classes, float bia
 }  // namespace at
 
 
-
-torch::Tensor softmax_cuda(torch::Tensor input_, const int64_t dim_, float bias){
+//
+// bias: a constant bias added to all the outputs
+// target: an index per row pointing to the target
+// confidence: the scale of target
+//
+torch::Tensor softmax_cuda(torch::Tensor input_, const int64_t dim_, float bias, torch::Tensor target, float confidence_){
   using scalar_t = __half;
+
+  __half confidence = __float2half(confidence_);
   auto input = input_.contiguous();
 
   auto output = torch::empty_like(input);
@@ -413,7 +435,8 @@ torch::Tensor softmax_cuda(torch::Tensor input_, const int64_t dim_, float bias)
     dim3 block = at::extend::SoftMax_getBlockSize(ILP, dim_size);
     at::extend::cunn_SoftMaxForward<ILP, scalar_t, accscalar_t, scalar_t, at::extend::SoftMaxForwardEpilogue>
         <<<grid, block, block.x * sizeof(accscalar_t), stream>>>(
-        (scalar_t*) output.data_ptr(), (scalar_t*)input.data_ptr(), dim_size, bias);
+        (scalar_t*) output.data_ptr(), (scalar_t*)input.data_ptr(), 
+        dim_size, bias, (int64_t*)target.data_ptr(), confidence);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
   }
   return output;

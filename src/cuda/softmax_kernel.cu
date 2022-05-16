@@ -39,31 +39,35 @@ const int max_threads = 1024;
 
 template<typename T, typename AccumT, typename OutT>
 struct SoftMaxForwardEpilogue {
-  __device__ __forceinline__ SoftMaxForwardEpilogue(AccumT max_input, AccumT sum)
+  __device__ __forceinline__ SoftMaxForwardEpilogue(AccumT max_input, AccumT sum, float bias)
     : max_input(max_input)
-    , sum(sum) {}
+    , sum(sum)
+    , bias(bias) {}
 
   __device__ __forceinline__ OutT operator()(T input) const {
-    return static_cast<OutT>(std::exp(input - max_input) / sum);
+    return static_cast<OutT>(std::exp(input - max_input) / sum + bias);
   }
 
   const AccumT max_input;
   const AccumT sum;
+  const float bias;
 };
 
 
 template<>
 struct SoftMaxForwardEpilogue<__half, float, __half> {
-  __device__ __forceinline__ SoftMaxForwardEpilogue(float max_input, float sum)
+  __device__ __forceinline__ SoftMaxForwardEpilogue(float max_input, float sum, float bias)
     : max_input(max_input)
-    , sum(sum) {}
+    , sum(sum) 
+    , bias(bias) {}
 
   __device__ __forceinline__ __half operator()(__half input) const {
-    return __float2half(std::exp(__half2float(input) - max_input) / sum);
+    return __float2half(std::exp(__half2float(input) - max_input) / sum + bias);
   }
 
   const float max_input;
   const float sum;
+  const float bias;
 };
 
 inline dim3 SoftMax_getBlockSize(int ILP, uint64_t dim_size) {
@@ -341,7 +345,7 @@ WriteFpropResults(
 
 template <int ILP, typename scalar_t, typename accscalar_t, typename outscalar_t, template <typename, typename, typename> class Epilogue>
 __global__ void
-cunn_SoftMaxForward(outscalar_t *output, scalar_t *input, int classes)
+cunn_SoftMaxForward(outscalar_t *output, scalar_t *input, int classes, float bias)
 {
   extern __shared__ unsigned char smem[];
   auto sdata = reinterpret_cast<accscalar_t*>(smem);
@@ -369,7 +373,7 @@ cunn_SoftMaxForward(outscalar_t *output, scalar_t *input, int classes)
   accscalar_t sumAll = blockReduce<Add, accscalar_t>(
       sdata, threadExp, Add<accscalar_t>(), static_cast<accscalar_t>(0));
 
-  Epilogue<scalar_t, accscalar_t, outscalar_t> epilogue(max_k, sumAll);
+  Epilogue<scalar_t, accscalar_t, outscalar_t> epilogue(max_k, sumAll, bias);
 
   if (shift == output_shift) {
     WriteFpropResultsVectorized<ILP, scalar_t, accscalar_t, outscalar_t, Epilogue>(classes, shift, input, output, epilogue);
@@ -383,7 +387,7 @@ cunn_SoftMaxForward(outscalar_t *output, scalar_t *input, int classes)
 
 
 
-torch::Tensor softmax_cuda(torch::Tensor input_, const int64_t dim_){
+torch::Tensor softmax_cuda(torch::Tensor input_, const int64_t dim_, float bias){
   using scalar_t = __half;
   auto input = input_.contiguous();
 
@@ -409,7 +413,7 @@ torch::Tensor softmax_cuda(torch::Tensor input_, const int64_t dim_){
     dim3 block = at::extend::SoftMax_getBlockSize(ILP, dim_size);
     at::extend::cunn_SoftMaxForward<ILP, scalar_t, accscalar_t, scalar_t, at::extend::SoftMaxForwardEpilogue>
         <<<grid, block, block.x * sizeof(accscalar_t), stream>>>(
-        (scalar_t*) output.data_ptr(), (scalar_t*)input.data_ptr(), dim_size);
+        (scalar_t*) output.data_ptr(), (scalar_t*)input.data_ptr(), dim_size, bias);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
   }
   return output;

@@ -48,6 +48,11 @@ setup(
                       extra_cuda_cflags=['-lineinfo'],
                       extra_compile_args={'cxx':['-lineinfo'], 'nvcc':['-arch=sm_80', '--ptxas-options=-v', '-lineinfo', '-lcublass', '-use_fast_math']},
                       include_dirs=[WDIR+'/thirdparty/cutlass/include', WDIR+'/thirdparty/cutlass/tools/util/include', WDIR+'/thirdparty/cutlass/examples/common']),
+        CUDAExtension('sptrain.softmax', 
+                      ['src/cuda/softmax.cpp', 'src/cuda/softmax_kernel.cu'],
+                      extra_cuda_cflags=['-lineinfo'],
+                      extra_compile_args={'cxx':['-lineinfo'], 'nvcc':['-arch=sm_80', '--ptxas-options=-v', '-lineinfo', '-lcublass', '-use_fast_math', '--extended-lambda']},
+                      include_dirs=[WDIR+'/thirdparty/cutlass/include', WDIR+'/thirdparty/cutlass/tools/util/include', WDIR+'/thirdparty/cutlass/examples/common']),
         ],
     cmdclass={'build_ext': BuildExtension},
     install_requires=['torch']

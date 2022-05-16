@@ -11,7 +11,7 @@
 #include "mma/default_mma.h"
 #include <type_traits>
 
-#include "spmmt/default_sparse_mma_trans.h"
+#include "spmmt/default_sparse_mma_trans_reduce.h"
 #include "epilogue/pipelined_transpose_epilogue.h"
 #include "epilogue/linear_combination.h"
 
@@ -43,7 +43,7 @@ struct SpMMTConfigure{
         Element, 128 / cutlass::sizeof_bits<Element>::value, float, Element,
         cutlass::epilogue::thread::ScaleType::OnlyAlphaScaling>;  
     
-    using Mma = typename cutlass::gemm::threadblock::DefaultSparseMmaTrans<
+    using Mma = typename cutlass::gemm::threadblock::DefaultSparseMmaTransReduce<
         Element, cutlass::layout::RowMajor, 128 / cutlass::sizeof_bits<Element>::value,
         Element, LayoutB, 128 / cutlass::sizeof_bits<Element>::value,
         float, cutlass::layout::RowMajor, cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80,
@@ -243,6 +243,8 @@ std::vector<torch::Tensor> spmmt_reduce_cuda(
         output_matrix = torch::empty({batch_size, m, n}, options_val);
     }
 
+    auto output_reduce = torch::empty({batch_size, k}, options_val);
+
     // Create a tuple of problem size for matrix multiplication
     cutlass::gemm::GemmCoord problem_size(m, n, k);
 
@@ -280,7 +282,7 @@ std::vector<torch::Tensor> spmmt_reduce_cuda(
         layout_e, (typename Config::Mma::ElementE*)tensor_e.data_ptr(),
         {alpha, beta}, gemm_k_size);
 
-    return output_matrix;
+    return {output_matrix, output_reduce};
 }
 
 

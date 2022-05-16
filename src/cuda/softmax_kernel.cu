@@ -53,7 +53,6 @@ struct SoftMaxForwardEpilogue {
   const float bias;
 };
 
-
 template<>
 struct SoftMaxForwardEpilogue<__half, float, __half> {
   __device__ __forceinline__ SoftMaxForwardEpilogue(float max_input, float sum, float bias)
@@ -319,6 +318,55 @@ WriteFpropResultsVectorized(
 
 
 /**
+ * This will apply the Epilogue with vectorized reads & writes when input & output have the same shift
+ */
+ template <int ILP, typename outscalar_t>
+ __device__ __forceinline__ void
+ WriteFpropZeroResultsVectorized(
+              int size,
+              const int shift,
+              outscalar_t *output) {
+   using StoreT = at::native::memory::aligned_vector<outscalar_t, ILP>;
+ 
+   int offset = threadIdx.x;
+ 
+   // if unaligned, do one value / thread and move on, guaranteeing aligned reads/writes later
+   if (shift > 0) {
+     output -= shift;
+     size += shift;
+ 
+     if (threadIdx.x >= shift) {
+       output[offset] = __float2half(0.0f);
+     }
+     size -= blockDim.x;
+     output += blockDim.x;
+   }
+ 
+   const int last = size % (ILP * blockDim.x);
+ 
+   outscalar_t out_v[ILP];
+   StoreT* out_value = reinterpret_cast<StoreT*>(&out_v);
+ 
+   for (; offset * ILP < (size - last); offset += blockDim.x) {
+ 
+     #pragma unroll
+     for (int j = 0; j < ILP; ++j) {
+       out_v[j] = __float2half(0.0f);
+     }
+ 
+     reinterpret_cast<StoreT*>(output)[offset] = *out_value;
+   }
+ 
+   offset = size - last + threadIdx.x;
+   // handle the tail
+   for (; offset < size; offset += blockDim.x) {
+     output[offset] = __float2half(0.0f);
+   }
+ }
+ 
+
+
+/**
  * This will apply the Epilogue with non-vectrorized reads & writes for the general case
  */
 template <int ILP, typename scalar_t, typename accum_t, typename outscalar_t, template<typename, typename, typename> class Epilogue>
@@ -358,43 +406,47 @@ template <int ILP, typename scalar_t, typename accscalar_t, typename outscalar_t
 __global__ void
 cunn_SoftMaxForward(
   outscalar_t *output, scalar_t *input, int classes, 
-  float bias, int64_t *target, outscalar_t confidence)
+  float bias, int64_t *target, outscalar_t confidence, int64_t padding_idx)
 {
   extern __shared__ unsigned char smem[];
   auto sdata = reinterpret_cast<accscalar_t*>(smem);
 
-  using LoadT = at::native::memory::aligned_vector<scalar_t, ILP>;
-  using StoreT = at::native::memory::aligned_vector<outscalar_t, ILP>;
+  // get the target index
+  int64_t tar = target[blockIdx.x];
 
   // forward pointers to batch[blockIdx.x]
   // each block handles a sample in the mini-batch
   input += blockIdx.x * classes;
   output += blockIdx.x * classes;
 
-  // get the target index
-  int64_t tar = target[blockIdx.x];
-
   const int shift = ((uint64_t)input) % ALIGN_BYTES / sizeof(scalar_t);
   const int output_shift = ((uint64_t)output) % ALIGN_BYTES / sizeof(outscalar_t);
 
-  // find the max
-  accscalar_t threadMax = ilpReduce<MaxFloat, ILP, scalar_t, accscalar_t>(
-      shift, input, classes, MaxFloat<scalar_t, accscalar_t>(), -at::numeric_limits<accscalar_t>::max());
-  accscalar_t max_k = blockReduce<Max, accscalar_t>(
-      sdata, threadMax, Max<accscalar_t>(), -at::numeric_limits<accscalar_t>::max());
+  using LoadT = at::native::memory::aligned_vector<scalar_t, ILP>;
+  using StoreT = at::native::memory::aligned_vector<outscalar_t, ILP>;
 
-  // reduce all values
-  accscalar_t threadExp = ilpReduce<SumExpFloat, ILP, scalar_t, accscalar_t>(
-      shift, input, classes, SumExpFloat<scalar_t, accscalar_t>(max_k), static_cast<accscalar_t>(0));
-  accscalar_t sumAll = blockReduce<Add, accscalar_t>(
-      sdata, threadExp, Add<accscalar_t>(), static_cast<accscalar_t>(0));
-
-  Epilogue<scalar_t, accscalar_t, outscalar_t> epilogue(max_k, sumAll, bias);
-
-  if (shift == output_shift) {
-    WriteFpropResultsVectorized<ILP, scalar_t, accscalar_t, outscalar_t, Epilogue>(classes, shift, input, output, epilogue, tar, confidence);
+  if (tar == padding_idx){
+    WriteFpropZeroResultsVectorized<ILP, outscalar_t>(classes, shift, output);
   } else {
-    WriteFpropResults<ILP, scalar_t, accscalar_t, outscalar_t, Epilogue>(classes, input, output, epilogue, tar, confidence);
+    // find the max
+    accscalar_t threadMax = ilpReduce<MaxFloat, ILP, scalar_t, accscalar_t>(
+        shift, input, classes, MaxFloat<scalar_t, accscalar_t>(), -at::numeric_limits<accscalar_t>::max());
+    accscalar_t max_k = blockReduce<Max, accscalar_t>(
+        sdata, threadMax, Max<accscalar_t>(), -at::numeric_limits<accscalar_t>::max());
+
+    // reduce all values
+    accscalar_t threadExp = ilpReduce<SumExpFloat, ILP, scalar_t, accscalar_t>(
+        shift, input, classes, SumExpFloat<scalar_t, accscalar_t>(max_k), static_cast<accscalar_t>(0));
+    accscalar_t sumAll = blockReduce<Add, accscalar_t>(
+        sdata, threadExp, Add<accscalar_t>(), static_cast<accscalar_t>(0));
+
+    Epilogue<scalar_t, accscalar_t, outscalar_t> epilogue(max_k, sumAll, bias);
+
+    if (shift == output_shift) {
+      WriteFpropResultsVectorized<ILP, scalar_t, accscalar_t, outscalar_t, Epilogue>(classes, shift, input, output, epilogue, tar, confidence);
+    } else {
+      WriteFpropResults<ILP, scalar_t, accscalar_t, outscalar_t, Epilogue>(classes, input, output, epilogue, tar, confidence);
+    }
   }
 }
 
@@ -406,8 +458,11 @@ cunn_SoftMaxForward(
 // bias: a constant bias added to all the outputs
 // target: an index per row pointing to the target
 // confidence: the scale of target
+// padding idx: the result to skip
 //
-torch::Tensor softmax_cuda(torch::Tensor input_, const int64_t dim_, float bias, torch::Tensor target, float confidence_){
+torch::Tensor softmax_cuda(
+  torch::Tensor input_, const int64_t dim_, float bias, 
+  torch::Tensor target, float confidence_, int64_t padding_idx){
   using scalar_t = __half;
 
   __half confidence = __float2half(confidence_);
@@ -436,7 +491,7 @@ torch::Tensor softmax_cuda(torch::Tensor input_, const int64_t dim_, float bias,
     at::extend::cunn_SoftMaxForward<ILP, scalar_t, accscalar_t, scalar_t, at::extend::SoftMaxForwardEpilogue>
         <<<grid, block, block.x * sizeof(accscalar_t), stream>>>(
         (scalar_t*) output.data_ptr(), (scalar_t*)input.data_ptr(), 
-        dim_size, bias, (int64_t*)target.data_ptr(), confidence);
+        dim_size, bias, (int64_t*)target.data_ptr(), confidence, padding_idx);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
   }
   return output;

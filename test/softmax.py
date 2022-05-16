@@ -12,12 +12,20 @@ class TestSoftmax(unittest.TestCase):
         target = torch.randint(low=0, high=32320, size=(28*128, 1), dtype=torch.int64, device="cuda")
         confidence=0.9
         bias = 0.1
+        padding_idx = 0
+
+        non_pad_mask = (target != padding_idx)
+
+        bp_mask = non_pad_mask.to(torch.float16)
+
 
         src = torch.ones_like(target).to(torch.float16) * confidence
 
         out_ref = F.softmax(dense_matrix, dim=-1) + bias
         out_ref.scatter_add_(dim=1, index=target, src=src)
-        out = softmax(dense_matrix, -1, bias, target, confidence)
+        out_ref *= bp_mask
+
+        out = softmax(dense_matrix, -1, bias, target, confidence, padding_idx)
 
         self.assertTrue(torch.allclose(out, out_ref, rtol=5e-2))
 

@@ -23,9 +23,12 @@ class TestSpMMT_reduce(unittest.TestCase):
         lhs_matrix = torch.randn(size=(L, feat_out, batch_size), dtype=half, device="cuda")
         nonzeros, uncompressed, metadata = bdense2sparse_gold(dense_matrix, False)
         output_matrix_ref = torch.bmm(lhs_matrix.transpose(1, 2), uncompressed).transpose(1, 2) * alpha
+        output_reduce_ref = torch.sum(uncompressed, dim=1)
+        
         output_matrix, output_reduce = spmmt_reduce_f16_nnn(nonzeros, lhs_matrix, metadata, alpha)
 
         self.assertTrue(torch.allclose(output_matrix, output_matrix_ref, atol=1.0))
+        self.assertTrue(torch.allclose(output_reduce_ref, output_reduce, atol=1.0))
 
 if __name__ == '__main__':
     unittest.main()

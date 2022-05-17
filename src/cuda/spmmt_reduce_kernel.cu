@@ -76,7 +76,8 @@ __global__ void cutlassSpmmTKernel_reduce_16(
     typename _Mma::IteratorE::Params params_E,
     typename _Mma::ElementE* __restrict__ ptr_E,
     typename _Epilogue::OutputOp::Params output_op_,
-    int gemm_k_size)
+    int gemm_k_size,
+    Element* __restrict__ output_reduce)
 {
     extern __shared__ int SharedStorageBase[];
 
@@ -167,14 +168,17 @@ __global__ void cutlassSpmmTKernel_reduce_16(
     //
 
     // Construct thread-scoped matrix multiply
-    _Mma mma(shared_storage.main_loop, thread_idx, warp_idx, lane_idx);
+    _Mma mma(shared_storage.main_loop, thread_idx, warp_idx, lane_idx, threadblock_tile_offset);
 
     typename _Mma::FragmentC accumulators;
+
+    // registers used to reduce the lhs matrix
+    typename _Mma::OperandReduceOp::ReduceBuffer reduce_buffer;
 
     accumulators.clear();
 
     if (gemm_k_iterations > 0){
-        mma(gemm_k_iterations, accumulators, iterator_A, iterator_B, iterator_E, accumulators);
+        mma(gemm_k_iterations, accumulators, iterator_A, iterator_B, iterator_E, accumulators, reduce_buffer);
     }
 
     //
@@ -213,6 +217,9 @@ __global__ void cutlassSpmmTKernel_reduce_16(
     );
 
     epilogue(output_op, iterator_D, accumulators, iterator_D);
+
+    mma.reduce_op.write_results(reduce_buffer, problem_size, threadblock_tile_offset, output_reduce, batch_idx);
+
 }
 
 
@@ -243,7 +250,7 @@ std::vector<torch::Tensor> spmmt_reduce_cuda(
         output_matrix = torch::empty({batch_size, m, n}, options_val);
     }
 
-    auto output_reduce = torch::empty({batch_size, k}, options_val);
+    auto output_reduce = torch::empty({batch_size, m}, options_val);
 
     // Create a tuple of problem size for matrix multiplication
     cutlass::gemm::GemmCoord problem_size(m, n, k);
@@ -280,7 +287,7 @@ std::vector<torch::Tensor> spmmt_reduce_cuda(
         layout_b, (typename Config::Element*)tensor_b.data_ptr(),
         layout_d, (typename Config::Element*)output_matrix.data_ptr(),
         layout_e, (typename Config::Mma::ElementE*)tensor_e.data_ptr(),
-        {alpha, beta}, gemm_k_size);
+        {alpha, beta}, gemm_k_size, (typename Config::Element*)output_reduce.data_ptr());
 
     return {output_matrix, output_reduce};
 }

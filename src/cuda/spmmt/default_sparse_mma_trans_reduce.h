@@ -1,5 +1,6 @@
 #include "mma_sparse_multistage_trans_reduce.h"
 #include "default_mma_core_sparse_sm80_trans.h"
+#include "operand_reducer.h"
 ////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
@@ -126,6 +127,11 @@ struct DefaultSparseMmaTransReduce<ElementA, LayoutA, kAlignmentA, ElementB, Lay
                                ThreadblockShape::kM / kSparse /
                                    MmaCore::kElementsPerElementE>,
           ElementE, LayoutE, 0, ThreadMapE, AccessTypeE>;
+  
+  using OperandReduceOp = OperandReduceOp<
+        ThreadblockShape, WarpShape, InstructionShape, ElementA, 
+        typename MmaCore::MmaPolicy::Operator::TransformedFragmentA>;
+
 
   // Define the threadblock-scoped multistage matrix multiply
   using ThreadblockMma = cutlass::gemm::threadblock::SparseMmaMultistageTransReduce<
@@ -133,7 +139,7 @@ struct DefaultSparseMmaTransReduce<ElementA, LayoutA, kAlignmentA, ElementB, Lay
       MmaCore::kCacheOpA, IteratorB, typename MmaCore::SmemIteratorB,
       MmaCore::kCacheOpB, ElementAccumulator, layout::RowMajor,
       IteratorE, typename MmaCore::SmemIteratorE, MmaCore::kCacheOpE,
-      typename MmaCore::MmaPolicy, Stages>;
+      typename MmaCore::MmaPolicy, Stages, OperandReduceOp>;
 };
 
 ////////////////////////////////////////////////////////////////////////////////

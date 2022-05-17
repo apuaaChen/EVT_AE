@@ -1,5 +1,6 @@
 #include "mma_sparse_tensor_op.h"
 #include "mma_sparse_base_trans.h"
+#include "helper.h"
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
@@ -48,6 +49,8 @@ template <
     typename Policy_,
     /// Number of stages,
     int Stages,
+    /// Reduce operand
+    typename OperandReduceOp_,
     /// Used for partial specialization
     typename Enable = bool>
 class SparseMmaMultistageTransReduce : 
@@ -83,6 +86,7 @@ public:
   static int const kMaxID2 = Policy::Operator::kMaxID2;
   static int const kElementsPerElementE =
       Policy::Operator::kElementsPerElementE;
+  using OperandReduceOp = OperandReduceOp_;
 
   //
   // Dependent types
@@ -197,6 +201,8 @@ public:
 
 public:
 
+  OperandReduceOp reduce_op;
+
   /// Construct from tensor references
   CUTLASS_DEVICE
   SparseMmaMultistageTransReduce(
@@ -207,12 +213,15 @@ public:
       ///< ID of warp
       int warp_idx,
       ///< ID of each thread within a warp
-      int lane_idx
+      int lane_idx,
+      /// threadblock_tile_offset
+      GemmCoord threadblock_tile_offset
     ):
       Base(shared_storage, thread_idx, warp_idx, lane_idx),
       smem_iterator_A_(shared_storage.operand_A_ref(), thread_idx),
       smem_iterator_B_(shared_storage.operand_B_ref(), thread_idx),
-      smem_iterator_E_(shared_storage.operand_E_ref(), thread_idx)
+      smem_iterator_E_(shared_storage.operand_E_ref(), thread_idx),
+      reduce_op(lane_idx, warp_idx, threadblock_tile_offset)
   {
     is_warp_valid_ = warp_idx < Detail::kValidWarps;
 
@@ -339,7 +348,10 @@ public:
       ///< iterator over E operand in global memory
       IteratorE iterator_E,
       ///< initial value of accumulator
-      FragmentC const &src_accum) {
+      FragmentC const &src_accum,
+      // reduce buffer TODO: formalize the 4 here
+      typename OperandReduceOp::ReduceBuffer &reduce_buffer
+      ) {
 
     //
     // Prologue
@@ -461,6 +473,8 @@ public:
     for (int i=0; i < 12; i++){
       warp_identity_frag[i] = IteratorB::Element(0.0f);
     }
+
+    reduce_op.clear_buffer(reduce_buffer);
 
     // Initialize the values in the warp identity frag
     int lane_idx = threadIdx.x % 32;
@@ -632,6 +646,8 @@ public:
           iterator_E.clear_mask(gemm_k_iterations == 0);
         }
 
+         reduce_op.get_operands(&warp_transformed_frag_A[warp_mma_k % 2], reduce_buffer);
+        
         // Do any conversions feeding the first stage at the end of the loop so
         // we can start right away on mma instructions
         if (warp_mma_k + 1 == Base::kWarpGemmIterations)

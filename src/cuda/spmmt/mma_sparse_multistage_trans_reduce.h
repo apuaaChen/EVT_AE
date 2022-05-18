@@ -584,6 +584,8 @@ public:
               group_start_iteration_B, group_start_iteration_E);
         }
 
+        reduce_op.get_operands(&warp_transformed_frag_A[warp_mma_k % 2], reduce_buffer);
+
         if (warp_mma_k + 2 == Base::kWarpGemmIterations) {
           int group_start_iteration_A, group_start_iteration_B, group_start_iteration_E;
           group_start_iteration_A =
@@ -646,7 +648,6 @@ public:
           iterator_E.clear_mask(gemm_k_iterations == 0);
         }
 
-         reduce_op.get_operands(&warp_transformed_frag_A[warp_mma_k % 2], reduce_buffer);
         
         // Do any conversions feeding the first stage at the end of the loop so
         // we can start right away on mma instructions

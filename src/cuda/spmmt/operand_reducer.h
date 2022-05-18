@@ -118,22 +118,31 @@ public:
             float* buffer_float = reinterpret_cast<float*>(&buffer);
 
             #pragma unroll
-            for (int i=0; i < kBufferSize; i ++){
+            for (int i=0; i < kBufferSize; i +=4){
                 buffer_float[i] += __shfl_down_sync(0xffffffff, buffer_float[i], 2);
+                buffer_float[i+1] += __shfl_down_sync(0xffffffff, buffer_float[i+1], 2);
+                buffer_float[i+2] += __shfl_up_sync(0xffffffff, buffer_float[i+2], 2);
+                buffer_float[i+3] += __shfl_up_sync(0xffffffff, buffer_float[i+3], 2);
+
                 buffer_float[i] += __shfl_down_sync(0xffffffff, buffer_float[i], 1);
+                buffer_float[i+1] += __shfl_up_sync(0xffffffff, buffer_float[i+1], 1);
+                buffer_float[i+2] += __shfl_down_sync(0xffffffff, buffer_float[i+2], 1);
+                buffer_float[i+3] += __shfl_up_sync(0xffffffff, buffer_float[i+3], 1);
+
+                if (lane_id % 4 == 1) buffer_float[i] = buffer_float[i+1];
+                if (lane_id % 4 == 2) buffer_float[i] = buffer_float[i+2];
+                if (lane_id % 4 == 3) buffer_float[i] = buffer_float[i+3];
             }
 
             // compute the output pointer
             Element* output_ptr = 
                 output_reduce + problem_size.m() * batch_idx + threadblock_tile_offset.m() * Threadblock_Shape::kM + 
-                (warp_id % WarpCount::kRow) * WarpTile_Shape::kM + lane_id / 4;
+                (warp_id % WarpCount::kRow) * WarpTile_Shape::kM + lane_id / 4 + (lane_id % 4) * 8;
             
-            if (lane_id % 4 == 0){
-                #pragma unroll
-                for (int i=0; i < kBufferSize; i++){
-                    (*output_ptr) = Element(*(buffer_float + i));
-                    output_ptr += 8;
-                }
+            #pragma unroll
+            for (int i=0; i < kBufferSize; i+=4){
+                (*output_ptr) = Element(*(buffer_float + i));
+                output_ptr += 32;
             }
 
         }

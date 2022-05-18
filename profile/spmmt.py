@@ -4,6 +4,7 @@ import unittest
 from sptrain.meta import bdense2sparse_gold
 from sptrain.spmm import spmmv2_bf16_ntn
 from sptrain.spmmt import spmmt_bf16_ntn, spmmt_f16_ntn, spmmt_f16_ntt, spmmt_bf16_ntt, spmmt_f16_nnn
+from sptrain.spmmt_reduce import spmmt_reduce_f16_nnn
 import torch.nn.functional as F
 
 
@@ -24,10 +25,16 @@ import torch.nn.functional as F
 #     with nvtx.annotate("spmmt"):
 #         output_matrix = spmmt_f16_ntt(nonzeros.to(torch.float16), lhs_matrix.to(torch.float16), metadata)
 
-L = 2
-batch_size = 16384
+# L = 2
+# batch_size = 16384
+# feat_in = 1024
+# feat_out = 2048
+
+L = 1
+batch_size = 28 * 128
 feat_in = 1024
-feat_out = 2048
+feat_out = 32320
+
 dtype = torch.float16
 
 
@@ -41,10 +48,13 @@ for i in range(10):
         output_matrix_ref = torch.matmul(lhs_matrix, uncompressed)
     
     with nvtx.annotate("spmmt"):
-        output_matrix = spmmt_f16_ntn(nonzeros, lhs_matrix, metadata)
+        output_matrix = spmmt_f16_ntn(nonzeros, lhs_matrix, metadata, 1.)
     
     with nvtx.annotate("spmmt_nnn"):
-        output_matrix = spmmt_f16_nnn(nonzeros, lhs_matrix_t, metadata)
+        output_matrix = spmmt_f16_nnn(nonzeros, lhs_matrix_t, metadata, 1.)
+    
+    with nvtx.annotate("spmmt_reduce"):
+        output_matrix, reduce = spmmt_reduce_f16_nnn(nonzeros, lhs_matrix_t, metadata, 1.)
 
 
 # dense_matrix = torch.randn(size=(batch_size, feat_in), dtype=dtype, device="cuda")

@@ -218,7 +218,7 @@ __global__ void cutlassSpmmTKernel_reduce_16(
 
     epilogue(output_op, iterator_D, accumulators, iterator_D);
 
-    mma.reduce_op.write_results(reduce_buffer, problem_size, threadblock_tile_offset, output_reduce, batch_idx);
+    mma.reduce_op.write_results(reduce_buffer, problem_size, threadblock_tile_offset, output_reduce, batch_idx, output_op_.alpha);
 
 }
 

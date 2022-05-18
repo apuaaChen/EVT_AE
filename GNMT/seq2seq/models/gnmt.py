@@ -27,7 +27,7 @@ from seq2seq.models.encoder import ResidualRecurrentEncoder
 from seq2seq.models.seq2seq_base import Seq2Seq
 import logging
 from seq2seq.train.smoothing import LabelSmoothing
-from seq2seq.models.sparse_ops_classification import ExtremeClassifier_Fn, SpExtremeClassifier_Ref_Fn
+from seq2seq.models.sparse_ops_classification import SpExtremeClassifier_Fn# ExtremeClassifier_Fn, SpExtremeClassifier_Ref_Fn
 import torch.nn.functional as F
 import torch
 
@@ -42,7 +42,7 @@ class FusedExtremeClassifier(nn.Module):
         self.padding_idx = padding_idx
 
     def forward(self, input, target):
-        return SpExtremeClassifier_Ref_Fn.apply(input, self.classifier.weight, self.classifier.bias, target, self.smoothing, self.padding_idx)
+        return SpExtremeClassifier_Fn.apply(input, self.classifier.weight, self.classifier.bias, target, self.smoothing, self.padding_idx, self.training)
 
 
 class GNMT(Seq2Seq):

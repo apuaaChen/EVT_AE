@@ -112,7 +112,8 @@ public:
         GemmCoord problem_size,
         GemmCoord threadblock_tile_offset,
         Element* output_reduce,
-        int batch_idx
+        int batch_idx,
+        Element alpha
     ){
         if (active){
             float* buffer_float = reinterpret_cast<float*>(&buffer);
@@ -141,7 +142,7 @@ public:
             
             #pragma unroll
             for (int i=0; i < kBufferSize; i+=4){
-                (*output_ptr) = Element(*(buffer_float + i));
+                (*output_ptr) = Element(*(buffer_float + i)) * alpha;
                 output_ptr += 32;
             }
 

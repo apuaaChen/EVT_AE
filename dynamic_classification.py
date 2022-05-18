@@ -1,4 +1,3 @@
-from statistics import mode
 import torch.nn as nn
 import torch
 from apex.optimizers import FusedAdam
@@ -7,8 +6,9 @@ import nvtx
 from apex.amp._amp_state import _amp_state
 import contextlib
 import torch.nn.functional as F
-from sparse_ops_classification import ExtremeClassifier_Fn, SpExtremeClassifier_Fn
+from sparse_ops_classification import ExtremeClassifier_Fn, ExtremeClassifier_Ref_Fn, SpExtremeClassifier_Fn, SpExtremeClassifier_Ref_Fn
 from bert_config import allclose
+import math
 
 
 class Classifier(nn.Module):
@@ -65,18 +65,114 @@ class LabelSmoothing(nn.Module):
         loss = self.confidence * nll_loss + self.smoothing * smooth_loss
         return loss.sum()
 
+# class ExtremeClassifier(nn.Module):
+#     def __init__(self, in_features, out_features, padding_idx, smoothing) -> None:
+#         super(ExtremeClassifier, self).__init__()
+#         self.classifier = Classifier(in_features, out_features)
+#         self.criterion = LabelSmoothing(padding_idx, smoothing)
+    
+#     def forward(self, input, target):
+#         output = self.classifier(input)
+#         T, B = output.size(0), output.size(1)
+#         loss = self.criterion(output.view(T * B, -1), target)
+#         return loss
+
+
+# class Classifier(nn.Module):
+#     """
+#     Fully-connected classifier
+#     """
+#     def __init__(self, in_features, out_features, init_weight=0.1):
+#         """
+#         Constructor for the Classifier.
+
+#         :param in_features: number of input features
+#         :param out_features: number of output features (size of vocabulary)
+#         :param init_weight: range for the uniform initializer
+#         """
+#         super(Classifier, self).__init__()
+#         self.classifier = nn.Linear(in_features, out_features)
+#         nn.init.uniform_(self.classifier.weight.data, -init_weight, init_weight)
+#         nn.init.uniform_(self.classifier.bias.data, -init_weight, init_weight)
+
+#     def forward(self, x):
+#         """
+#         Execute the classifier.
+
+#         :param x: output from decoder
+#         """
+#         out = self.classifier(x)
+#         return out
+
+
+# class LabelSmoothing(nn.Module):
+#     """
+#     NLL loss with label smoothing.
+#     """
+#     def __init__(self, padding_idx, smoothing=0.0):
+#         """
+#         Constructor for the LabelSmoothing module.
+
+#         :param padding_idx: index of the PAD token
+#         :param smoothing: label smoothing factor
+#         """
+#         super(LabelSmoothing, self).__init__()
+#         self.padding_idx = padding_idx
+#         self.confidence = 1.0 - smoothing
+#         self.smoothing = smoothing
+
+#     def forward(self, x, target):
+#         # prune the probs
+#         group = int(x.numel() / 4)
+#         prob_tmp = x.detach().reshape(group, 4).to(torch.float32)
+#         index = torch.argsort(prob_tmp, dim=1)[:, :int(2)]
+#         mask = torch.zeros(prob_tmp.shape, device=prob_tmp.device, dtype=x.dtype)
+#         mask = mask.scatter_(dim=1, index=index, value=-math.inf).reshape(x.shape)
+#         x = x + mask
+
+#         logprobs = F.log_softmax(x, dim=-1, dtype=torch.float32)
+
+#         non_pad_mask = (target != self.padding_idx)
+#         nll_loss = -logprobs.gather(dim=-1, index=target.unsqueeze(1))
+#         nll_loss = nll_loss.squeeze(1)[non_pad_mask]
+#         smooth_loss = -logprobs.mean(dim=-1)[non_pad_mask]
+#         loss = self.confidence * nll_loss + self.smoothing * smooth_loss
+        
+#         return loss.sum()
+
+# class ExtremeClassifier(nn.Module):
+#     def __init__(self, in_features, out_features, padding_idx, smoothing) -> None:
+#         super(ExtremeClassifier, self).__init__()
+#         self.classifier = Classifier(in_features, out_features)
+#         self.criterion = LabelSmoothing(padding_idx, smoothing)
+    
+#     def forward(self, input, target):
+#         output = self.classifier(input)
+#         T, B = output.size(0), output.size(1)
+#         loss = self.criterion(output.view(T * B, -1), target)
+#         return loss
+
+
 class ExtremeClassifier(nn.Module):
     def __init__(self, in_features, out_features, padding_idx, smoothing) -> None:
         super(ExtremeClassifier, self).__init__()
         self.classifier = Classifier(in_features, out_features)
-        self.criterion = LabelSmoothing(padding_idx, smoothing)
-    
-    def forward(self, input, target):
-        output = self.classifier(input)
-        T, B = output.size(0), output.size(1)
-        loss = self.criterion(output.view(T * B, -1), target)
-        return loss
+        # self.classifier = nn.Linear(in_features, out_features)
+        self.smoothing = smoothing
 
+    def forward(self, input, target):
+        # return SpExtremeClassifier_Ref_Fn.apply(input, self.classifier.classifier.weight, self.classifier.classifier.bias, target, self.smoothing)
+        return SpExtremeClassifier_Ref_Fn.apply(input, self.classifier.classifier.weight, self.classifier.classifier.bias, target, self.smoothing)
+
+# class FusedExtremeClassifier(nn.Module):
+#     def __init__(self, in_features, out_features, padding_idx, smoothing) -> None:
+#         super(FusedExtremeClassifier, self).__init__()
+#         self.classifier = nn.Linear(in_features, out_features)
+#         self.smoothing = smoothing
+
+#     def forward(self, input, target):
+#         # return SpExtremeClassifier_Ref_Fn.apply(input, self.classifier.classifier.weight, self.classifier.classifier.bias, target, self.smoothing)
+#         return ExtremeClassifier_Fn.apply(input, self.classifier.weight, self.classifier.bias, target, self.smoothing)
 
 class FusedExtremeClassifier(nn.Module):
     def __init__(self, in_features, out_features, padding_idx, smoothing) -> None:
@@ -85,7 +181,7 @@ class FusedExtremeClassifier(nn.Module):
         self.smoothing = smoothing
 
     def forward(self, input, target):
-        return ExtremeClassifier_Fn.apply(input, self.classifier.weight, self.classifier.bias, target, self.smoothing)
+        return SpExtremeClassifier_Fn.apply(input, self.classifier.weight, self.classifier.bias, target, self.smoothing)
 
 
 # configurations
@@ -175,19 +271,18 @@ with nvtx.annotate("backward"):
 with nvtx.annotate("update"):
     optimizer.step()
 
-
 with nvtx.annotate("sp forward"):
     loss_sparse = model_sparse(input_sparse, target)
 with nvtx.annotate("sp backward"):
-    with scale_loss(loss_sparse, optimizer_sparse) as scaled_loss:
-        scaled_loss.backward()
+    with scale_loss(loss_sparse, optimizer_sparse) as scaled_loss_sparse:
+        scaled_loss_sparse.backward()
 with nvtx.annotate("sp update"):
     optimizer_sparse.step()
 
 
-# allclose(model_sparse.classifier.weight.grad, model.classifier.classifier.weight.grad)
-# allclose(model_sparse.classifier.bias.grad, model.classifier.classifier.bias.grad)
-# allclose(input_sparse.grad, input.grad)
+allclose(model_sparse.classifier.weight.grad, model.classifier.classifier.weight.grad)
+allclose(model_sparse.classifier.bias.grad, model.classifier.classifier.bias.grad)
+allclose(input_sparse.grad, input.grad)
 
 for i in range(10):
     optimizer.zero_grad()
@@ -208,3 +303,6 @@ for i in range(10):
             scaled_loss.backward()
     with nvtx.annotate("sp update"):
         optimizer_sparse.step()
+
+hidden_size = 1024
+vocab_size = 32320

@@ -65,7 +65,8 @@ __global__ void cutlassSddmmMetaKernel_16(
     Element* __restrict__ ptr_B,
     typename _Epilogue_SDDMM::NnzIterator::Params params_D,
     Element* __restrict__ ptr_D,
-    int16_t* __restrict__ metadata,
+    typename _Epilogue_SDDMM::IteratorE::Params params_E,
+    typename _Epilogue_SDDMM::ElementE* __restrict__ ptr_E,
     typename _Epilogue_SDDMM::OutputOp::Params output_op_,
     int gemm_k_size)
 {
@@ -168,18 +169,18 @@ __global__ void cutlassSddmmMetaKernel_16(
         problem_size.m(), problem_size.n()/16
     );
 
-    typename _Epilogue_SDDMM::MetaIterator iterator_E(
-        metadata,
+    typename _Epilogue_SDDMM::IteratorE iterator_E(
+        params_E,
+        ptr_E,
         meta_shape,
         thread_idx,
-        warp_idx,
-        lane_idx,
         threadblock_offset
     );
 
     iterator_E.add_pointer_offset(batch_idx * problem_size.m() * problem_size.n()/16);
 
     typename _Epilogue_SDDMM::NnzIterator iterator_D(
+        params_D,
         ptr_D,
         problem_size.mn(),
         thread_idx,
@@ -233,6 +234,7 @@ torch::Tensor sddmm_meta_cuda(
 
     auto layout_a = Config::LayoutA::packed(cutlass::make_Coord(problem_size.m(), problem_size.k()));
     auto layout_b = Config::LayoutB::packed(problem_size.kn());
+    auto layout_e = Config::Epilogue::LayoutE::packed(cutlass::make_Coord(problem_size.m(), problem_size.k() / 16));
     auto layout_d = cutlass::layout::RowMajor::packed(cutlass::make_Coord(problem_size.m(), problem_size.n() / 2));
 
     typename Config::Element alpha = typename Config::Element(alpha_);
@@ -263,7 +265,7 @@ torch::Tensor sddmm_meta_cuda(
         layout_a, (typename Config::Element*)tensor_a.data_ptr(),
         layout_b, (typename Config::Element*)tensor_b.data_ptr(),
         layout_d, (typename Config::Element*)output_matrix.data_ptr(),
-        (int16_t*) tensor_e.data_ptr(), {alpha, beta}, gemm_k_size);
+        layout_e, (uint16_t*) tensor_e.data_ptr(), {alpha, beta}, gemm_k_size);
     
     return output_matrix;
 

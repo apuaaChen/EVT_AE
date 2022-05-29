@@ -129,8 +129,9 @@ __global__ void cutlassSpmmTKernel_16(
         tb_offset_A
     );
 
-    int64_t a_stride = problem_size.m() * problem_size.k() / _Mma::kSparse;
-    iterator_A.add_pointer_offset(batch_idx * a_stride);
+    // int64_t a_stride = problem_size.m() * problem_size.k() / _Mma::kSparse;
+    // iterator_A.add_pointer_offset(batch_idx * a_stride);
+    iterator_A.add_pointer_offset(batch_idx * problem_size.m() * problem_size.k() / _Mma::kSparse);
 
     typename _Mma::IteratorB iterator_B(
         params_B,
@@ -141,8 +142,11 @@ __global__ void cutlassSpmmTKernel_16(
         tb_offset_B
     );
 
-    int64_t b_stride = problem_size.n() * problem_size.k();
-    iterator_B.add_pointer_offset(batch_idx * b_stride);
+    // int64_t b_stride = problem_size.n() * problem_size.k();
+    // iterator_B.add_pointer_offset(batch_idx * b_stride);
+
+    iterator_B.add_pointer_offset(batch_idx * problem_size.n() * problem_size.k());
+
 
     typename _Mma::IteratorE iterator_E(
         params_E,
@@ -154,8 +158,10 @@ __global__ void cutlassSpmmTKernel_16(
         tb_offset_E
     );
 
-    int64_t e_stride = problem_size.m() * problem_size.k() / _Mma::kSparse / _Mma::kElementsPerElementE;
-    iterator_E.add_pointer_offset(batch_idx * e_stride);
+    // int64_t e_stride = problem_size.m() * problem_size.k() / _Mma::kSparse / _Mma::kElementsPerElementE;
+    // iterator_E.add_pointer_offset(batch_idx * e_stride);
+
+    iterator_E.add_pointer_offset(batch_idx * problem_size.m() * problem_size.k() / _Mma::kSparse / _Mma::kElementsPerElementE);
 
     // Broadcast the warp_id computed by lane 0 to ensure dependent code
     // is compuled as warp-uniform
@@ -201,8 +207,10 @@ __global__ void cutlassSpmmTKernel_16(
         threadblock_offset
     );
 
-    int64_t d_stride = problem_size.m() * problem_size.n();
-    iterator_D.add_pointer_offset(batch_idx * d_stride);
+    // int64_t d_stride = problem_size.m() * problem_size.n();
+    // iterator_D.add_pointer_offset(batch_idx * d_stride);
+
+    iterator_D.add_pointer_offset(batch_idx * problem_size.m() * problem_size.n());
 
     
     _Epilogue epilogue(

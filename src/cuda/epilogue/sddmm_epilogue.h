@@ -18,6 +18,8 @@ public:
 
     using TensorCoord = MatrixCoord;
 
+    using Layout = layout::ColumnMajor;
+
 
     int stride;
     int* global_ptr;
@@ -27,19 +29,34 @@ public:
     int row_bound;
     int column_bound;
 
+    struct Params{
+
+        int stride;
+
+        Params() { }
+
+        CUTLASS_HOST_DEVICE
+        Params(Layout const &layout):
+        stride(layout.stride()[0]){ }
+    };
+
+    // TODO: 
+
     CUTLASS_DEVICE
     MetaTileIterator(
-        int16_t* meta_pointer,
+        Params params, 
+        uint16_t* meta_pointer,
         TensorCoord extent,
         int thread_id,
-        int warp_id,
-        int lane_id,
         TensorCoord threadblock_offset
     ):
-    stride(extent.row()),
+    stride(params.stride),
     row_bound(extent.row()),
     column_bound(extent.column() / 2)
     {
+        int warp_id = __shfl_sync(0xffffffff, threadIdx.x / 32, 0);
+        int lane_id = threadIdx.x % 32;
+
         int warp_row_id = warp_id % WarpCount::kRow;
         int warp_col_id = warp_id / WarpCount::kRow;
 
@@ -150,6 +167,7 @@ public:
 
     CUTLASS_DEVICE
     NnzTileIterator(
+        Params params,
         Element* nnz_pointer,
         TensorCoord extent,
         int thread_id,
@@ -199,7 +217,7 @@ template <
     typename WarpTile_Shape_,
     typename OutputOp_,
     typename Mma_,
-    typename MetaIterator_,
+    typename IteratorE_,
     typename NnzTileIterator_,
     bool kShfl=false
 >
@@ -209,7 +227,7 @@ public:
     using WarpTile_Shape = WarpTile_Shape_;
     using OutputOp = OutputOp_;
     using Mma = Mma_;
-    using MetaIterator = MetaIterator_;
+    using IteratorE = IteratorE_;
     using NnzIterator = NnzTileIterator_;
 
     using TensorCoord = MatrixCoord;
@@ -231,6 +249,14 @@ public:
     using MetaIterations = cutlass::MatrixShape<WarpTile_Shape::kM / MetaUnitShape::kRow,
                                                 WarpTile_Shape::kN / MetaUnitShape::kColumn>;
     
+
+    static int const kSparse = 2;
+
+    static int const kElementsPerElementE = 128 / cutlass::sizeof_bits<half_t>::value;
+
+    using ElementE = uint16_t;
+
+    using LayoutE = layout::ColumnMajor;
 
     using ElementOutput = typename OutputOp::ElementOutput;
 
@@ -291,6 +317,8 @@ public:
     int warp_row_id;
     int warp_col_id;
 
+    int lane_id;
+
 
     /// Constructor
     CUTLASS_DEVICE
@@ -298,8 +326,10 @@ public:
         SharedStorage &shared_storage,
         int thread_id_,
         int warp_id,
-        int lane_id
-    ){
+        int lane_id_
+    ):
+    lane_id(lane_id_)
+    {
 
         warp_row_id = warp_id % WarpCount::kRow;
         warp_col_id = warp_id / WarpCount::kRow;
@@ -323,7 +353,7 @@ public:
     void get_meta_data(
         typename Mma::FragmentC &accumulators,
         int lane_id,
-        MetaIterator iterator_E,
+        IteratorE iterator_E,
         typename OutputOp::Params output_op
     ){
         float2* frag_ptr = reinterpret_cast<float2*>(&accumulators);
@@ -437,7 +467,7 @@ public:
     void get_meta_data(
         typename Mma::FragmentC &accumulators,
         int lane_id,
-        MetaIterator iterator_E,
+        IteratorE iterator_E,
         typename OutputOp::Params output_op,
         TensorCoord threadblock_offset,
         int64_t* target,
@@ -607,7 +637,7 @@ public:
     void pruning(
         typename Mma::FragmentC &accumulators,
         int lane_id,
-        MetaIterator iteratorE,
+        IteratorE iteratorE,
         typename OutputOp::Params output_op
     ){
         float2* frag_ptr = reinterpret_cast<float2*>(&accumulators);
@@ -723,6 +753,20 @@ public:
             iterator_D.add_pointer_offset({NnzIterator::ThreadMap::kRow, 0});
         }
     }
+
+    CUTLASS_DEVICE
+    void operator()(
+        typename OutputOp::Params output_op,
+        IteratorE iterator_E,
+        NnzIterator iterator_D,
+        typename Mma::FragmentC &accumulators,
+        IteratorE iterator_E_,
+        NnzIterator iterator_D_
+    ){
+        get_meta_data(accumulators, lane_id, iterator_E, output_op);
+        __syncthreads();
+        store_nnz(iterator_D);
+    }
 };
 
 template <
@@ -739,9 +783,9 @@ struct DefaultSddmmEpilogue {
     using ElementOutput = typename OutputOp::ElementOutput;
     using Mma = Mma_;
 
-    using MetaIterator = MetaTileIterator<ThreadblockTile_Shape, WarpTile_Shape>;
+    using IteratorE = MetaTileIterator<ThreadblockTile_Shape, WarpTile_Shape>;
     using NnzIterator = NnzTileIterator<ElementOutput, ThreadblockTile_Shape, WarpTile_Shape>;
-    using Epilogue = DP24Epilogue<ThreadblockTile_Shape, WarpTile_Shape, OutputOp, Mma, MetaIterator, NnzIterator, kShfl>;
+    using Epilogue = DP24Epilogue<ThreadblockTile_Shape, WarpTile_Shape, OutputOp, Mma, IteratorE, NnzIterator, kShfl>;
 };
 
 }  // namespace threadblock

@@ -53,7 +53,7 @@ struct SDDMMConfigure{
 };
 
 
-template<typename Element, typename _Mma, typename _SharedStorage, typename _Epilogue_SDDMM, typename Prologue, bool Mask>
+template<typename Element, typename _Mma, typename _SharedStorage, typename _Epilogue, typename Prologue, bool Mask>
 __global__ void cutlassSddmmKernel_16(
     cutlass::gemm::GemmCoord problem_size,
     cutlass::gemm::GemmCoord grid_tiled_shape,
@@ -61,10 +61,11 @@ __global__ void cutlassSddmmKernel_16(
     Element* __restrict__ ptr_A,
     typename _Mma::IteratorB::Params params_B,
     Element* __restrict__ ptr_B,
-    typename _Epilogue_SDDMM::NnzIterator::Params params_D,
+    typename _Epilogue::NnzIterator::Params params_D,
     Element* __restrict__ ptr_D,
-    int16_t* __restrict__ metadata,
-    typename _Epilogue_SDDMM::OutputOp::Params output_op_,
+    typename _Epilogue::IteratorE::Params params_E,
+    typename _Epilogue::ElementE* __restrict__ ptr_E,
+    typename _Epilogue::OutputOp::Params output_op_,
     int gemm_k_size,
     Element* __restrict__ mask = NULL,
     cutlass::MatrixCoord mask_size = cutlass::MatrixCoord(0, 0))
@@ -105,19 +106,15 @@ __global__ void cutlassSddmmKernel_16(
             thread_idx, warp_idx, lane_idx, iterator_M
         );
     }
-        // prologue.fill(accumulators);
-    // } else {
-    //     accumulators.clear();
-    // }
 
     // Compute initial location in logical coordinates
     cutlass::MatrixCoord tb_offset_A{
         threadblock_tile_offset.m() * _Mma::Shape::kM,
-        0// threadblock_tile_offset.k() * gemm_k_size
+        0
     };
 
     cutlass::MatrixCoord tb_offset_B{
-        0, //threadblock_tile_offset.k() * gemm_k_size,
+        0, 
         threadblock_tile_offset.n() * _Mma::Shape::kN
     };
 
@@ -130,7 +127,6 @@ __global__ void cutlassSddmmKernel_16(
     // Construct iterators to A, B, and E operands
     typename _Mma::IteratorA iterator_A(
         params_A,
-        //ref_A.data(),
         ptr_A,
         {problem_size.m(), problem_size_k},
         thread_idx,
@@ -160,15 +156,6 @@ __global__ void cutlassSddmmKernel_16(
     typename _Mma::FragmentC accumulators;
 
     if (Mask){
-        // typename Prologue::MaskIterator iterator_M(
-        //     mask, mask_size, thread_idx, batch_idx, cutlass::MatrixCoord{0, threadblock_tile_offset.n() * _Mma::Shape::kN}
-        // );
-
-        // Prologue prologue(
-        //     shared_storage.prologue,
-        //     thread_idx, warp_idx, lane_idx, iterator_M
-        // );
-
         prologue.fill(accumulators);
     } else {
         accumulators.clear();
@@ -182,7 +169,7 @@ __global__ void cutlassSddmmKernel_16(
     //  Epilogue
     //
 
-    typename _Epilogue_SDDMM::OutputOp output_op(output_op_);
+    typename _Epilogue::OutputOp output_op(output_op_);
 
     threadblock_tile_offset = threadblock_swizzle.get_tile_offset(grid_tiled_shape);
 
@@ -192,24 +179,24 @@ __global__ void cutlassSddmmKernel_16(
         threadblock_tile_offset.n() * _Mma::Shape::kN
     );
 
-    int block_idx = threadblock_tile_offset.m() + threadblock_tile_offset.n() * grid_tiled_shape.m();
+    cutlass::MatrixCoord tb_offset_E{
+        threadblock_tile_offset.m() * _Mma::Shape::kM,
+        threadblock_tile_offset.n() * _Mma::Shape::kN
+    };
 
-    cutlass::MatrixCoord meta_shape(
-        problem_size.m(), problem_size.n()/16
-    );
-
-    typename _Epilogue_SDDMM::MetaIterator iterator_E(
-        metadata,
-        meta_shape,
+    typename _Epilogue::IteratorE iterator_E(
+        params_E,
+        ptr_E,
+        {problem_size.m(),
+        problem_size.n() / _Epilogue::kSparse / _Epilogue::kElementsPerElementE},
         thread_idx,
-        warp_idx,
-        lane_idx,
-        threadblock_offset
+        tb_offset_E
     );
 
     iterator_E.add_pointer_offset(batch_idx * problem_size.m() * problem_size.n()/16);
 
-    typename _Epilogue_SDDMM::NnzIterator iterator_D(
+    typename _Epilogue::NnzIterator iterator_D(
+        params_D,
         ptr_D,
         problem_size.mn(),
         thread_idx,
@@ -218,15 +205,13 @@ __global__ void cutlassSddmmKernel_16(
 
     iterator_D.add_pointer_offset(batch_idx * problem_size.m() * problem_size.n()/2);
 
-    _Epilogue_SDDMM epilogue_sddmm(
+    _Epilogue epilogue(
         shared_storage.epilogue,
         thread_idx,
         warp_idx,
         lane_idx);
 
-    epilogue_sddmm.get_meta_data(accumulators, lane_idx, iterator_E, output_op_);
-    __syncthreads();
-    epilogue_sddmm.store_nnz(iterator_D);
+    epilogue(output_op_, iterator_E, iterator_D, accumulators, iterator_E, iterator_D);
 }
 
 
@@ -256,6 +241,7 @@ std::vector<torch::Tensor> sddmm_cuda(
 
     auto layout_a = cutlass::layout::RowMajor::packed(cutlass::make_Coord(problem_size.m(), problem_size.k()));
     auto layout_b = cutlass::layout::ColumnMajor::packed(problem_size.kn());
+    auto layout_e = Config::Epilogue::LayoutE::packed(cutlass::make_Coord(problem_size.m(), problem_size.k() / 16));
     auto layout_d = cutlass::layout::RowMajor::packed(cutlass::make_Coord(problem_size.m(), problem_size.n() / 2));
 
     typename Config::Element alpha = typename Config::Element(alpha_);
@@ -287,7 +273,7 @@ std::vector<torch::Tensor> sddmm_cuda(
             layout_a, (typename Config::Element*)tensor_a.data_ptr(),
             layout_b, (typename Config::Element*)tensor_b.data_ptr(),
             layout_d, (typename Config::Element*)output_matrix.data_ptr(),
-            metadata.data<int16_t>(), {alpha, beta}, gemm_k_size,
+            layout_e, (uint16_t*)metadata.data_ptr(), {alpha, beta}, gemm_k_size,
             (typename Config::Element*)mask.value().data_ptr(), mask_shape
         );
     } else {
@@ -301,7 +287,7 @@ std::vector<torch::Tensor> sddmm_cuda(
             layout_a, (typename Config::Element*)tensor_a.data_ptr(),
             layout_b, (typename Config::Element*)tensor_b.data_ptr(),
             layout_d, (typename Config::Element*)output_matrix.data_ptr(),
-            metadata.data<int16_t>(), {alpha, beta}, gemm_k_size);
+            layout_e, (uint16_t*)metadata.data_ptr(), {alpha, beta}, gemm_k_size);
     }
 
     

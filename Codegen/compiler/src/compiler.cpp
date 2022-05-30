@@ -253,8 +253,8 @@ CompiledCode PointwiseCompiler::compile(
     // }
     
     // Run the function
-    auto c = at::matmul(inputs[1].toTensor(), inputs[0].toTensor());
-    auto output = at::matmul(c, inputs[0].toTensor());
+    auto c = inputs[1].toTensor().matmul(inputs[0].toTensor());
+    auto output = c.matmul(inputs[0].toTensor());
     outputs.emplace_back(output);
 
     

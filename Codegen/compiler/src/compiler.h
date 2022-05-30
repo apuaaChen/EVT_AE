@@ -17,11 +17,11 @@ class PointwiseCompiler {
   static bool supported(const torch::jit::Node* node);
 
  private:
-  void emitOperation(
-      const torch::jit::Node* node,
-      const std::set<const torch::jit::Node*>& seen,
-      asmjit::X86Assembler& assembler,
-      RegisterManager& reg_manager);
+//   void emitOperation(
+//       const torch::jit::Node* node,
+//       const std::set<const torch::jit::Node*>& seen,
+//       asmjit::X86Assembler& assembler,
+//       RegisterManager& reg_manager);
   CompiledCode compile(at::ArrayRef<torch::jit::IValue>&);
   std::shared_ptr<torch::jit::Graph> subgraph_;
   std::unordered_map<torch::jit::CompleteArgumentSpec, CompiledCode> cache_;

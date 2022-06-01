@@ -190,11 +190,11 @@ vocab_size = 32320
 
 
 # load operand
-input = torch.load('./GNMT/input.pt').to("cuda").to(torch.float).requires_grad_(True)
+input = torch.load('/data/datasets/users/zdchen/input.pt').to("cuda").to(torch.float).requires_grad_(True)
 input.retain_grad()
 input_sparse = input.detach().clone().requires_grad_(True)
 
-target = torch.load('./GNMT/target.pt').to("cuda")
+target = torch.load('/data/datasets/users/zdchen/target.pt').to("cuda")
 
 model = ExtremeClassifier(hidden_size, vocab_size, 0, 0.1).to("cuda")
 model_sparse = FusedExtremeClassifier(hidden_size, vocab_size, 0, 0.1).to("cuda")

@@ -69,3 +69,8 @@ git clone --recursive https://github.com/apuaaChen/sparseTraining.git
 **Fix the missing header in pytorch**
 
 Add the following file to `/opt/conda/lib/python3.8/site-packages/torch/include/ATen/cuda/nvrtc_stub` (from [source](https://github.com/pytorch/pytorch/blob/17540c5c80f5c6cd4e0fee42ec47d881e46f47f9/aten/src/ATen/cuda/nvrtc_stub/ATenNVRTC.h))
+
+**Install graphviz**
+```
+apt install graphviz
+```

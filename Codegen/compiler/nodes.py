@@ -4,7 +4,7 @@
 ################################################################################
 import torch
 import torch.fx as fx
-import operator
+from torch.fx.passes.shape_prop import TensorMetadata
 
 
 def inject_get_attr(inject_point, module, graph, tensor, tensor_name):
@@ -13,13 +13,18 @@ def inject_get_attr(inject_point, module, graph, tensor, tensor_name):
     # register the tensor in the module
     module.register_buffer(tensor_name, tensor)
     # create get attribute node
-    return graph.get_attr(tensor_name)
+    attr_node = graph.get_attr(tensor_name)
+    attr_node.meta = {}
+    attr_node.meta['tensor_meta'] = TensorMetadata(
+                shape=tensor.shape, dtype=tensor.dtype, requires_grad=False, 
+                stride=(1,), memory_format=torch.contiguous_format, 
+                is_quantized=False, qparams={})
+    return attr_node
 
 
 def inject_softmax(inject_point, graph, parent_node, dim, half_to_float=False, tmp_node=None):
     if tmp_node is None: tmp_node = parent_node
     graph.inserting_after(inject_point)
-    print(parent_node.args)
     softmax_node = graph.call_function(torch.ops.aten._softmax, args=(tmp_node, dim, half_to_float))
     softmax_node.meta = {}
     if half_to_float:
@@ -31,7 +36,6 @@ def inject_softmax(inject_point, graph, parent_node, dim, half_to_float=False, t
 def inject_log(inject_point, graph, parent_node, tmp_node=None):
     if tmp_node is None: tmp_node = parent_node
     graph.inserting_after(inject_point)
-    print(parent_node.args)
     log_node = graph.call_function(torch.ops.aten.log, args=(tmp_node,))
     log_node.meta = {}
     log_node.meta['tensor_meta'] = parent_node.meta['tensor_meta']._replace()
@@ -55,7 +59,12 @@ def inject_neg(inject_point, graph, parent_node, tmp_node=None):
     neg_node.meta['tensor_meta'] = parent_node.meta['tensor_meta']._replace()
     return neg_node
 
-
+def get_shape(node):
+    if isinstance(node, fx.Node):
+        return node.meta['tensor_meta'].shape
+    else:
+        return ()
+    
 def get_broadcast_shape(lhs, rhs):
     if isinstance(lhs, fx.Node):
         lhs_shape = lhs.meta['tensor_meta'].shape
@@ -105,6 +114,18 @@ def inject_mul(inject_point, graph, lhs, rhs, tmp_lhs=None, tmp_rhs=None):
 
     graph.inserting_after(inject_point)
     mul_node = graph.call_function(torch.ops.aten.mul, args=(tmp_lhs, tmp_rhs))
+    shape = get_broadcast_shape(lhs, rhs)
+    dtype = get_auto_type_conversion(lhs, rhs)
+    mul_node.meta = {}
+    mul_node.meta['tensor_meta'] = inject_point.meta['tensor_meta']._replace(shape=shape, dtype=dtype)
+    return mul_node
+
+def inject_div(inject_point, graph, lhs, rhs, tmp_lhs=None, tmp_rhs=None):
+    if tmp_lhs is None: tmp_lhs = lhs
+    if tmp_rhs is None: tmp_rhs = rhs
+
+    graph.inserting_after(inject_point)
+    mul_node = graph.call_function(torch.ops.aten.div, args=(tmp_lhs, tmp_rhs))
     shape = get_broadcast_shape(lhs, rhs)
     dtype = get_auto_type_conversion(lhs, rhs)
     mul_node.meta = {}

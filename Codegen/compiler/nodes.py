@@ -6,6 +6,14 @@ import torch
 import torch.fx as fx
 from torch.fx.passes.shape_prop import TensorMetadata
 
+def node_equal(node1, node2):
+    if node1.op != node2.op:
+        return False
+    if node1.target != node2.target:
+        return False
+    if node1.args != node2.args:
+        return False
+    return True
 
 def inject_get_attr(inject_point, module, graph, tensor, tensor_name):
     # update injection point to maintain topological order

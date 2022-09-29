@@ -27,7 +27,6 @@ def pass_composed_op_breakdown(module, graph):
     for node in graph.nodes:
         if node.op == "call_function":
             if node.target == torch.ops.aten._log_softmax:
-                print(node.args)
                 # break it down into softmax and log
                 softmax_node = inject_softmax(
                     node, graph, node.args[0], node.args[1], node.args[2])

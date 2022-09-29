@@ -15,7 +15,7 @@ from functorch.compile import aot_function, aot_module, compiled_function
 from functorch import make_functional_with_buffers
 from functorch._src.aot_autograd import _is_primal, _extract_fwd_bwd_outputs, _extract_graph_with_inputs_outputs, _extract_graph_with_inputs_outputs, _extract_fwd_bwd_modules
 from passes import *
-from passes_old import *
+from pass_manager import *
 
 import logging
 import sys

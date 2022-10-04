@@ -57,7 +57,7 @@ class FusedGEMM:
         )
 
         tile_description = TileDescription(
-            [128, 128, 64], 3, [2, 2, 1], math_inst
+            [128, 128, 32], 5, [2, 2, 1], math_inst
         )
 
         A = TensorDescription(cutlass.float16, lhs_layout, 8)
@@ -69,7 +69,7 @@ class FusedGEMM:
             element_accumulator=math_inst.element_accumulator,
             element_epilogue=cutlass.float32)
         
-        swizzling_functor = cutlass.IdentitySwizzle1
+        swizzling_functor = cutlass.IdentitySwizzle8
 
         # Creating the epilogue visitor tree
         self.epilogue_functor = EpilogueVisitTreeDAG(
@@ -129,7 +129,7 @@ class FusedGEMM:
             )
             self.operation.run(arguments)
             # arguments.sync()
-            output_op.sync()
+            # output_op.sync()
 
             results = []
             for output_node in self.outputs:

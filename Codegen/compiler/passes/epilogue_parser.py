@@ -28,7 +28,7 @@ from nodes import *
 ################################################################################
 class TensorOutputNodeDAG(TensorOutputNode):
     def __init__(self, element_accumulator, node) -> None:
-        self.id = node.name
+        self.id = "output_" + node.name
         self.tag = self.id
         self.tag = "TensorOutput:" + self.tag
         self.type = "tensor"
@@ -37,16 +37,10 @@ class TensorOutputNodeDAG(TensorOutputNode):
 class RowReductionNodeDAG(RowReductionNode):
     def __init__(self, element_accumulator, element_reduction, element_reduction_accumulator, id, factor) -> None:
         super().__init__(element_accumulator, element_reduction, element_reduction_accumulator, id, factor)
-    
-    def get_argument(self, visitor_args, kwargs):
-        return super().get_argument(visitor_args, kwargs)
 
 class ColumnReductionNodeDAG(ColumnReductionNode):
     def __init__(self, element_accumulator, element_reduction, element_reduction_accumulator, id, factor) -> None:
         super().__init__(element_accumulator, element_reduction, element_reduction_accumulator, id, factor)
-    
-    def get_argument(self, visitor_args, kwargs):
-        return super().get_argument(visitor_args, kwargs)
 
 # operators
 operators = {
@@ -192,8 +186,6 @@ class EpilogueASTDAG:
         self.epilogue_tree = Tree()
 
         self.visit(self.root)
-
-        self.epilogue_tree.show()
 
         self.returns = [node.name for node in self.outputs]
 
@@ -436,6 +428,7 @@ class EpilogueASTDAG:
 
     def visit(self, node):
         if node in self.outputs:
+            # visit the output node
             name_node = TensorOutputNodeDAG(self.element_accumulator, node)
             self.epilogue_tree.create_node(name_node.tag, name_node.id, data=name_node)
             self.stack.append(name_node.id)
@@ -459,7 +452,6 @@ class EpilogueASTDAG:
                 self.epilogue_tree.create_node(
                     name_node.tag, name_node.id, 
                     data=name_node, parent=self.stack[-1])
-
         elif node.op == "placeholder":
             # need to check shape here
             operand_shape = node.meta['tensor_meta'].shape
@@ -511,6 +503,10 @@ class EpilogueASTDAG:
                 data=name_node, parent=self.stack[-1])
             self.args.append(node)
 
+        if node in self.outputs:
+            self.stack.pop()
+
+
     def get_arguments(self, tree, nid, kwargs):
         node = tree.get_node(nid)
         visitor_args = []
@@ -538,6 +534,7 @@ class EpilogueVisitTreeDAG(EpilogueVisitTree):
         )
 
         tree = function.epilogue_tree
+        tree.show()
         self.tree = tree
         self.args = function.args
         self.root = function.root
@@ -546,8 +543,6 @@ class EpilogueVisitTreeDAG(EpilogueVisitTree):
         function.pass_binary_2_unary(self.tree, self.tree.root)
         function.pass_inject_reduction(self.tree, self.tree.root)
         function.pass_inject_epilogue_op(self.tree, self.tree.root)
-
-        self.tree.show()
 
         visitor = self.tree.get_node(self.tree.root).data.epilogue_node
         self.visitor = visitor
@@ -572,8 +567,8 @@ class EpilogueVisitTreeDAG(EpilogueVisitTree):
 
                 # processing the return args
                 for ret in function.returns:
-                    setattr(self, ret + "_ptr", int(TorchFrontend.argument(kwargs[ret])))
-                    _kwargs[ret + "_ptr"] = getattr(self, ret + "_ptr")
+                    setattr(self, "output_" + ret + "_ptr", int(TorchFrontend.argument(kwargs["output_" + ret])))
+                    _kwargs["output_" + ret + "_ptr"] = getattr(self, "output_" + ret + "_ptr")
 
                 _kwargs.update(kwargs)
                 function.get_arguments(tree, tree.root, _kwargs)

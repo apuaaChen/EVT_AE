@@ -1,7 +1,6 @@
 import torch
 from passes import *
 from nodes import *
-from functorch._src.aot_autograd import _is_primal, _is_tangent, _extract_graph_with_inputs_outputs
 
 
 def pre_partition_optimization(joint_module):

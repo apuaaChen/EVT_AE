@@ -86,6 +86,11 @@ def neighbor_constant_folding(module, graph):
                         if tensor.numel() == 1:
                             if tensor.item() == 0:
                                 node.replace_all_uses_with(lhs)
+                
+                # constant fusing of transpose
+                if node.target == torch.ops.aten.t:
+                    if node.args[0].target == torch.ops.aten.t:
+                        node.replace_all_uses_with(node.args[0].args[0])
 
 
 def get_constant_factor(node):

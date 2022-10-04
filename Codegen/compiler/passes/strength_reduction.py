@@ -13,15 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 ################################################################################
-from passes.print_graph import pass_print_graph
-from passes.eliminate_transparent import pass_eliminate_transparent_node
-from passes.eliminate_loss import pass_loss_elimination
-from passes.composed_op_breakdown import pass_composed_op_breakdown
-from passes.substitution import pass_graph_substitution
-from passes.shape_prop import pass_shape_prop
-from passes.remove_duplicated import pass_remove_duplicated_node
-from passes.extract_common_factor import pass_merge_common_factor
-from passes.update_attr import pass_update_attributes
-from passes.constant_folding import pass_constant_folding
-from passes.strength_reduction import pass_stength_reduction
-from passes.gemm_fusion import pass_gemm_fusion
+import torch
+
+
+################################################################################
+# Graph-level pass to perform stength reduction
+################################################################################
+def pass_stength_reduction(module, graph):
+    for node in graph.nodes:
+        if node.op == "call_function":
+            if node.target == torch.ops.aten.add_:
+                node.target = torch.ops.aten.add

@@ -10,6 +10,12 @@ import contextlib
 import torch.nn.functional as F
 import torch.fx as fx
 
+import pycutlass
+from pycutlass import *
+
+pycutlass.get_memory_pool(init_pool_size=2**10, max_pool_size=2**32)
+pycutlass.compiler.nvcc()
+
 
 from functorch.compile import aot_function, aot_module, compiled_function
 from functorch import make_functional_with_buffers
@@ -263,3 +269,30 @@ with nvtx.annotate("sp update"):
 assert torch.sum(torch.isclose(model_sparse.orig_module.classifier.classifier.weight.grad, model.classifier.classifier.weight.grad, rtol=1e-2)) / model_sparse.orig_module.classifier.classifier.weight.grad.numel() > 0.95
 assert torch.sum(torch.isclose(model_sparse.orig_module.classifier.classifier.bias.grad, model.classifier.classifier.bias.grad, rtol=1e-2)) / model_sparse.orig_module.classifier.classifier.bias.grad.numel() > 0.95
 assert torch.sum(torch.isclose(input_sparse.grad, input.grad, rtol=1e-2)) / input_sparse.grad.numel() > 0.9
+
+
+
+################################################################################
+# Profiling infrastructure
+################################################################################
+
+
+for i in range(10):
+    optimizer.zero_grad()
+    with nvtx.annotate("forward"):
+        loss_ref = model(input, target)
+    with nvtx.annotate("backward"):
+        with scale_loss(loss_ref, optimizer) as scaled_loss:
+            scaled_loss.backward()
+    with nvtx.annotate("update"):
+        optimizer.step()
+
+for i in range(10):
+    optimizer_sparse.zero_grad()
+    with nvtx.annotate("sp forward"):
+        loss_sparse = model_sparse(input_sparse, target)
+    with nvtx.annotate("sp backward"):
+        with scale_loss(loss_sparse, optimizer_sparse) as scaled_loss:
+            scaled_loss.backward()
+    with nvtx.annotate("sp update"):
+        optimizer_sparse.step()

@@ -38,7 +38,13 @@ def pre_partition_optimization(joint_module):
 
     # pass: update attributes
     pass_update_attributes(joint_module, graph)
-    
+
+    # pass: strength reduction
+    pass_stength_reduction(joint_module, graph)
+
+    # pass: gemm fusion
+    pass_gemm_fusion(joint_module, graph)
+
     # recompile graph
     joint_module.recompile()
 

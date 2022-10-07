@@ -1,29 +1,20 @@
+from cProfile import label
+from symbol import parameters
 import numpy as np
 from code_generator import generate_code
 from expert_knowledge_metafile import a100_metafile, Heuristics
-from cost_model import predict, train_model, collect_dataset
+import xgboost as xgb
 
 
 from pycutlass.test.profiler import GpuTimer
 from pycutlass import *
 import cutlass
 import torch
+import sqlite3
 
-# claim memory pool
-pycutlass.get_memory_pool(init_pool_size=2**10, max_pool_size=2**32)
-pycutlass.compiler.nvcc()
-
-# Number of autotuning rounds
-NUM_AUTOTUNING_ROUNDS = 5
-# Number of samples per round
-NUM_SAMPLES = 10
 # Number of Features
-NUM_FEATURES = 12
+NUM_FEATURES = 15
 
-# number of skipped configuration caused by error
-SKIPPED_CONFIG = 0
-
-CHECKED_CONFIGs = set({})
 
 def sample_implementation_parameters(heuristics):
     parameters = heuristics.propose_parameters()
@@ -31,7 +22,7 @@ def sample_implementation_parameters(heuristics):
         parameters = heuristics.propose_parameters()
     return parameters
 
-def sample_parameters_without_ML(heuristics, num_samples, num_features):
+def sample_parameters_without_ML(heuristics, num_samples, num_features, problem_size):
     global CHECKED_CONFIGs
     # metafile_parameters: hardware constraints of the kernel
     metafile_parameters = heuristics.get_feature_from_metafile()
@@ -41,7 +32,7 @@ def sample_parameters_without_ML(heuristics, num_samples, num_features):
         implementation_parameters = sample_implementation_parameters(heuristics)
         implementation_parameters = heuristics.get_feature_from_parameters(implementation_parameters)
         # [M, N, K, Mw, Nw, Kw, Stage, Swizzle, MaxSHmem, MaxNumReg/thread, global mem size, register file size per SM]
-        parameter = implementation_parameters + metafile_parameters
+        parameter = implementation_parameters + metafile_parameters + problem_size
         parameter_str = str(parameter)
         # print("parameter_str: ", parameter_str)
         if parameter_str in CHECKED_CONFIGs:
@@ -52,7 +43,7 @@ def sample_parameters_without_ML(heuristics, num_samples, num_features):
             sampled_parameter = np.vstack([sampled_parameter, parameter])
     return sampled_parameter
 
-def sample_parameters_with_ML(heuristics, num_samples, num_features, model):
+def sample_parameters_with_ML(heuristics, num_samples, num_features, model, problem_size):
     metafile_parameters = heuristics.get_feature_from_metafile()
     
     CONFIG_THIS_ROUND = set({})
@@ -62,7 +53,7 @@ def sample_parameters_with_ML(heuristics, num_samples, num_features, model):
     while sampled_parameter.shape[0] < num_samples*10:
         implementation_parameters = sample_implementation_parameters(heuristics)
         implementation_parameters = heuristics.get_feature_from_parameters(implementation_parameters)
-        parameter = implementation_parameters + metafile_parameters
+        parameter = implementation_parameters + metafile_parameters + problem_size
         parameter_str = str(parameter)
         # print("parameter_str: ", parameter_str)
         if parameter_str in CHECKED_CONFIGs or parameter_str in CONFIG_THIS_ROUND:
@@ -76,7 +67,8 @@ def sample_parameters_with_ML(heuristics, num_samples, num_features, model):
     for i in range(10*num_samples):
         cur_parameter = sampled_parameter[i]
         cur_parameter = cur_parameter.reshape((1, num_features))
-        perf = predict(model, cur_parameter)[0]
+        # perf = predict(model, cur_parameter)[0]
+        perf = model.predict(cur_parameter)[0]
         predicted_performance.append(perf)
     
     predicted_performance = np.array(predicted_performance)
@@ -120,69 +112,188 @@ def generate_code_and_profile(parameters, input_shape):
     return timer.duration(100)
 
 
-def autotuner(input_shape):
-    global SKIPPED_CONFIG
-    heuristics = Heuristics(
-        a100_metafile, element_a=cutlass.float16, element_b=cutlass.float16, 
-        element_c=cutlass.float16,
-        element_accumulator=cutlass.float32, layout_a=cutlass.RowMajor, 
-        layout_b=cutlass.RowMajor)
-    features = np.zeros((0, NUM_FEATURES))
-    labels = np.array([])
+class ConfigCache:
+    def __init__(self) -> None:
+        self.arg_key = {
+            cutlass.float16: "f16",
+            cutlass.bfloat16: "bf16",
+            cutlass.float32: "f32",
+            cutlass.RowMajor: "row",
+            cutlass.ColumnMajor: "col"
+        }
 
-    # Autotuning for NUM_AUTOTUNING_ROUNDS
-    for round_idx in range(NUM_AUTOTUNING_ROUNDS):
-        print("round: ", round_idx)
-        if round_idx == 0:
-            # sampled_parameters
-            # stack of 
-            # [M, N, K, Mw, Nw, Kw, Stage, Swizzle, MaxSHmem, MaxNumReg/thread, 
-            #  global mem size, register file size per SM]
-            sampled_parameters = sample_parameters_without_ML(
-                heuristics, 
-                num_samples=NUM_SAMPLES,
-                num_features=NUM_FEATURES,
-                )
-        else:
-            sampled_parameters = sample_parameters_with_ML(
-                heuristics,
-                num_samples=NUM_SAMPLES,
-                num_features=NUM_FEATURES,
-                model=model,
-            )
-        profiled_latency = []
-        for i in range(NUM_SAMPLES):
-            parameter = sampled_parameters[i][:8]
-            parameter = tuple(parameter)
-            # try:
-            print(parameter)
-            latency = generate_code_and_profile(parameter, input_shape)
-            profiled_latency.append(latency)
-            # except:
-            #     SKIPPED_CONFIG += 1
-            #     print("SKIPPED_CONFIG: ", SKIPPED_CONFIG)
+        try:
+            connection = sqlite3.connect("./compiled_cache.db")
+            cursor = connection.cursor()
+            sqlite_create_table_query = """CREATE TABLE best_config(
+                op_key TEXT NOT NULL UNIQUE, block_x INTEGER, block_y INTEGER, 
+                block_z INTEGER, warp_x INTEGER, warp_y INTEGER, warp_z INTEGER, 
+                stage INTEGER, swizzle INTEGER)"""
+            cursor.execute(sqlite_create_table_query)
+            connection.commit()
+            cursor.close()
+        except:
+            pass
+        # pass
+    
+    def get_key(self, *args):
+        key = ""
+        for arg in list(args):
+            try:
+                key += self.arg_key[arg]
+            except:
+                for size in arg:
+                    key += "_%d" % size
+                key += "_"
+        return key
                 
-            #     exit()
+
+    
+    def insert(self, best_config, *args):
+        key = self.get_key(*args)
+        connection = sqlite3.connect("./compiled_cache.db")
+        cursor = connection.cursor()
+        sqlite_insert_blob_query = """ INSERT OR IGNORE INTO 
+            best_config (op_key, block_x, block_y, block_z, warp_x, 
+                warp_y, warp_z, stage, swizzle) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+        cursor.execute(sqlite_insert_blob_query, tuple([key,] + best_config))
+        connection.commit()
+        cursor.close()
+    
+    def load(self, *args):
+        key = self.get_key(*args)
+
+        connection = sqlite3.connect("./compiled_cache.db")
+        cursor = connection.cursor()
+        sqlite_fetch_blob_query = """SELECT * from best_config where op_key = ?"""
+
+        cursor.execute(sqlite_fetch_blob_query, (key, ))
+        record = cursor.fetchall()
+        if len(record) == 0:
+            return None
+        else:
+            return list(record[0])[1:]
+
+
+class Autotuner:
+    def __init__(self, 
+        autotuning_rounds=10, samples_per_round=10, save_model=True, 
+        load_model=True, verbose=False) -> None:
+        #
+        self.autotuning_rounds = autotuning_rounds
+        self.samples_per_round = samples_per_round
+
+        self.verbose = verbose
+
         
-        # Append newly sampled (features, labels) to previous (features, labels)
-        (features, labels) = collect_dataset(
-            features=sampled_parameters,
-            labels=profiled_latency,
-            existing_feature=features,
-            existing_label=labels,
-            num_feature=NUM_FEATURES,
+
+        self.model = xgb.XGBRegressor()
+        self.save_model = save_model
+        #: indicates whether the model is code
+        self.cold = True
+        if load_model:
+            try:
+                self.model.load_model("./xgboost.model")
+                self.cold = False
+            except:
+                if self.verbose:
+                    print("Pre-trained model is not found. Train from scratch.")
+        
+        self.cache = ConfigCache()
+    
+    def __call__(self, problem_size, element_a, layout_a, element_b, layout_b, 
+        element_c, layout_c, element_accumulator):
+
+        assert layout_c == cutlass.RowMajor, "Currently only support RowMajor output"
+
+        # try load from cache
+        best_parameter = self.cache.load(
+            problem_size, element_a, layout_a, element_b, layout_b,
+            element_c, layout_c, element_accumulator
+        )
+        if best_parameter is not None:
+            return best_parameter
+
+        # search for best config
+        heuristics = Heuristics(
+            a100_metafile, element_a=element_a, element_b=element_b,
+            element_c=element_c, element_accumulator=element_accumulator,
+            layout_a=layout_a, layout_b=layout_b
         )
 
-        model = train_model(features, labels)
-        array_labels = np.array(labels)
-        top_idx = np.argsort(array_labels)[0]
-        print("round: ", round_idx, ", best parameter:", features[top_idx], ", measured latency: ", array_labels[top_idx], ", mean sampled latency: ", np.mean(labels))
+        features = np.zeros((0, NUM_FEATURES))
+        labels = np.array([])
 
-        # hand tuned kernel
-        latency = generate_code_and_profile(parameters=[128, 128, 32, 64, 64, 32, 5, 3], input_shape=input_shape)
-        print(latency)
+        sampled_latency = {
+            "mean": [],
+            "std": []
+        }
+
+        best_latency = 1e+16
+
+        for round_idx in range(self.autotuning_rounds):
+            if self.cold:
+                sampled_parameters = sample_parameters_without_ML(
+                    heuristics, 
+                    num_samples=self.samples_per_round,
+                    num_features=NUM_FEATURES,
+                    problem_size=problem_size
+                )
+            else:
+                sampled_parameters = sample_parameters_with_ML(
+                    heuristics,
+                    num_samples=self.samples_per_round,
+                    num_features=NUM_FEATURES,
+                    model=self.model,
+                    problem_size=problem_size
+                )
+            profiled_latency = []
+            for i in range(self.samples_per_round):
+                parameter = tuple(sampled_parameters[i][:8])
+                latency = generate_code_and_profile(parameter, problem_size)
+                profiled_latency.append(latency)
+            
+            features = sampled_parameters
+            labels = profiled_latency
+            if self.cold:
+                self.model.fit(features, labels)
+                self.cold = False
+            else:
+                self.model.fit(features, labels, xgb_model=self.model)
+            array_labels = np.array(labels)
+            top_idx = np.argsort(array_labels)[0]
+            if self.verbose:
+                print("round: ", round_idx, ", best parameter:", features[top_idx][:8], ", measured latency: ", array_labels[top_idx], ", mean sampled latency: ", np.mean(labels))
+            if array_labels[top_idx] < best_latency:
+                best_parameter = features[top_idx][:8]
+                best_latency = array_labels[top_idx]
+
+            sampled_latency["mean"].append(np.mean(labels))
+            sampled_latency["std"].append(np.std(labels))
+                
+        # with open("./log/sampled_latency.json", "w") as outfile:
+        #     json.dump(sampled_latency, outfile)
+
+        best_parameter = [int(p) for p in best_parameter]
+        
+        if self.verbose:
+            print("best parameter:", best_parameter, ", best latency: ", best_latency)
+
+        if self.save_model:
+            self.model.save_model("./xgboost.model")
+        
+        self.cache.insert(best_parameter, problem_size, element_a, layout_a, 
+            element_b, layout_b, element_c, layout_c, element_accumulator)
+        return best_parameter
 
 
-# [M, N, K]
-input_shape = (3584, 32320, 1024)
-autotuner(input_shape)
+# for test only
+if __name__ == "__main__":
+    pycutlass.get_memory_pool(init_pool_size=2**10, max_pool_size=2**32)
+    pycutlass.compiler.nvcc()
+    input_shape = [3584, 32320, 1024]
+    autotuner = Autotuner()
+    autotuner(
+        input_shape, cutlass.float16, cutlass.RowMajor, cutlass.float16, 
+        cutlass.RowMajor, cutlass.float16, cutlass.RowMajor, cutlass.float32)

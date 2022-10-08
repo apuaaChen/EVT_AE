@@ -19,6 +19,7 @@ import cutlass
 import torch
 import torch.nn.functional as F
 from passes.epilogue_parser import EpilogueVisitTreeDAG
+from passes import autotuner
 import nvtx
 import operator
 
@@ -34,6 +35,7 @@ class FusedGEMM:
         lhs_node = node.args[0]
         rhs_node = node.args[1]
 
+        # get layout
         if lhs_node.target == torch.ops.aten.t:
             lhs_layout = cutlass.ColumnMajor
             node.replace_input_with(lhs_node, lhs_node.args[0])
@@ -46,6 +48,13 @@ class FusedGEMM:
         else:
             rhs_layout = cutlass.RowMajor
         
+        # get shape
+        lhs_shape = lhs_node.meta["tensor_meta"].shape
+        rhs_shape = rhs_node.meta["tensor_meta"].shape
+
+        M, K = lhs_shape[-2:]
+        N = rhs_shape[-1]
+        
         self.lhs_layout = lhs_layout
         self.rhs_layout = rhs_layout
 
@@ -56,8 +65,26 @@ class FusedGEMM:
             opcode_class=cutlass.OpClass.TensorOp
         )
 
+        # launch autotuner
+        best_config = autotuner(
+            problem_size=[M, N, K], element_a=cutlass.float16, layout_a=lhs_layout,
+            element_b=cutlass.float16, layout_b=rhs_layout, 
+            element_c=cutlass.float16, layout_c=cutlass.RowMajor, 
+            element_accumulator=cutlass.float32)
+
+        threadblock_shape = best_config[0:3]
+        threadblock_shape = [int(t) for t in threadblock_shape]
+        warp_shape = best_config[3:6]
+        warp_count = [t // w for t, w in zip(threadblock_shape, warp_shape)]
+        warp_count = [int(t) for t in warp_count]
+        stages = int(best_config[6])
+
+        log_swizzle = best_config[7]
+        swizzling_functor = getattr(cutlass, "IdentitySwizzle%d"%int(pow(2, log_swizzle)))
+
+
         tile_description = TileDescription(
-            [128, 128, 32], 5, [2, 2, 1], math_inst
+            threadblock_shape, stages, warp_count, math_inst
         )
 
         A = TensorDescription(cutlass.float16, lhs_layout, 8)
@@ -68,8 +95,6 @@ class FusedGEMM:
             element_output=C.element, epilogue_vector_length=C.alignment,
             element_accumulator=math_inst.element_accumulator,
             element_epilogue=cutlass.float32)
-        
-        swizzling_functor = cutlass.IdentitySwizzle8
 
         # Creating the epilogue visitor tree
         self.epilogue_functor = EpilogueVisitTreeDAG(

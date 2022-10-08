@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 ################################################################################
+from autotuner.auto_tuner import Autotuner
+autotuner = Autotuner(verbose=True)
 from passes.print_graph import pass_print_graph
 from passes.eliminate_transparent import pass_eliminate_transparent_node
 from passes.eliminate_loss import pass_loss_elimination

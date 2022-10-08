@@ -10,12 +10,13 @@ import cutlass
 #   parameter: a vector of positive integers. This instantiates the CUDA configuration.
 #           The length of this vector must be exactly the same as the number of "%s" in config_template
 #  
-def generate_code(parameter):
+def generate_code(
+    parameter, element_a, layout_a, element_b, layout_b, element_c, layout_c, element_accumulator):
 
     math_inst = MathInstruction(
         instruction_shape=[16, 8, 16],
-        element_a=cutlass.float16, element_b=cutlass.float16,
-        element_accumulator=cutlass.float32,
+        element_a=element_a, element_b=element_b,
+        element_accumulator=element_accumulator,
         opcode_class=cutlass.OpClass.TensorOp
     )
 
@@ -30,9 +31,9 @@ def generate_code(parameter):
         threadblock_shape, stages, warp_count, math_inst
     )
 
-    A = TensorDescription(cutlass.float16, cutlass.RowMajor, 8)
-    B = TensorDescription(cutlass.float16, cutlass.RowMajor, 8)
-    C = TensorDescription(cutlass.float16, cutlass.RowMajor, 8)
+    A = TensorDescription(element_a, layout_a, 8)
+    B = TensorDescription(element_b, layout_b, 8)
+    C = TensorDescription(element_c, layout_c, 8)
 
     epilogue_functor = LinearCombination(
         element_output=C.element, epilogue_vector_length=C.alignment,
@@ -61,7 +62,9 @@ if __name__ == "__main__":
     pycutlass.compiler.nvcc()
     # Generate configuration code
     operation = generate_code(
-        parameter=[128.0, 128.0, 64.0, 16.0, 64.0, 32.0, 4.0, 3.0]
+        parameter=[128, 16, 64, 64, 16, 64, 2, 3], element_a=cutlass.float16,
+        layout_a=cutlass.RowMajor, element_b=cutlass.float16, layout_b=cutlass.ColumnMajor,
+        element_c=cutlass.float16, layout_c=cutlass.RowMajor, element_accumulator=cutlass.float32
     )
     input_shape = (3584, 32320, 1024)
 

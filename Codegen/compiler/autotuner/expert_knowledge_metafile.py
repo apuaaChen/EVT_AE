@@ -412,7 +412,7 @@ class DefaultMmaCore:
                 PitchLinearShape(N, K), num_threads, PitchLinearShape(8, 4),
                 access_size_in_bits // 8 // element_size[element_B]
             )
-            self.smem_iterator_A = RegularTileAccessIterator(
+            self.smem_iterator_B = RegularTileAccessIterator(
                 MatrixShape(K, N), element_B, self.smem_layout_B, 0, self.iterator_threadmap_B
             )
         elif layout_B == cutlass.ColumnMajor:
@@ -427,7 +427,7 @@ class DefaultMmaCore:
                     warp_thread_arrangement_contiguous_B, warp_thread_arrangement_strided_B),
                 access_size_in_bits // 8 // element_size[element_B]
             )
-            self.smem_iterator_A = RegularTileAccessIterator(
+            self.smem_iterator_B = RegularTileAccessIterator(
                 MatrixShape(K, N), element_B, self.smem_layout_B, 1, self.iterator_threadmap_B, crosswise=K
             )
 
@@ -913,9 +913,9 @@ if __name__ == "__main__":
 
     rule = GemmUniversalRule(
         cutlass.float16, cutlass.RowMajor, 8,
-        cutlass.float16, cutlass.RowMajor, 8,
+        cutlass.float16, cutlass.ColumnMajor, 8,
         cutlass.float16, 8,
-        cutlass.float32, [128, 128, 32], [64, 16, 32],
+        cutlass.float32, [128, 16, 64], [64, 16, 64],
         [16, 8, 16], 2
     )
     

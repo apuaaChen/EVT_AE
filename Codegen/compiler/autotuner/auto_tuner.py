@@ -1,8 +1,6 @@
-from cProfile import label
-from symbol import parameters
 import numpy as np
-from code_generator import generate_code
-from expert_knowledge_metafile import a100_metafile, Heuristics
+from autotuner.code_generator import generate_code
+from autotuner.expert_knowledge_metafile import a100_metafile, Heuristics
 import xgboost as xgb
 
 
@@ -22,8 +20,7 @@ def sample_implementation_parameters(heuristics):
         parameters = heuristics.propose_parameters()
     return parameters
 
-def sample_parameters_without_ML(heuristics, num_samples, num_features, problem_size):
-    global CHECKED_CONFIGs
+def sample_parameters_without_ML(heuristics, num_samples, num_features, problem_size, checked_configs):
     # metafile_parameters: hardware constraints of the kernel
     metafile_parameters = heuristics.get_feature_from_metafile()
     
@@ -35,15 +32,15 @@ def sample_parameters_without_ML(heuristics, num_samples, num_features, problem_
         parameter = implementation_parameters + metafile_parameters + problem_size
         parameter_str = str(parameter)
         # print("parameter_str: ", parameter_str)
-        if parameter_str in CHECKED_CONFIGs:
+        if parameter_str in checked_configs:
             continue
         else:
             parameter = np.array(parameter)
-            CHECKED_CONFIGs.add(parameter_str)
+            checked_configs.add(parameter_str)
             sampled_parameter = np.vstack([sampled_parameter, parameter])
     return sampled_parameter
 
-def sample_parameters_with_ML(heuristics, num_samples, num_features, model, problem_size):
+def sample_parameters_with_ML(heuristics, num_samples, num_features, model, problem_size, checked_configs):
     metafile_parameters = heuristics.get_feature_from_metafile()
     
     CONFIG_THIS_ROUND = set({})
@@ -56,7 +53,7 @@ def sample_parameters_with_ML(heuristics, num_samples, num_features, model, prob
         parameter = implementation_parameters + metafile_parameters + problem_size
         parameter_str = str(parameter)
         # print("parameter_str: ", parameter_str)
-        if parameter_str in CHECKED_CONFIGs or parameter_str in CONFIG_THIS_ROUND:
+        if parameter_str in checked_configs or parameter_str in CONFIG_THIS_ROUND:
             continue
         else:
             CONFIG_THIS_ROUND.add(parameter_str)
@@ -78,12 +75,18 @@ def sample_parameters_with_ML(heuristics, num_samples, num_features, model, prob
 
     for i in range(selected_parameters.shape[0]):
         parameter_str = str(selected_parameters[i])
-        CHECKED_CONFIGs.add(parameter_str)
+        checked_configs.add(parameter_str)
     return selected_parameters
 
 
-def generate_code_and_profile(parameters, input_shape):
-    operation = generate_code(parameter=parameters)
+def generate_code_and_profile(
+    parameters, input_shape, element_a, layout_a, element_b, layout_b, 
+    element_c, layout_c, element_accumulator):
+    #
+    operation = generate_code(
+        parameter=parameters, element_a=element_a, layout_a=layout_a,
+        element_b=element_b, layout_b=layout_b, element_c=element_c,
+        layout_c=layout_c, element_accumulator=element_accumulator)
     M, N, K = input_shape
 
     tensor_A = torch.empty(size=(M * K,), dtype=torch.float16, device="cuda")
@@ -232,13 +235,16 @@ class Autotuner:
 
         best_latency = 1e+16
 
+        checked_configs = set({})
+
         for round_idx in range(self.autotuning_rounds):
             if self.cold:
                 sampled_parameters = sample_parameters_without_ML(
                     heuristics, 
                     num_samples=self.samples_per_round,
                     num_features=NUM_FEATURES,
-                    problem_size=problem_size
+                    problem_size=problem_size,
+                    checked_configs=checked_configs
                 )
             else:
                 sampled_parameters = sample_parameters_with_ML(
@@ -246,12 +252,19 @@ class Autotuner:
                     num_samples=self.samples_per_round,
                     num_features=NUM_FEATURES,
                     model=self.model,
-                    problem_size=problem_size
+                    problem_size=problem_size,
+                    checked_configs=checked_configs
                 )
             profiled_latency = []
             for i in range(self.samples_per_round):
                 parameter = tuple(sampled_parameters[i][:8])
-                latency = generate_code_and_profile(parameter, problem_size)
+                if self.verbose:
+                    print(parameter)
+                latency = generate_code_and_profile(
+                    parameter, problem_size, element_a=element_a, layout_a=layout_a,
+                    element_b=element_b, layout_b=layout_b, element_c=element_c,
+                    layout_c=layout_c, element_accumulator=element_accumulator
+                )
                 profiled_latency.append(latency)
             
             features = sampled_parameters
@@ -293,7 +306,7 @@ if __name__ == "__main__":
     pycutlass.get_memory_pool(init_pool_size=2**10, max_pool_size=2**32)
     pycutlass.compiler.nvcc()
     input_shape = [3584, 32320, 1024]
-    autotuner = Autotuner()
+    autotuner = Autotuner(verbose=True)
     autotuner(
         input_shape, cutlass.float16, cutlass.RowMajor, cutlass.float16, 
-        cutlass.RowMajor, cutlass.float16, cutlass.RowMajor, cutlass.float32)
+        cutlass.ColumnMajor, cutlass.float16, cutlass.RowMajor, cutlass.float32)

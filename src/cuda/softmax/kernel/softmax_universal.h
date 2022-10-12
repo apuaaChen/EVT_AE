@@ -2,6 +2,7 @@
 
 #include "cutlass/cutlass.h"
 #include "softmax/threadblock/row_tile_iterator.h"
+#include "softmax/epilogue/epilogue.h"
 #include "stdio.h"
 
 #if defined(__NVCC__)
@@ -60,15 +61,18 @@ struct SoftmaxUniversal {
     using SumExpIterator = cutlass::softmax::threadblock::RowTileIterator<ThreadMapInput, ElementInput>;
     using EpilogueInputIterator = cutlass::softmax::threadblock::RowTileIterator<ThreadMapInput, ElementInput>;
 
-    using ThreadMapOutput = cutlass::softmax::threadblock::RowThreadMap<
-        ThreadblockShape, WarpCount, ElementOutput, AlignmentOutput_>;
-    using EpilogueOutputIterator = cutlass::softmax::threadblock::RowTileIterator<ThreadMapOutput, ElementOutput>;
-
     static const int kNumThreads = WarpCount::kCount * 32;
 
     using BlockReduce = cub::BlockReduce<ElementAccumulator, kNumThreads>;
     using MaxFragment = Array<ElementAccumulator, kElementsPerAccess>;
     using SumExpFragment = Array<ElementAccumulator, kElementsPerAccess>;
+
+    using Epilogue = cutlass::softmax::threadblock::DefaultEpilogueSoftmax<
+        ElementOutput,
+        kElementsPerAccess,
+        ThreadblockShape,
+        WarpCount
+    >;
 
 
     //
@@ -191,8 +195,9 @@ public:
 
         
         /// Epilogue
+        Epilogue epilogue(params.output, params.problem_size, thread_idx, threadblock_offset);
+
         EpilogueInputIterator epilogue_input_iterator(params.input, params.problem_size, thread_idx, threadblock_offset);
-        EpilogueOutputIterator epilogue_output_iterator(params.output, params.problem_size, thread_idx, threadblock_offset);
 
         cutlass::minus<typename EpilogueInputIterator::Fragment> epilogue_minus_op;
         cutlass::fast_exp_op<typename EpilogueInputIterator::Fragment> epilogue_exp_op;
@@ -205,7 +210,7 @@ public:
             tmp_input = epilogue_minus_op(tmp_input, ElementInput(row_max));
             tmp_input = epilogue_exp_op(tmp_input);
             tmp_input = epilogue_div_op(tmp_input, ElementInput(row_sum));
-            epilogue_output_iterator.store(tmp_input);
+            epilogue.store(tmp_input);
         }
     }
 };

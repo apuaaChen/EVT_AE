@@ -146,11 +146,12 @@ class SoftmaxOperation:
     def __init__(
         self, input: 'TensorDescription', output: 'TensorDescription',
         threadblock_tile: 'list[int]', warp_count: 'list[int]',
-        element_accumulator) -> None:
+        element_accumulator, epilogue_functor) -> None:
 
 
         self.arch = 80
         self.tile_description = None
+        self.epilogue_functor = epilogue_functor
 
         self.element_input = input.element
         self.element_output = output.element
@@ -224,7 +225,7 @@ class EmitSoftmaxUniversalInstance:
 #     public ${operation_name}_base { };
 # """
         self.cutlass_template_visitor = """
-using ${operation_name}_base =
+using ${operation_name}_default =
     typename cutlass::softmax::kernel::DefaultSoftmaxUniversal<
         cutlass::MatrixShape<${threadblock_row}, ${threadblock_column}>,
         cutlass::MatrixShape<${warp_count_row}, ${warp_count_column}>,
@@ -233,6 +234,10 @@ using ${operation_name}_base =
         ${element_output}, 
         ${alignment_output},
         ${element_accumulator}>::SoftmaxKernel;
+
+${epilogue_visitor}
+
+using ${operation_name}_base = ${operation_name}_default;
 
 // Define named type
 struct ${operation_name}${operation_suffix} :
@@ -253,10 +258,12 @@ struct ${operation_name}${operation_suffix} :
             'element_accumulator': DataTypeTag[operation.element_accumulator]
         }
 
-        # values['epilogue_visitor'] = operation.epilogue_functor.emit(operation)
+        values['epilogue_visitor'] = operation.epilogue_functor.emit(operation)
         
         code =  SubstituteTemplate(self.cutlass_template_visitor, values)
 
+        print("========================")
+        print(code)
         return code
 
 
@@ -268,29 +275,29 @@ if __name__ == "__main__":
     Input = TensorDescription(cutlass.float16, cutlass.RowMajor, 8)
     Output = TensorDescription(cutlass.float16, cutlass.RowMajor, 8)
 
-    # epilogue_functor = LinearCombination(
-    #     element_output=Output.element, epilogue_vector_length=Output.alignment,
-    #     element_accumulator=cutlass.float32,
-    #     element_epilogue=cutlass.float32)
+    epilogue_functor = LinearCombination(
+        element_output=Output.element, epilogue_vector_length=Output.alignment,
+        element_accumulator=cutlass.float32,
+        element_epilogue=cutlass.float32)
 
-    # class DirectOutput(EpilogueVisitTree):
-    #     def __call__(self, accum: 'tensor'):
-    #         D = accum
-    #         return D
+    class DirectOutput(EpilogueVisitTree):
+        def __call__(self, accum: 'tensor'):
+            D = accum
+            return D
     
-    # epilogue_functor = DirectOutput(
-    #     elementwise_functor=epilogue_functor, 
-    #     tile_description=TileDescription(
-    #         [1, num_classes, 1], stages=1, warp_count=softmax_get_block_size(8, dim_size=num_classes),
-    #         math_instruction=None),
-    #     element_accumulator=cutlass.float32, elements_per_access=8,
-    #     element_compute=cutlass.float32, element_output=cutlass.float16
-    # )
-    # epilogue_functor.initialize()
+    epilogue_functor = DirectOutput(
+        elementwise_functor=epilogue_functor, 
+        tile_description=TileDescription(
+            [1, num_classes, 1], stages=1, warp_count=[1, 4, 1],
+            math_instruction=None),
+        element_accumulator=cutlass.float32, elements_per_access=8,
+        element_compute=cutlass.float32, element_output=cutlass.float16
+    )
+    epilogue_functor.initialize()
 
     operation = SoftmaxOperation(
         input=Input, output=Output, threadblock_tile=[1, num_classes, 1],
-        warp_count=[1, 4, 1], element_accumulator=cutlass.float32
+        warp_count=[1, 4, 1], element_accumulator=cutlass.float32, epilogue_functor=epilogue_functor
     )
     cutlass_path = os.getenv('CUTLASS_PATH')
     assert cutlass_path is not None, "Environment variable 'CUTLASS_PATH' is not defined."

@@ -80,6 +80,16 @@ public:
 
     using Iterations = typename ThreadMap::Iterations;
 
+    //
+    // Structure
+    //
+    struct Param {
+        int ldt;
+
+        CUTLASS_HOST_DEVICE
+        Param(int ldt_): ldt(ldt_) { }
+    };
+
 private:
     //
     // Data members
@@ -119,6 +129,15 @@ public:
         // get initial pointer
         pointer_ = reinterpret_cast<AccessType*>(pointer + extent_column_ * thread_start_row_ + thread_start_column_);
     }
+
+    CUTLASS_DEVICE
+    RowTileIterator(
+        Param const & params, 
+        Element *pointer,
+        MatrixCoord extent,
+        int thread_idx,
+        TensorCoord threadblock_offset = TensorCoord()
+    ): RowTileIterator(pointer, extent, thread_idx, threadblock_offset) { }
 
     /// Loads a fragment from memory
     CUTLASS_DEVICE

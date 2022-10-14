@@ -27,3 +27,4 @@ from passes.update_attr import pass_update_attributes
 from passes.constant_folding import pass_constant_folding
 from passes.strength_reduction import pass_stength_reduction
 from passes.gemm_fusion import pass_gemm_fusion
+from passes.softmax_fusion import pass_softmax_fusion

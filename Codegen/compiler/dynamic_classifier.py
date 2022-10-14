@@ -11,7 +11,7 @@ import torch.fx as fx
 import pycutlass
 from pycutlass import *
 
-pycutlass.get_memory_pool(init_pool_size=2**10, max_pool_size=2**32)
+pycutlass.get_memory_pool(init_pool_size=2**10, max_pool_size=2**10)
 pycutlass.compiler.nvcc()
 
 
@@ -238,9 +238,9 @@ with nvtx.annotate("sp update"):
     optimizer_sparse.step()
 
 # assert torch.allclose(loss_sparse, loss_ref)
-assert torch.sum(torch.isclose(model_sparse.orig_module.classifier.classifier.weight.grad, model.classifier.classifier.weight.grad, rtol=1e-2)) / model_sparse.orig_module.classifier.classifier.weight.grad.numel() > 0.95
-assert torch.sum(torch.isclose(model_sparse.orig_module.classifier.classifier.bias.grad, model.classifier.classifier.bias.grad, rtol=1e-2)) / model_sparse.orig_module.classifier.classifier.bias.grad.numel() > 0.95
-assert torch.sum(torch.isclose(input_sparse.grad, input.grad, rtol=1e-2)) / input_sparse.grad.numel() > 0.95
+assert torch.sum(torch.isclose(model_sparse.orig_module.classifier.classifier.weight.grad, model.classifier.classifier.weight.grad, rtol=5e-2)) / model_sparse.orig_module.classifier.classifier.weight.grad.numel() > 0.95
+assert torch.sum(torch.isclose(model_sparse.orig_module.classifier.classifier.bias.grad, model.classifier.classifier.bias.grad, rtol=5e-2)) / model_sparse.orig_module.classifier.classifier.bias.grad.numel() > 0.95
+assert torch.sum(torch.isclose(input_sparse.grad, input.grad, rtol=5e-2)) / input_sparse.grad.numel() > 0.95
 
 
 optimizer.zero_grad()
@@ -266,7 +266,7 @@ with nvtx.annotate("sp update"):
 # assert torch.allclose(loss_sparse, loss_ref)
 assert torch.sum(torch.isclose(model_sparse.orig_module.classifier.classifier.weight.grad, model.classifier.classifier.weight.grad, rtol=1e-2)) / model_sparse.orig_module.classifier.classifier.weight.grad.numel() > 0.95
 assert torch.sum(torch.isclose(model_sparse.orig_module.classifier.classifier.bias.grad, model.classifier.classifier.bias.grad, rtol=1e-2)) / model_sparse.orig_module.classifier.classifier.bias.grad.numel() > 0.95
-assert torch.sum(torch.isclose(input_sparse.grad, input.grad, rtol=1e-2)) / input_sparse.grad.numel() > 0.9
+assert torch.sum(torch.isclose(input_sparse.grad, input.grad, rtol=5e-2)) / input_sparse.grad.numel() > 0.9
 
 
 

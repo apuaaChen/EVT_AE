@@ -2,6 +2,8 @@
 
 #include "cutlass/cutlass.h"
 
+#include "softmax/threadblock/softmax_reduction.h"
+
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
@@ -11,21 +13,15 @@ namespace kernel {
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 template<
-    typename ElementInput_,
-    typename ElementOutput_,
-    typename ElementAccumulator_,
+    typename Reduction_,
     typename Epilogue_>
 struct SoftmaxUniversalwithEpilogueVisitor {
-
-    using ElementInput = ElementInput_;
-    using ElementOutput = ElementOutput_;
-    using ElementAccumulator = ElementAccumulator_;
-
-    static const int kALIGN_BYTES = 16;
-    static const int kILP = kALIGN_BYTES / sizeof(ElementInput);
-
+public:
+    using Reduction = Reduction_;
     using Epilogue = Epilogue_;
     using EpilogueVisitor = typename Epilogue::Visitor;
+
+    using ElementAccumulator = typename Reduction::ElementAccumulator;
 
 
     //
@@ -36,9 +32,8 @@ struct SoftmaxUniversalwithEpilogueVisitor {
         //
         // Data members
         //
-        ElementInput* input;
-        MatrixCoord problem_size;
-
+        typename Reduction::Arguments reduction_args;
+        typename Epilogue::Arguments epilogue_args;
         typename EpilogueVisitor::Arguments epilogue_visitor;
     };
 
@@ -46,12 +41,23 @@ struct SoftmaxUniversalwithEpilogueVisitor {
         //
         // Data members
         //
-        ElementInput* input;
-        MatrixCoord problem_size;
-        
+        typename Reduction::Params reduction_params;
+        typename Epilogue::Params epilogue_params;
         typename EpilogueVisitor::Params epilogue_visitor;
 
+        /// Constructs an arguments structure
+        Params(
+            Arguments const &args
+        ):
+            reduction_params(args.reduction_args),
+            epilogue_params(args.epilogue_args),
+            epilogue_visitor(args.epilogue_visitor){ }
 
+    };
+
+    union SharedStorage {
+        typename Reduction::SharedStorage reduction_storage;
+        typename EpilogueVisitor::SharedStorage visitor;
     };
 
 
@@ -60,40 +66,50 @@ public:
     /// Execute one softmax
     CUTLASS_DEVICE
     void operator()(Params const &params, SharedStorage &shared_storage) {
-        MatrixCoord threadblock_tile_offset = MatrixCoord(blockIdx.x, blockIdx.y);
 
-        ElementInput* input = params.input + threadblock_tile_offset.row() * params.problem_size.column();
+        int thread_idx = threadIdx.x;
+        cutlass::MatrixCoord threadblock_offset{
+            int(blockIdx.x), int(blockIdx.y)
+        };
 
-        const int shift = ((uint64_t)input) % kALIGN_BYTES / sizeof(ElementInput);
-
-        using LoadT = at::native::memory::aligned_vector<ElementInput, kILP>;
-        using StoreT = at::native::memory::aligned_vector<ElementOutput, kILP>;
-
-        // find the max
-        ElementAccumulator thread_max = ilpReduction<MaxFloat, kILP, ElementInput, ElementAccumulator>(
-            shift, input, params.problem_size.column(), MaxFloat<ElementInput, ElementAccumulator>(), -at::numeric_limits<ElementAccumulator>::max()
+        Reduction softmax_reduction(
+            params.reduction_params, 
+            shared_storage.reduction_storage, 
+            thread_idx,
+            threadblock_offset
         );
 
-        ElementAccumulator max_k = blockReduce<Max, ElementAccumulator>(
-            shared_storage.main_loop, thread_max, Max<ElementAccumulator>(), -at::numeric_limits<ElementAccumulator>::max()
+        ElementAccumulator row_max;
+        ElementAccumulator row_sum;
+
+        softmax_reduction(row_max, row_sum);
+
+        gemm::GemmCoord threadblock_tile_offset(
+            int(blockIdx.x), int(blockIdx.y), int(blockIdx.z)
         );
 
-        // reduce all values
-        ElementAccumulator thread_exp = ilpReduce<SumExpFloat, kILP, ElementInput, ElementAccumulator>(
-            shift, input, params.problem_size.column(), SumExpFloat<ElementInput, ElementAccumulator>(max_k), static_cast<ElementAccumulator>(0)
+        
+        /// Epilogue
+
+
+        EpilogueVisitor epilogue_visitor(
+            params.epilogue_visitor,
+            shared_storage.visitor,
+            threadblock_offset, 
+            threadblock_tile_offset,
+            thread_idx,
+            params.reduction_params.problem_size
         );
 
-        ElementAccumulator sum_all = blockReduce<Add, ElementAccumulator>(
-            shared_storage.main_loop, thread_exp, Add<ElementAccumulator>(), static_cast<ElementAccumulator>(0)
+        Epilogue epilogue(
+            params.epilogue_params,
+            thread_idx,
+            threadblock_offset
         );
 
-        Epilogue<ElementInput, ElementAccumulator, ElementOutput> epilogue(max_k, sum_all);
+        // Execute the epilogue operator to update the destination tensor
+        epilogue(epilogue_visitor, row_max, row_sum);
 
-        if (shift == output_shift) {
-            WriteFpropResultsVectorized<kILP, ElementInput, ElementAccumulator, ElementOutput, Epilogue>(params.epilogue_visitor);
-        } else {
-            WriteFpropResults<kILP, ElementAccumulator, ElementOutput, Epilogue>(params.epilogue_visitor);
-        }
     }
 };
 

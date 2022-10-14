@@ -83,11 +83,11 @@ public:
     //
     // Structure
     //
-    struct Param {
+    struct Params {
         int ldt;
 
         CUTLASS_HOST_DEVICE
-        Param(int ldt_): ldt(ldt_) { }
+        Params(int ldt_): ldt(ldt_) { }
     };
 
 private:
@@ -132,7 +132,7 @@ public:
 
     CUTLASS_DEVICE
     RowTileIterator(
-        Param const & params, 
+        Params const & params, 
         Element *pointer,
         MatrixCoord extent,
         int thread_idx,
@@ -149,7 +149,7 @@ public:
         } 
 
         pointer_ += ShapeVec::kColumn;
-        column_ += ShapeVec::kColumn;
+        column_ += Shape::kColumn;
     }
 
     /// Store a fragment to memory

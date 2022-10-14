@@ -16,14 +16,14 @@ def pre_partition_optimization(joint_module):
     # pass: loss elimination
     pass_loss_elimination(joint_module, graph)
 
-    # pass: graph substitution
-    # pass_graph_substitution(joint_module, graph)
-    # pass_shape_prop(joint_module, graph)
+    # # pass: graph substitution
+    # # pass_graph_substitution(joint_module, graph)
+    # # pass_shape_prop(joint_module, graph)
 
     # pass: composed op breakdown
     pass_composed_op_breakdown(joint_module, graph)
 
-    # pass: remove duplicated nodes
+    # # pass: remove duplicated nodes
     pass_remove_duplicated_node(joint_module, graph)
 
     # pass: merge common factor of add / sub operators
@@ -43,6 +43,9 @@ def pre_partition_optimization(joint_module):
 
     # pass: gemm fusion
     pass_gemm_fusion(joint_module, graph)
+
+    # pass: softmax fusion
+    pass_softmax_fusion(joint_module, graph)
 
     # recompile graph
     joint_module.recompile()

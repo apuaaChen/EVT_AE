@@ -1,7 +1,7 @@
 #pragma once
 
 #include "cutlass/cutlass.h"
-#include "softmax/threadblock/row_tile_iterator.h"
+#include "softmax/epilogue/epilogue.h"
 
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
@@ -12,16 +12,20 @@ namespace threadblock {
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
+
 template<
+    typename Visitor_,
     typename ElementAccumulator_,
     typename ElementOutput_,
     int AlignmentOutput_,
     typename ThreadblockShape_,
     typename WarpCount_
 >
-class DefaultEpilogueSoftmax {
+class EpilogueWithVisitor {
 
 public:
+    using Visitor = Visitor_;
+
     using Element = ElementOutput_;
     static const int kElementsPerAccess = AlignmentOutput_;
     using ElementAccumulator = ElementAccumulator_;
@@ -32,9 +36,8 @@ public:
         ThreadblockShape_, WarpCount_, Element, kElementsPerAccess>;
     
     using InputTileIterator = cutlass::softmax::threadblock::RowTileIterator<ThreadMap, Element>;
-    using OutputTileIterator = cutlass::softmax::threadblock::RowTileIterator<ThreadMap, Element>;
 
-    using Fragment = typename OutputTileIterator::Fragment;
+    using Fragment = typename InputTileIterator::Fragment;
 
     using AccumulatorFragment = Array<ElementAccumulator, kElementsPerAccess>;
 
@@ -51,7 +54,6 @@ public:
         // Data members
         //
         Element* input;
-        Element* output;
         MatrixCoord problem_size;
     };
 
@@ -60,7 +62,6 @@ public:
         // Data members
         //
         Element* input;
-        Element* output;
         MatrixCoord problem_size;
 
         //
@@ -69,48 +70,44 @@ public:
         CUTLASS_HOST_DEVICE
         Params(Arguments const &args):
             input(args.input),
-            output(args.output),
             problem_size(args.problem_size)
         { }
     };
 
 private:
-
-    OutputTileIterator iterator_;
     InputTileIterator input_iterator_;
 
     Minus minus_op;
     Exp exp_op;
     Div div_op;
 
+    int row_idx;
+    int column_idx;
+
 public:
     /// Constructor
     CUTLASS_DEVICE
-    DefaultEpilogueSoftmax(
+    EpilogueWithVisitor(
         Params const & params,
         int thread_idx,
         MatrixCoord threadblock_offset = MatrixCoord()
     ):
-        iterator_(
-            typename OutputTileIterator::Param(params.problem_size.column()),
-            params.output,
-            params.problem_size,
-            thread_idx,
-            threadblock_offset
-        ),
         input_iterator_(
-            typename InputTileIterator::Param(params.problem_size.column()),
+            typename InputTileIterator::Params(params.problem_size.column()),
             params.input,
             params.problem_size,
             thread_idx,
             threadblock_offset
-        )
+        ),
+        row_idx(threadblock_offset.row()),
+        column_idx((InputTileIterator::ThreadMap::initial_offset(thread_idx) + threadblock_offset).column())
     { }
 
     CUTLASS_DEVICE
     void operator()(
-        ElementAccumulator row_max,
-        ElementAccumulator row_sum
+        Visitor & visitor,
+        ElementAccumulator const row_max,
+        ElementAccumulator const row_sum
     ) {
 
         typename InputTileIterator::Fragment input_frag;
@@ -118,6 +115,7 @@ public:
         NumericArrayConverter<ElementAccumulator, Element, kElementsPerAccess> input_converter;
         NumericArrayConverter<Element, ElementAccumulator, kElementsPerAccess> output_converter;
         
+        visitor.begin_epilogue();
 
         for (int i = 0; i < InputTileIterator::Iterations::kColumn; i ++) {
             input_iterator_.load(input_frag);
@@ -125,13 +123,34 @@ public:
             compute_frag = minus_op(compute_frag, row_max);
             compute_frag = exp_op(compute_frag);
             compute_frag = div_op(compute_frag, row_sum);
-            iterator_.store(output_converter(compute_frag));
+            visitor.visit(
+                row_idx,
+                column_idx,
+                compute_frag);
+            
+            column_idx += InputTileIterator::Shape::kColumn;
         }
+
+        visitor.end_epilogue();
     }
 
 };
 
+/////////////////////////////////////////////////////////////////////////////////////////////////
 
+/// Helper to create an EpilogueWithVisitor from an existing epilogue
+template <typename Visitor_, typename Existing_>
+struct EpilogueWithVisitorFromExistingEpilogue {
+
+    using Epilogue = EpilogueWithVisitor<
+        Visitor_,
+        typename Existing_::ElementAccumulator,
+        typename Existing_::Element,
+        Existing_::kElementsPerAccess,
+        typename Existing_::ThreadblockShape,
+        typename Existing_::WarpCount
+    >;
+};
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 

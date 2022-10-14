@@ -23,6 +23,13 @@ from treelib import Tree
 from nodes import *
 
 
+torch_2_cutlass_type = {
+    torch.float32: cutlass.float32,
+    torch.float16: cutlass.float16,
+    torch.int64: cutlass.int64,
+    torch.int32: cutlass.int32
+}
+
 ################################################################################
 # Epilogue nodes
 ################################################################################
@@ -47,28 +54,48 @@ operators = {
     torch.ops.aten.add: "Add",
     torch.ops.aten.div: "Div",
     torch.ops.aten.sub: "Sub",
-    torch.ops.aten.mul: "Mult"
+    torch.ops.aten.mul: "Mult",
+    torch.ops.aten.neg: "Mult",
+    torch.ops.aten.ne: "Ne",
 }
 
 
 class UnaryNodeDAG(UnaryNode):
     def __init__(self, element_accumulator, element_compute, 
-        elements_per_access, node, args) -> None:
+        elements_per_access, node, args, element_ptr=None) -> None:
         #
         if isinstance(node, BinOpNodeDAG):
             self.op = node.op
-        elif isinstance(node, fx.graph):
-            self.op = node.name
+        elif isinstance(node, fx.Node):
+            self.op = operators[node.target]
         else:
             raise TypeError
         self.tag = "Unary" + self.op + str(UnaryNode.cnt)
         self.id = self.op + str(UnaryNode.cnt)
         self.args = args
+        self.element_ptr = element_ptr
         UnaryNode.cnt += 1
 
         self.type = "tensor"
 
         self.epilogue_op = getattr(pycutlass, self.op)(element_compute)
+
+        # data types
+        self.element_accumulator = element_accumulator
+        self.element_compute = element_compute
+        self.elements_per_access = elements_per_access
+        
+
+class OneHotNodeDAG(OneHotNode):
+    def __init__(self, element_accumulator, element_compute, 
+        elements_per_access, node) -> None:
+        #
+        self.op = "one_hot"
+        self.tag = "OneHot" + str(UnaryNode.cnt)
+        self.id = self.op + str(UnaryNode.cnt)
+        UnaryNode.cnt += 1
+
+        self.type = "tensor"
 
         # data types
         self.element_accumulator = element_accumulator
@@ -123,12 +150,13 @@ class RowBroadcastNodeDAG(RowBroadcastNode):
         return super().get_argument(visitor_args, kwargs)
 
 class ColumnBroadcastNodeDAG(ColumnBroadcastNode):
-    def __init__(self, element_accumulator, element_fragment, node) -> None:
+    def __init__(self, element_accumulator, element_fragment, node, element_input=None) -> None:
         self.id = node.name
         self.tag = "ColumnBroadcast:" + self.id
         self.type = "tensor"
         self.element_accumulator = element_accumulator
         self.element_fragment = element_fragment
+        self.element_input = element_input
     
     def get_argument(self, visitor_args, kwargs):
         return super().get_argument(visitor_args, kwargs)
@@ -138,6 +166,9 @@ class ScalarInputNodeDAG(ScalarInputNode):
         self.id = node.name
         self.tag = "Scalar:" + self.id
         self.type = "scalar"
+
+        self.element_ptr = torch_2_cutlass_type[node.meta["tensor_meta"].dtype] 
+
 
 class AccumulatorNodeDAG(AccumulatorNode):
     def __init__(self, element_accumulator, elements_per_access, node) -> None:
@@ -172,8 +203,14 @@ class EpilogueASTDAG:
         self.shape = list(anchor.meta['tensor_meta'].shape)
         self.get_root()
 
+        if self.anchor.target == torch.ops.aten._softmax:
+            print(self.root)
+
         self.outputs = []
         self.ast_top_down_parsing(self.root, parse_output=True)
+
+        if self.anchor.target == torch.ops.aten._softmax:
+            print(self.outputs)
         self.stack = []
         self.reduction_source = {}
 
@@ -189,7 +226,7 @@ class EpilogueASTDAG:
 
         self.returns = [node.name for node in self.outputs]
 
-        print(self.args)
+        # print(self.args)
 
     #
     # Tree optimization pass
@@ -208,7 +245,7 @@ class EpilogueASTDAG:
                 node.data = UnaryNodeDAG(
                     self.element_accumulator, self.element_compute,
                     self.elements_per_access,
-                    node.data, [lhs_node.data.id,])
+                    node.data, [lhs_node.data.id,], lhs_node.data.element_ptr)
                 node.tag = node.data.tag
                 tree.remove_node(lhs_node.data.id)
                 self.pass_binary_2_unary(tree, rhs_node.data.id)
@@ -217,7 +254,7 @@ class EpilogueASTDAG:
                 node.data = UnaryNodeDAG(
                     self.element_accumulator, self.element_compute,
                     self.elements_per_access,
-                    node.data, [rhs_node.id,])
+                    node.data, [rhs_node.data.id,], rhs_node.data.element_ptr)
                 node.tag = node.data.tag
                 tree.remove_node(rhs_node.data.id)
                 self.pass_binary_2_unary(tree, lhs_node.data.id)
@@ -334,6 +371,9 @@ class EpilogueASTDAG:
                     self.get_candidate_root(usr)
                 elif (usr.target in [
                     torch.ops.aten.sum,]):
+                    # TODO: this condition is to filter non-reduction dim 
+                    # It is not regious for things like -1
+                    if usr.args[1] != self.anchor.args[1]: continue
                     if usr not in self.root_candidates.keys():
                         self.root_candidates[usr] = []
                 else:
@@ -350,15 +390,15 @@ class EpilogueASTDAG:
                     self.outputs.append(node)
         if node.op == "call_function":
             if node.target in [torch.ops.aten.view, torch.ops.aten._unsafe_view, torch.ops.aten.unsqueeze]:
-                return self.ast_top_down_parsing(node.args[0])
+                return self.ast_top_down_parsing(node.args[0], parse_output)
             elif node.target in [torch.ops.aten.add, torch.ops.aten.sub,
                 torch.ops.aten.mul, torch.ops.aten.div]:
                 # Check the broadcast rule
-                lhs_nodes = self.ast_top_down_parsing(node.args[0])
-                rhs_nodes = self.ast_top_down_parsing(node.args[1])
+                lhs_nodes = self.ast_top_down_parsing(node.args[0], parse_output)
+                rhs_nodes = self.ast_top_down_parsing(node.args[1], parse_output)
                 return lhs_nodes + rhs_nodes + [node, ]
             elif node.target in [torch.ops.aten.neg, torch.ops.aten.sum]:
-                return self.ast_top_down_parsing(node.args[0]) + [node,]
+                return self.ast_top_down_parsing(node.args[0], parse_output) + [node,]
             elif node.target in [torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten.one_hot, torch.ops.aten.ne]:
                 return [node,]
             else:
@@ -430,14 +470,18 @@ class EpilogueASTDAG:
         if node in self.outputs:
             # visit the output node
             name_node = TensorOutputNodeDAG(self.element_accumulator, node)
-            self.epilogue_tree.create_node(name_node.tag, name_node.id, data=name_node)
+            if len(self.stack) == 0:
+                self.epilogue_tree.create_node(name_node.tag, name_node.id, data=name_node)
+            else:
+                self.epilogue_tree.create_node(name_node.tag, name_node.id, parent=self.stack[-1], data=name_node)
             self.stack.append(name_node.id)
         if node.op == "call_function":
-            if node.target in [torch.ops.aten.view, torch.ops.aten._unsafe_view]:
+            if node.target in [torch.ops.aten.view, torch.ops.aten._unsafe_view, torch.ops.aten.unsqueeze]:
                 self.visit(node.args[0])
-            if node.target == torch.ops.aten.add:
-                binop = BinOpNodeDAG(self.element_accumulator, self.element_compute,
-                self.elements_per_access, node)
+            if node.target in [torch.ops.aten.add, torch.ops.aten.mul, torch.ops.aten.sub]:
+                binop = BinOpNodeDAG(
+                    self.element_accumulator, self.element_compute,
+                    self.elements_per_access, node)
                 self.epilogue_tree.create_node(
                     binop.tag, binop.id, data=binop,
                     parent=self.stack[-1])
@@ -445,14 +489,53 @@ class EpilogueASTDAG:
                 self.visit(node.args[0])
                 self.visit(node.args[1])
                 self.stack.pop()
-            elif node.target == torch.ops.aten.mm:
+            elif node.target in [torch.ops.aten.neg]:
+                unaryop = UnaryNodeDAG(
+                    self.element_accumulator, self.element_compute,
+                    self.elements_per_access, node, [-1.]
+                )
+                self.epilogue_tree.create_node(
+                    unaryop.tag, unaryop.id, data=unaryop,
+                    parent=self.stack[-1]
+                )
+                self.stack.append(unaryop.id)
+                self.visit(node.args[0])
+                self.stack.pop()
+            elif node.target in [torch.ops.aten.ne]:
+                unaryop = UnaryNodeDAG(
+                    self.element_accumulator, self.element_compute,
+                    self.elements_per_access, node, [node.args[1]]
+                )
+                self.epilogue_tree.create_node(
+                    unaryop.tag, unaryop.id, data=unaryop,
+                    parent=self.stack[-1]
+                )
+                self.stack.append(unaryop.id)
+                self.visit(node.args[0])
+                self.stack.pop()
+            elif node.target in [torch.ops.aten.one_hot]:
+                one_hot_op = OneHotNodeDAG(
+                    self.element_accumulator, self.element_compute,
+                    self.elements_per_access, node
+                )
+                self.epilogue_tree.create_node(
+                    one_hot_op.tag, one_hot_op.id, data=one_hot_op,
+                    parent=self.stack[-1]
+                )
+                self.stack.append(one_hot_op.id)
+                self.visit(node.args[0])
+                self.stack.pop()
+            elif node.target == self.anchor.target:
                 name_node = AccumulatorNodeDAG(
                     self.element_accumulator, self.elements_per_access, node
                 )
                 self.epilogue_tree.create_node(
                     name_node.tag, name_node.id, 
                     data=name_node, parent=self.stack[-1])
-        elif node.op == "placeholder":
+
+        elif node.op in ["placeholder", "get_attr"]:
+            # get data type
+            source_type = torch_2_cutlass_type[node.meta['tensor_meta'].dtype]
             # need to check shape here
             operand_shape = node.meta['tensor_meta'].shape
             if len(operand_shape) >= 2:
@@ -466,7 +549,7 @@ class EpilogueASTDAG:
                     self.input_args[node.id] = ["row",]
                 elif (operand_shape[-1] == 1 and operand_shape[-2] == self.shape[-2]):
                     name_node = ColumnBroadcastNodeDAG(
-                        self.element_accumulator, self.element_compute, node
+                        self.element_accumulator, source_type, node, source_type
                     )
                     self.input_args[node.id] = ["column",]
                 elif (operand_shape[-1] == 1 and operand_shape[-2] == 1):
@@ -478,6 +561,9 @@ class EpilogueASTDAG:
                 if operand_shape[0] == self.shape[-1]:
                     name_node = RowBroadcastNodeDAG(
                         self.element_accumulator, self.element_compute, node)
+                elif operand_shape[0] == self.shape[-2]:
+                    name_node = ColumnBroadcastNodeDAG(
+                        self.element_accumulator, source_type, node, source_type)
                 elif operand_shape[0] == 1:
                     name_node = ScalarInputNodeDAG(node)
                 else:
@@ -497,10 +583,15 @@ class EpilogueASTDAG:
                 self.input_args[name_node.id] = ["scalar",]
             else:
                 raise NotImplementedError()
-
-            self.epilogue_tree.create_node(
-                name_node.tag, name_node.id, 
-                data=name_node, parent=self.stack[-1])
+            try:
+                self.epilogue_tree.create_node(
+                    name_node.tag, name_node.id, 
+                    data=name_node, parent=self.stack[-1])
+            except:
+                # TODO: the "_2" is not very general
+                self.epilogue_tree.create_node(
+                    name_node.tag, name_node.id + "_2", 
+                    data=name_node, parent=self.stack[-1])
             self.args.append(node)
 
         if node in self.outputs:
@@ -512,7 +603,6 @@ class EpilogueASTDAG:
         visitor_args = []
         for child in node.successors(tree.identifier):
             visitor_args.append(self.get_arguments(tree, child, kwargs))
-        
         node.data.get_argument(visitor_args, kwargs)
         return node.data.argument
 
@@ -534,7 +624,8 @@ class EpilogueVisitTreeDAG(EpilogueVisitTree):
         )
 
         tree = function.epilogue_tree
-        tree.show()
+        if node.target == torch.ops.aten._softmax:
+            tree.show()
         self.tree = tree
         self.args = function.args
         self.root = function.root
@@ -543,6 +634,9 @@ class EpilogueVisitTreeDAG(EpilogueVisitTree):
         function.pass_binary_2_unary(self.tree, self.tree.root)
         function.pass_inject_reduction(self.tree, self.tree.root)
         function.pass_inject_epilogue_op(self.tree, self.tree.root)
+
+        if node.target == torch.ops.aten._softmax:
+            tree.show()
 
         visitor = self.tree.get_node(self.tree.root).data.epilogue_node
         self.visitor = visitor

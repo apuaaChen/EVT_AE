@@ -10,26 +10,45 @@ import nvtx
 #
 ################################################################################
 
-def get_softmax_arguments():
+def get_softmax_arguments(epilogue_functor):
+
+    _EpilogueOutputOpParams = epilogue_functor.epilogue_type
+
+    # class _EpilogueArguments(ctypes.Structure):
+    #     _fields_ = [
+    #         ("ptr_input", ctypes.c_void_p),
+    #         ("ptr_output", ctypes.c_void_p),
+    #         ("problem_size", MatrixCoord_),
+    #     ]
+    #     def __init__(self, input, output, problem_size) -> None:
+    #         assert isinstance(input, torch.Tensor)
+    #         self.ptr_input = int(TorchFrontend.argument(input))
+    #         assert isinstance(output, torch.Tensor)
+    #         self.ptr_output = int(TorchFrontend.argument(output))
+    #         self.problem_size = MatrixCoord_(problem_size[0], problem_size[1])
+
 
     class _SoftmaxArguments(ctypes.Structure):
         _fields_ = [
             ("ptr_input", ctypes.c_void_p),
-            ("ptr_output", ctypes.c_void_p),
             ("problem_size", MatrixCoord_),
+            ("ptr_input_2", ctypes.c_void_p),
+            ("problem_size_2", MatrixCoord_),
+            ("epilogue_args", _EpilogueOutputOpParams)
         ]
     
-    return _SoftmaxArguments
+    return _SoftmaxArguments, _EpilogueOutputOpParams
 
 class SoftmaxArguments:
     def __init__(
         self, operation: 'SoftmaxOperation', problem_size: 'list[int]', 
-        input: 'Tensor', output: 'Tensor', **kwargs) -> None:
+        input: 'Tensor', output_op: 'Tensor', **kwargs) -> None:
         # get pointers
         assert isinstance(input, torch.Tensor)
         self.ptr_input = TorchFrontend.argument(input)
-        assert isinstance(output, torch.Tensor)
-        self.ptr_output = TorchFrontend.argument(output)
+        self.output_op = output_op
+        # assert isinstance(output, torch.Tensor)
+        # self.ptr_output = TorchFrontend.argument(output)
 
         self.operation = operation
         self.problem_size = problem_size
@@ -39,8 +58,11 @@ class SoftmaxArguments:
     def get_arguments(self):
 
         self.arguments = self.operation.argument_type(
-            int(self.ptr_input), int(self.ptr_output),
-            MatrixCoord_(self.problem_size[0], self.problem_size[1])
+            int(self.ptr_input), 
+            MatrixCoord_(self.problem_size[0], self.problem_size[1]),
+            int(self.ptr_input), 
+            MatrixCoord_(self.problem_size[0], self.problem_size[1]),
+            self.output_op
         )
 
     def initialize(self):
@@ -108,7 +130,7 @@ ${operation_name}(${operation_name}${operation_suffix}::Params params) {
 
         self.emitter = EmitSoftmaxUniversalInstance('_type')
 
-        self.argument_type = get_softmax_arguments()
+        self.argument_type, self.epilogue_type = get_softmax_arguments(operation.epilogue_functor)
         self.argtype = [
             ctypes.POINTER(self.argument_type)
         ]
@@ -169,6 +191,7 @@ class SoftmaxOperation:
         self.rt_module = SoftmaxRT(self)
 
         self.argument_type = self.rt_module.argument_type
+        self.epilogue_type = self.rt_module.epilogue_type
 
     
     def procedural_name(self):
@@ -194,36 +217,18 @@ class EmitSoftmaxUniversalInstance:
     def __init__(self, operation_suffix='') -> None:
         self.operation_suffix = operation_suffix
         self.includes = [
+            "softmax/fake_device.h",
             "cutlass/cutlass.h",
             "cutlass/numeric_types.h",
             "cutlass/arch/arch.h",
             "cutlass/arch/mma.h",
             "cutlass/layout/matrix.h",
             "epilogue/epilogue_visitor_generic.h",
-            "softmax/kernel/default_softmax_universal.h"
+            "softmax/kernel/default_softmax_universal.h",
+            "softmax/kernel/softmax_universal_with_visitor.h",
+            "softmax/epilogue/epilogue_with_visitor.h"
         ]
 
-#         self.cutlass_template_visitor = """
-
-# using ${operation_name}_default =
-#     typename cutlass::softmax::kernel::DefaultSoftmaxUniversal<
-#         ${element_input}, ${element_output}, ${element_accumulator}>::SoftmaxKernel;
-
-# ${epilogue_visitor}
-
-# using ${operation_name}_Epilogue = typename cutlass::epilogue::threadblock::SoftmaxEpilogueVisitor<
-#     ${operation_name}_EpilogueVisitor>;
-
-# using ${operation_name}_base = 
-#     cutlass::softmax::kernel::SoftmaxUniversalwithEpilogueVisitor<
-#         ${element_input}, ${element_output}, ${element_accumulator},
-#         ${operation_name}_Epilogue
-#     >;
-
-# // Define named type
-# struct ${operation_name}${operation_suffix} :
-#     public ${operation_name}_base { };
-# """
         self.cutlass_template_visitor = """
 using ${operation_name}_default =
     typename cutlass::softmax::kernel::DefaultSoftmaxUniversal<
@@ -237,7 +242,16 @@ using ${operation_name}_default =
 
 ${epilogue_visitor}
 
-using ${operation_name}_base = ${operation_name}_default;
+using ${operation_name}_Epilogue = typename cutlass::softmax::threadblock::EpilogueWithVisitorFromExistingEpilogue<
+    ${operation_name}_EpilogueVisitor,
+    typename ${operation_name}_default::Epilogue>::Epilogue;
+
+/// using ${operation_name}_base = ${operation_name}_default;
+using ${operation_name}_base = 
+    cutlass::softmax::kernel::SoftmaxUniversalwithEpilogueVisitor<
+        typename ${operation_name}_default::Reduction,
+        ${operation_name}_Epilogue
+    >;
 
 // Define named type
 struct ${operation_name}${operation_suffix} :

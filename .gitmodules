@@ -7,3 +7,6 @@
 [submodule "Codegen/compiler/pybind11"]
 	path = Codegen/compiler/pybind11
 	url = https://github.com/pybind/pybind11.git
+[submodule "thirdparty/AITemplate"]
+	path = thirdparty/AITemplate
+	url = https://github.com/facebookincubator/AITemplate.git

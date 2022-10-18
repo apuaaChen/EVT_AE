@@ -61,6 +61,7 @@ operators = {
 
 
 class UnaryNodeDAG(UnaryNode):
+    cnt = 0
     def __init__(self, element_accumulator, element_compute, 
         elements_per_access, node, args, element_ptr=None) -> None:
         #
@@ -71,10 +72,10 @@ class UnaryNodeDAG(UnaryNode):
         else:
             raise TypeError
         self.tag = "Unary" + self.op + str(UnaryNode.cnt)
-        self.id = self.op + str(UnaryNode.cnt)
+        self.id = self.op + str(UnaryNodeDAG.cnt)
         self.args = args
         self.element_ptr = element_ptr
-        UnaryNode.cnt += 1
+        UnaryNodeDAG.cnt += 2
 
         self.type = "tensor"
 
@@ -106,6 +107,7 @@ class OneHotNodeDAG(OneHotNode):
         return super().get_argument(visitor_args, kwargs)
 
 class BinOpNodeDAG(BinOpNode):
+    cnt = 1
     def __init__(
         self, element_accumulator, element_compute, 
         elements_per_access, node) -> None:
@@ -114,7 +116,7 @@ class BinOpNodeDAG(BinOpNode):
         self.tag = "Binary" + self.op + str(BinOpNodeDAG.cnt)
         self.id = self.op + str(BinOpNodeDAG.cnt)
         self.args = None
-        BinOpNodeDAG.cnt += 1
+        BinOpNodeDAG.cnt += 2
 
         self.type = "tensor"
 
@@ -373,7 +375,7 @@ class EpilogueASTDAG:
                     torch.ops.aten.sum,]):
                     # TODO: this condition is to filter non-reduction dim 
                     # It is not regious for things like -1
-                    if usr.args[1] != self.anchor.args[1]: continue
+                    if usr.args[1][0] != self.anchor.args[1]: continue
                     if usr not in self.root_candidates.keys():
                         self.root_candidates[usr] = []
                 else:
@@ -546,15 +548,15 @@ class EpilogueASTDAG:
                 elif (operand_shape[-1] == self.shape[-1] and operand_shape[-2] == 1):
                     name_node = RowBroadcastNodeDAG(
                         self.element_accumulator, self.element_compute, node)
-                    self.input_args[node.id] = ["row",]
+                    self.input_args[name_node.id] = ["row",]
                 elif (operand_shape[-1] == 1 and operand_shape[-2] == self.shape[-2]):
                     name_node = ColumnBroadcastNodeDAG(
                         self.element_accumulator, source_type, node, source_type
                     )
-                    self.input_args[node.id] = ["column",]
+                    self.input_args[name_node.id] = ["column",]
                 elif (operand_shape[-1] == 1 and operand_shape[-2] == 1):
                     name_node = ScalarInputNodeDAG(node)
-                    self.input_args[node.id] = ["scalar"]
+                    self.input_args[name_node.id] = ["scalar"]
                 else:
                     raise NotImplementedError()
             elif len(operand_shape) == 1:

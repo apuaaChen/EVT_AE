@@ -55,7 +55,7 @@ def extract_factor(node):
                 factor_n, factor_d = extract_factor(node.args[0])
                 new_factor_n = []
                 new_factor_d = []
-                redution_dim = node.args[1]
+                redution_dim = node.args[1][0]
                 for factor in factor_n:
                     factor_shape = get_shape(factor)
                     try:

@@ -17,7 +17,7 @@ pycutlass.compiler.nvcc()
 
 from functorch.compile import aot_function, aot_module, compiled_function
 from functorch import make_functional_with_buffers
-from functorch._src.aot_autograd import _is_primal, _extract_fwd_bwd_outputs, _extract_graph_with_inputs_outputs, _extract_graph_with_inputs_outputs, _extract_fwd_bwd_modules
+from functorch._src.partitioners import _is_primal, _extract_fwd_bwd_outputs, _extract_graph_with_inputs_outputs, _extract_graph_with_inputs_outputs, _extract_fwd_bwd_modules
 from passes import *
 from pass_manager import *
 
@@ -149,7 +149,8 @@ hidden_size = 1024
 vocab_size = 32320
 
 # load operand
-input = torch.load('/data/datasets/users/zdchen/input.pt').to("cuda").to(torch.float).requires_grad_(True)
+# input = torch.load('/data/datasets/users/zdchen/input.pt').to("cuda").to(torch.float).requires_grad_(True)
+input = torch.randn(size=(28, 128, 1024), dtype=torch.float, requires_grad=True, device="cuda")
 input.retain_grad()
 target = torch.load('/data/datasets/users/zdchen/target.pt').to("cuda").requires_grad_(False)
 input_sparse = input.clone().detach().requires_grad_(True)

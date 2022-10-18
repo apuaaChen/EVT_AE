@@ -10,3 +10,6 @@
 [submodule "thirdparty/AITemplate"]
 	path = thirdparty/AITemplate
 	url = https://github.com/facebookincubator/AITemplate.git
+[submodule "/workspace/sparseTraining/thirdparty/FlexFlow"]
+	path = /workspace/sparseTraining/thirdparty/FlexFlow
+	url = https://github.com/flexflow/FlexFlow.git

@@ -15,7 +15,7 @@
 ################################################################################
 import torch
 from nodes import *
-from functorch._src.aot_autograd import _is_primal, _is_tangent, _extract_graph_with_inputs_outputs
+from functorch._src.partitioners import _is_primal, _is_tangent, _extract_graph_with_inputs_outputs
 from passes.print_graph import pass_print_graph
 from passes.extract_common_factor import extract_factor
 
@@ -182,6 +182,8 @@ def propagate_constant_folding(module, graph):
             if len(parent.users) != 1: continue
             # get reduction dimension
             reduction_dim = node.args[1]
+            if len(reduction_dim) == 1:
+                reduction_dim = node.args[1][0]
             # get the length of reduction
             reduction_length = 1
             try:

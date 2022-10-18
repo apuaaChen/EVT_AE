@@ -7,6 +7,8 @@ def pre_partition_optimization(joint_module):
     # get graph
     graph = joint_module.graph
 
+    pass_suffix_elimination(joint_module, graph)
+
     # pass: eliminate expand
     pass_eliminate_transparent_node(
         joint_module, graph, 
@@ -22,11 +24,11 @@ def pre_partition_optimization(joint_module):
 
     # pass: composed op breakdown
     pass_composed_op_breakdown(joint_module, graph)
-
+# 
     # # pass: remove duplicated nodes
     pass_remove_duplicated_node(joint_module, graph)
 
-    # pass: merge common factor of add / sub operators
+    # # pass: merge common factor of add / sub operators
     pass_merge_common_factor(joint_module, graph)
 
     # pass: update attributes
@@ -35,16 +37,16 @@ def pre_partition_optimization(joint_module):
     # pass: constant reduction
     pass_constant_folding(joint_module, graph)
 
-    # pass: update attributes
+    # # pass: update attributes
     pass_update_attributes(joint_module, graph)
 
-    # pass: strength reduction
+    # # pass: strength reduction
     pass_stength_reduction(joint_module, graph)
 
-    # pass: gemm fusion
+    # # pass: gemm fusion
     pass_gemm_fusion(joint_module, graph)
 
-    # pass: softmax fusion
+    # # pass: softmax fusion
     pass_softmax_fusion(joint_module, graph)
 
     # recompile graph

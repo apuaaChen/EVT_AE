@@ -173,7 +173,7 @@ def inject_sum(inject_point, graph, parent_node, dim, tmp_node=None):
     if tmp_node is None: tmp_node = parent_node
 
     graph.inserting_after(inject_point)
-    sum_node = graph.call_function(torch.ops.aten.sum, args=(tmp_node, dim))
+    sum_node = graph.call_function(torch.ops.aten.sum, args=(tmp_node, [dim,]))
     sum_node.meta = {}
     shape = list(parent_node.meta['tensor_meta'].shape)
     if dim < 0:

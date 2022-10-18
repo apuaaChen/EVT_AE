@@ -15,6 +15,7 @@
 ################################################################################
 from autotuner.auto_tuner import Autotuner
 autotuner = Autotuner(verbose=True)
+from passes.suffix_elimination import pass_suffix_elimination
 from passes.print_graph import pass_print_graph
 from passes.eliminate_transparent import pass_eliminate_transparent_node
 from passes.eliminate_loss import pass_loss_elimination

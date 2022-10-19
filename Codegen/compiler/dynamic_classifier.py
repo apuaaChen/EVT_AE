@@ -276,7 +276,7 @@ assert torch.sum(torch.isclose(input_sparse.grad, input.grad, rtol=5e-2)) / inpu
 ################################################################################
 
 
-for i in range(10):
+for i in range(40):
     optimizer.zero_grad()
     with nvtx.annotate("forward"):
         loss_ref = model(input, target)
@@ -286,7 +286,7 @@ for i in range(10):
     with nvtx.annotate("update"):
         optimizer.step()
 
-for i in range(10):
+for i in range(40):
     optimizer_sparse.zero_grad()
     with nvtx.annotate("sp forward"):
         loss_sparse = model_sparse(input_sparse, target)

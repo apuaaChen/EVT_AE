@@ -152,9 +152,8 @@ class FusedGEMM:
                 A=lhs, B=rhs, C=lhs, D=lhs,
                 output_op=output_op, gemm_mode=cutlass.gemm.Mode.Gemm
             )
-            self.operation.run(arguments)
-            # arguments.sync()
-            # output_op.sync()
+            s1 = torch.cuda.current_stream()
+            self.operation.run(arguments, stream=s1.cuda_stream)
 
             results = []
             for output_node in self.outputs:

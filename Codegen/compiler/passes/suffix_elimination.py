@@ -36,7 +36,8 @@ suffix_dict = {
     torch.ops.aten.unsqueeze.default: torch.ops.aten.unsqueeze,
     torch.ops.aten.nll_loss_backward.default: torch.ops.aten.nll_loss_backward,
     torch.ops.aten._log_softmax_backward_data.default: torch.ops.aten._log_softmax_backward_data,
-    torch.ops.aten.nll_loss_forward.default: torch.ops.aten.nll_loss_forward
+    torch.ops.aten.nll_loss_forward.default: torch.ops.aten.nll_loss_forward,
+    torch.ops.aten.addmm.default: torch.ops.aten.addmm
 }
 
 def pass_suffix_elimination(module, graph):
@@ -97,6 +98,11 @@ def pass_suffix_elimination(module, graph):
                     scalar_node.meta = {}
                     scalar_node.meta['tensor_meta'] = node.meta['tensor_meta']._replace()
                     node.replace_all_uses_with(scalar_node)
+        elif node.target == torch.ops.aten.addmm:
+            bias, lhs, rhs = node.args
+            mm_node = inject_mm(node, graph, lhs, rhs)
+            add_node = inject_add(mm_node, graph, mm_node, bias)
+            node.replace_all_uses_with(add_node)
 
     graph.eliminate_dead_code()
     graph.lint()

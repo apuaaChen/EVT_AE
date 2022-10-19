@@ -109,7 +109,8 @@ class FusedSoftmax:
                 operation=self.operation, problem_size=kwargs["problem_size"],
                 input=args[-3], output_op=output_op
             )
-            self.operation.run(arguments)
+            s1 = torch.cuda.current_stream()
+            self.operation.run(arguments, stream=s1.cuda_stream)
 
             # TODO: the code below emulates the epilogue function
             # primals_4 = args[1]

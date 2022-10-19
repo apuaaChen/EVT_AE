@@ -197,14 +197,15 @@ class SoftmaxOperation:
     def procedural_name(self):
         return "softmax_kernel"
     
-    def run(self, arguments: SoftmaxArguments) -> cuda.CUresult:
+    def run(self, arguments: SoftmaxArguments, stream=cuda.CUstream(0)) -> cuda.CUresult:
         """
         Configure and launch the cuda kernel with input arguments
         """
         err = self.rt_module.run(
             arguments.host_workspace,
             arguments.device_workspace,
-            arguments.launch_config)
+            arguments.launch_config,
+            stream)
 
         if err != cuda.CUresult.CUDA_SUCCESS:
             raise RuntimeError('CUDA Error %s' % str(err))

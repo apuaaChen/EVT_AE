@@ -196,3 +196,27 @@ def inject_sub(inject_point, graph, lhs, rhs, tmp_lhs=None, tmp_rhs=None):
     sub_node.meta = {}
     sub_node.meta['tensor_meta'] = inject_point.meta['tensor_meta']._replace(shape=shape, dtype=dtype)
     return sub_node
+
+def inject_add(inject_point, graph, lhs, rhs, tmp_lhs=None, tmp_rhs=None):
+    if tmp_lhs is None: tmp_lhs = lhs
+    if tmp_rhs is None: tmp_rhs = rhs
+
+    graph.inserting_after(inject_point)
+    add_node = graph.call_function(torch.ops.aten.add, args=(tmp_lhs, tmp_rhs))
+    shape = get_broadcast_shape(lhs, rhs)
+    dtype = get_auto_type_conversion(lhs, rhs)
+    add_node.meta = {}
+    add_node.meta['tensor_meta'] = inject_point.meta['tensor_meta']._replace(shape=shape, dtype=dtype)
+    return add_node
+
+def inject_mm(inject_point, graph, lhs, rhs, tmp_lhs=None, tmp_rhs=None):
+    if tmp_lhs is None: tmp_lhs = lhs
+    if tmp_rhs is None: tmp_rhs = rhs
+
+    graph.inserting_after(inject_point)
+    mm_node = graph.call_function(torch.ops.aten.mm, args=(tmp_lhs, tmp_rhs))
+    shape = (lhs.meta['tensor_meta'].shape[0], rhs.meta['tensor_meta'].shape[1])
+    dtype = get_auto_type_conversion(lhs, rhs)
+    mm_node.meta = {}
+    mm_node.meta['tensor_meta'] = inject_point.meta['tensor_meta']._replace(shape=shape, dtype=dtype)
+    return mm_node

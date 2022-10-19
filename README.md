@@ -3,10 +3,10 @@
 ## Launch docker
 
 ```shell
-docker run --gpus all --name zdchen_nv_torch_2 -v /data:/data -it -p 8128:22 nvcr.io/nvidia/pytorch:22.02-py3
+ocker run --gpus all --name zdchen_nv_torch_4 -v /data:/data -v ~/projects:/workspace -it -p 8125:22 nvcr.io/nvidia/pytorch:22.08-py3
 ```
 
-We use NGC pytorch::22.02-py3 and functorch [3f9ac9d](https://github.com/pytorch/functorch/commit/3f9ac9d8b3264da8d9b657e679c55c8e709e814b) due to the compatibility issue, as discussed [here](https://github.com/pytorch/functorch/issues/663)
+We use NGC pytorch::22.08-py3 and functorch 0.3.0a0+f4a3d5a.
 
 ## Setup user & ssh
 
@@ -43,9 +43,12 @@ passwd
 **Add the following two lines**
 
 ```
-export PATH=/usr/local/nvm/versions/node/v16.6.1/bin:/opt/conda/lib/python3.8/site-packages/torch_tensorrt/bin:/opt/conda/bin:/usr/local/mpi/bin:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/ucx/bin:/opt/tensorrt/bin
+export PATH=/usr/local/nvm/versions/node/v16.15.1/bin:/opt/conda/lib/python3.8/site-packages/torch_tensorrt/bin:/opt/conda/bin:/usr/local/mpi/bin:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/ucx/bin:/opt/tensorrt/bin
 
-export LD_LIBRARY_PATH=/opt/conda/lib/python3.8/site-packages/torch/lib:/opt/conda/lib/python3.8/site-packages/torch_tensorrt/lib:/usr/local/cuda/compat/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
+export LD_LIBRARY_PATH=/usr/local/nvm/versions/node/v16.15.1/bin:/opt/conda/lib/python3.8/site-packages/torch_tensorrt/bin:/opt/conda/bin:/usr/local/mpi/bin:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/ucx/bin:/opt/tensorrt/bin
+
+export CUTLASS_PATH=/workspace/cutlass
+export CUDA_INSTALL_PATH=/usr/local/cuda
 ```
 
 ```
@@ -57,7 +60,7 @@ source ~/.bashrc
 **Install functorch**
 
 ```
- pip install git+https://github.com/pytorch/functorch.git@3f9ac9d8b3264da8d9b657e679c55c8e709e814b
+pip install git+https://github.com/pytorch/functorch.git@f4a3d5af55897914d516b1329abf2e7b9e95082d
 ```
 
 **Install sparseTraining**
@@ -73,4 +76,15 @@ Add the following file to `/opt/conda/lib/python3.8/site-packages/torch/include/
 **Install graphviz**
 ```
 apt install graphviz
+```
+
+**Install TASO**: 
+Follow instructions on [INSTALL TASO](https://github.com/jiazhihao/TASO/blob/master/INSTALL.md)
+
+***
+### Dependencies
+```shell
+pip install 'git+https://github.com/NVIDIA/dllogger'
+pip install subword-nmt
+pip install pytablewriter
 ```

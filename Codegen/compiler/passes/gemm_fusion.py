@@ -179,7 +179,6 @@ permute_2_layout = {
 class FusedBMM:
     __name__ = "cutlass_bmm_with_visitor"
     def __init__(self, node) -> None:
-        print("==========bmm==========")
         self.node = node
         assert node.target == torch.ops.aten.bmm
         lhs_node = node.args[0]
@@ -262,7 +261,6 @@ class FusedBMM:
         self.problem_size = cutlass.gemm.GemmCoord(M, N, K)
         self.batch = batch
 
-        print(self.operation.rt_module.emit())
         pycutlass.compiler.add_module([self.operation,])
 
         self.args = self.epilogue_functor.args + list(node.args)
@@ -352,22 +350,6 @@ def pass_gemm_fusion(module, graph):
                     graph.inserting_after(get_item_node)
                     output_node.replace_all_uses_with(get_item_node)
                 break
-
-            # if node.target == torch.ops.aten._softmax:
-            #     print("============Softmax===============")
-            #     epilogue_functor = LinearCombination(
-            #         element_output=cutlass.float16, epilogue_vector_length=8,
-            #         element_accumulator=cutlass.float32,
-            #         element_epilogue=cutlass.float32)
-            #     epilogue_tree = EpilogueVisitTreeDAG(
-            #         elementwise_functor=epilogue_functor, 
-            #         tile_description=None, 
-            #         element_accumulator=cutlass.float32,
-            #         elements_per_access=8,
-            #         element_compute=cutlass.float32, element_output=cutlass.float16
-            #     )
-
-            #     epilogue_tree.initialize(node)
                 
     graph.eliminate_dead_code()
     graph.lint()

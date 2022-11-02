@@ -20,7 +20,7 @@ import torch.fx as fx
 from treelib import Tree
 from nodes import *
 from functools import reduce
-from test_iterator import *
+from passes.iterator import *
 
 
 torch_2_cutlass_type = {
@@ -241,14 +241,12 @@ class EpilogueASTDAG:
             print(self.root)
 
         self.outputs = []
-        if anchor.target == torch.ops.aten.bmm:
+        if anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm]:
             self.ast_top_down_parsing_bmm(self.root, parse_output=True)
         else:
             self.ast_top_down_parsing(self.root, parse_output=True)
 
         if self.anchor.target == torch.ops.aten._softmax:
-            print(self.outputs)
-        if self.anchor.target == torch.ops.aten.bmm:
             print(self.outputs)
         self.stack = []
         self.reduction_source = {}
@@ -366,8 +364,13 @@ class EpilogueASTDAG:
                     node.meta['tensor'].get_node_tensor_bottom_up(usr)
                     self.get_candidate_root_bmm(usr)
                 except:
-                    # the iterator is not broadcastable
-                    self.root_candidates[node] = []
+                    if usr.target in [torch.ops.aten.view, torch.ops.aten._unsafe_view]:
+                        # the view nodes are exceptions
+                        self.root_candidates[usr] = []
+                        usr.meta['tensor'] = "output_view"
+                    else:
+                        # the iterator is not broadcastable
+                        self.root_candidates[node] = []
 
     def get_candidate_root(self, node):
         """
@@ -473,7 +476,8 @@ class EpilogueASTDAG:
                         self.outputs.append(node)
         if node.op == "call_function":
             try:
-                node.meta["tensor"].get_node_tensor_top_down(node)
+                if node.meta["tensor"] != "output_view":   
+                    node.meta["tensor"].get_node_tensor_top_down(node)
                 if node.target in [
                     torch.ops.aten.view, torch.ops.aten._unsafe_view, 
                     torch.ops.aten.unsqueeze, torch.ops.aten._to_copy]:
@@ -532,7 +536,13 @@ class EpilogueASTDAG:
                 IterVar("m", extend=self.anchor.meta["tensor_meta"].shape[1]),
                 IterVar("n", extend=self.anchor.meta["tensor_meta"].shape[2])]
             self.anchor.meta["tensor"] = Tensor(iter_vars)
-            
+            self.get_candidate_root_bmm(self.anchor)
+        elif self.anchor.target == torch.ops.aten.mm:
+            iter_vars = [
+                IterVar("m", extend=self.anchor.meta["tensor_meta"].shape[0]),
+                IterVar("n", extend=self.anchor.meta["tensor_meta"].shape[1])
+            ]
+            self.anchor.meta["tensor"] = Tensor(iter_vars)
             self.get_candidate_root_bmm(self.anchor)
         else:
             self.get_candidate_root(self.anchor)
@@ -546,13 +556,11 @@ class EpilogueASTDAG:
                         self.root_candidates[others].append(root)
                         self.root_candidates[root] = None
 
-        print(self.root_candidates)
-        if self.anchor.target == torch.ops.aten.bmm:
+        if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm]:
             root_to_remove = []
             for root in self.root_candidates.keys():
                 if self.root_candidates[root] is not None:
                     node_list = self.ast_top_down_parsing_bmm(root)
-                    print(node_list)
                     self.root_candidates[root] += node_list
                     if self.anchor not in self.root_candidates[root]:
                         self.root_candidates[root] = None
@@ -561,7 +569,6 @@ class EpilogueASTDAG:
                     root_to_remove.append(root)
             for root in root_to_remove:
                 self.root_candidates.pop(root)
-            print(self.root_candidates)
         else:
             root_to_remove = []
             for root in self.root_candidates.keys():
@@ -586,12 +593,11 @@ class EpilogueASTDAG:
             if cost > max_cost:
                 max_cost = cost
                 self.root = root
-        print(self.root)
 
     def visit(self, node):
-        if self.anchor.target == torch.ops.aten.bmm:
+        if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm]:
             if 'tensor' not in node.meta.keys():
-                raise RuntimeError("The node to fuse doesn't have tenspr attribute")
+                raise RuntimeError("The node to fuse doesn't have tensor attribute")
         if node in self.outputs:
             # visit the output node
             name_node = TensorOutputNodeDAG(self.element_accumulator, node)
@@ -659,12 +665,9 @@ class EpilogueASTDAG:
                     data=name_node, parent=self.stack[-1])
 
         elif node.op in ["placeholder", "get_attr"]:
-            if self.anchor.target == torch.ops.aten.bmm:
+            if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm]:
                 source_type = torch_2_cutlass_type[node.meta['tensor_meta'].dtype]
 
-                print("======visit======")
-                print(node)
-                print(node.meta['tensor'])
                 node_tensor = node.meta['tensor']
 
                 valid_iters = {
@@ -682,7 +685,6 @@ class EpilogueASTDAG:
                 # case 1: scalar
                 if valid_iters['b'] is None and valid_iters['m'] is None and valid_iters['n'] is None:
                     name_node = ScalarInputNodeDAG(node)
-                    print(valid_iters)
                 # case 2: row broadcast
                 elif valid_iters['m'] is None and valid_iters['n'] is not None:
                     name_node = RowBroadcastNodeDAG(

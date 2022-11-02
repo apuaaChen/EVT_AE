@@ -14,7 +14,7 @@
 # limitations under the License.
 ################################################################################
 from autotuner.auto_tuner import Autotuner
-autotuner = Autotuner(verbose=True)
+autotuner = Autotuner(verbose=True, load_model=False)
 from passes.suffix_elimination import pass_suffix_elimination
 from passes.print_graph import pass_print_graph
 from passes.eliminate_transparent import pass_eliminate_transparent_node
@@ -29,3 +29,5 @@ from passes.constant_folding import pass_constant_folding
 from passes.strength_reduction import pass_stength_reduction
 from passes.gemm_fusion import pass_gemm_fusion
 from passes.softmax_fusion import pass_softmax_fusion
+from passes.stream_manager import pass_assign_stream
+from passes.trans_2_permute import pass_trans_2_permute

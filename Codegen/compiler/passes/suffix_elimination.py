@@ -15,6 +15,7 @@
 ################################################################################
 import torch
 from nodes import *
+import operator
 
 ################################################################################
 # Graph-level pass to eliminate suffix
@@ -37,7 +38,40 @@ suffix_dict = {
     torch.ops.aten.nll_loss_backward.default: torch.ops.aten.nll_loss_backward,
     torch.ops.aten._log_softmax_backward_data.default: torch.ops.aten._log_softmax_backward_data,
     torch.ops.aten.nll_loss_forward.default: torch.ops.aten.nll_loss_forward,
-    torch.ops.aten.addmm.default: torch.ops.aten.addmm
+    torch.ops.aten.addmm.default: torch.ops.aten.addmm,
+    torch.ops.aten._to_copy.default: torch.ops.aten._to_copy,
+    torch.ops.aten.rsub.Scalar: torch.ops.aten.sub,
+    torch.ops.aten.arange.default: torch.ops.aten.arange,
+    torch.ops.aten.embedding.default:torch.ops.aten.embedding,
+    torch.ops.aten.native_layer_norm.default: torch.ops.aten.native_layer_norm,
+    torch.ops.aten.native_dropout.default: torch.ops.aten.native_dropout,
+    torch.ops.aten.transpose.int: torch.ops.aten.transpose,
+    torch.ops.aten.clone.default: torch.ops.aten.clone,
+    torch.ops.aten._unsafe_view.default: torch.ops.aten._unsafe_view,
+    operator.getitem: operator.getitem,
+    torch.ops.aten.permute.default: torch.ops.aten.permute,
+    torch.ops.aten.bmm.default: torch.ops.aten.bmm,
+    torch.ops.aten.div.Tensor: torch.ops.aten.div,
+    torch.ops.aten._softmax.default: torch.ops.aten._softmax,
+    torch.ops.aten.gelu.default: torch.ops.aten.gelu,
+    torch.ops.aten.slice.Tensor: torch.ops.aten.slice,
+    torch.ops.aten.select.int: torch.ops.aten.select,
+    torch.ops.aten.tanh.default: torch.ops.aten.tanh,
+    torch.ops.aten.nonzero.default: torch.ops.aten.nonzero,
+    torch.ops.aten.squeeze.default: torch.ops.aten.squeeze,
+    torch.ops.aten.index_select.default: torch.ops.aten.index_select,
+    torch.ops.aten.is_same_size.default: torch.ops.aten.is_same_size,
+    torch.ops.aten.native_layer_norm_backward.default: torch.ops.aten.native_layer_norm_backward,
+    torch.ops.aten.gelu_backward.default: torch.ops.aten.gelu_backward,
+    torch.ops.aten.new_empty.default: torch.ops.aten.new_empty,
+    torch.ops.aten.zero_.default: torch.ops.aten.zero_,
+    torch.ops.aten.index_add.default: torch.ops.aten.index_add,
+    torch.ops.aten.tanh_backward.default: torch.ops.aten.tanh_backward,
+    torch.ops.aten.select_backward.default: torch.ops.aten.select_backward,
+    torch.ops.aten.slice_backward.default: torch.ops.aten.slice_backward,
+    torch.ops.aten.native_dropout_backward.default: torch.ops.aten.native_dropout_backward,
+    torch.ops.aten._softmax_backward_data.default: torch.ops.aten._softmax_backward_data,
+    torch.ops.aten.embedding_dense_backward.default: torch.ops.aten.embedding_dense_backward
 }
 
 def pass_suffix_elimination(module, graph):

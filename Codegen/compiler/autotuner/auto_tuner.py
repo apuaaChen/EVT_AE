@@ -101,18 +101,18 @@ def generate_code_and_profile(
     )
     
     # warmup iterations
-    for _ in range(100):
+    for _ in range(200):
         operation.run(arguments)
     
     timer = GpuTimer()
 
     # profiling iterations
     timer.start()
-    for _ in range(100):
+    for _ in range(200):
         operation.run(arguments)
     timer.stop_and_wait()
 
-    return timer.duration(100)
+    return timer.duration(200)
 
 
 class ConfigCache:

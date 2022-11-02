@@ -13,7 +13,7 @@ We use NGC pytorch::22.08-py3 and functorch 0.3.0a0+f4a3d5a.
 **Add a user name to the container**
 
 ```shell
-adduser --home /home/username username
+adduser --home /home/chenzd15thu chenzd15thu
 ```
 
 and then follow the instructions.
@@ -87,4 +87,15 @@ Follow instructions on [INSTALL TASO](https://github.com/jiazhihao/TASO/blob/mas
 pip install 'git+https://github.com/NVIDIA/dllogger'
 pip install subword-nmt
 pip install pytablewriter
+```
+
+```shell
+cd $CUTLASS_PATH/tools/library/scripts/pycutlass && bash build.sh
+```
+
+```
+groupadd docker
+usermod -a -G docker chenzd15thu
+chgrp -R docker /workspace/bert/
+chmod -R g+rwx /workspace/bert/
 ```

@@ -89,7 +89,33 @@ def get_broadcast_shape(lhs, rhs):
     elif rhs_shape == () and lhs_shape != ():
         shape = lhs_shape
     else:
-        shape = tuple([max(l, r) for l, r in zip(list(lhs_shape), list(rhs_shape))])
+        if len(lhs_shape) == len(rhs_shape):
+            shape = tuple([max(l, r) for l, r in zip(list(lhs_shape), list(rhs_shape))])
+        else:
+            if len(lhs_shape) < len(rhs_shape):
+                short = list(lhs_shape)
+                long = list(rhs_shape)
+            else:
+                short = list(rhs_shape)
+                long = list(lhs_shape)
+            
+            shape = []
+            long_idx = 0
+            for s in short:
+                if s == 1:
+                    shape.append(long[long_idx])
+                    long_idx += 1
+                else:
+                    while (s != long[long_idx] and long[long_idx] != 1 and long_idx < len(long)):
+                        shape.append(long[long_idx])
+                        long_idx += 1
+                    if s == long[long_idx]:
+                        shape.append(long[long_idx])
+                    elif long_idx == 1:
+                        shape.append(s)
+                    else:
+                        raise NotImplementedError()
+                    long_idx += 1
     
     return shape
 
@@ -220,3 +246,13 @@ def inject_mm(inject_point, graph, lhs, rhs, tmp_lhs=None, tmp_rhs=None):
     mm_node.meta = {}
     mm_node.meta['tensor_meta'] = inject_point.meta['tensor_meta']._replace(shape=shape, dtype=dtype)
     return mm_node
+
+def inject_permute(inject_point, graph, input, dims, tmp_input=None):
+    if tmp_input is None: tmp_input = input
+
+    graph.inserting_after(inject_point)
+    permute_node = graph.call_function(torch.ops.aten.permute, args=(input, dims))
+    shape = [input.meta['tensor_meta'].shape[i] for i in dims]
+    permute_node.meta = {}
+    permute_node.meta['tensor_meta'] = inject_point.meta['tensor_meta']._replace(shape=shape)
+    return permute_node

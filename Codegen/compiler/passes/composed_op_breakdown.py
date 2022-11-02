@@ -33,14 +33,31 @@ def pass_composed_op_breakdown(module, graph):
                 log_node = inject_log(softmax_node, graph, softmax_node)
                 node.replace_all_uses_with(log_node)
             elif node.target == torch.ops.aten.nll_loss_backward:
+                if node.args[4] == 1:
+                    reduction = "mean"
+                elif node.args[4] == 2:
+                    reduction = "sum"
+                print(node.args)
                 label_node = node.args[2]
                 one_hot_node = inject_onehot(node, graph, node.meta["tensor_meta"].shape[1], label_node)
                 neg_node = inject_neg(one_hot_node, graph, one_hot_node)
                 mul_node = inject_mul(neg_node, graph, neg_node, node.args[0])
-                ne_node = inject_ne(mul_node, graph, label_node, node.args[5])
-                unsqueeze_node = inject_unsqueeze(ne_node, graph, ne_node, 1)
-                mul_mask_node = inject_mul(unsqueeze_node, graph, mul_node, unsqueeze_node)
-                node.replace_all_uses_with(mul_mask_node)
+                if node.args[5] > 0:
+                    ne_node = inject_ne(mul_node, graph, label_node, node.args[5])
+                    unsqueeze_node = inject_unsqueeze(ne_node, graph, ne_node, 1)
+                    mul_mask_node = inject_mul(unsqueeze_node, graph, mul_node, unsqueeze_node)
+                    if reduction == "mean":
+                        div_node = inject_div(mul_mask_node, graph, mul_node, node.meta["tensor_meta"].shape[0])
+                        node.replace_all_uses_with(div_node)
+                    else:
+                        node.replace_all_uses_with(mul_mask_node)
+                        node.replace_all_uses_with(mul_mask_node)
+                else:
+                    if reduction == "mean":
+                        div_node = inject_div(mul_node, graph, mul_node, node.meta["tensor_meta"].shape[0])
+                        node.replace_all_uses_with(div_node)
+                    else:
+                        node.replace_all_uses_with(mul_node)
             elif node.target == torch.ops.aten._log_softmax_backward_data:
                 sum_node = inject_sum(node, graph, node.args[0], 1)
                 unsqueeze_node = inject_unsqueeze(sum_node, graph, sum_node, 1)

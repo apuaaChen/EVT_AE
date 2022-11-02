@@ -13,3 +13,9 @@
 [submodule "/workspace/sparseTraining/thirdparty/FlexFlow"]
 	path = /workspace/sparseTraining/thirdparty/FlexFlow
 	url = https://github.com/flexflow/FlexFlow.git
+[submodule "/workspace/sparseTraining/thirdparty/DeepLearningExample"]
+	path = /workspace/sparseTraining/thirdparty/DeepLearningExample
+	url = https://github.com/NVIDIA/DeepLearningExamples.git
+[submodule "/workspace/sparseTraining/thirdparty/SSGC"]
+	path = /workspace/sparseTraining/thirdparty/SSGC
+	url = https://github.com/allenhaozhu/SSGC.git

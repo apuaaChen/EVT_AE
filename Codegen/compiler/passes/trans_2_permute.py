@@ -13,26 +13,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 ################################################################################
+import torch
 from nodes import *
 
-
 ################################################################################
-# Graph-level pass to merge duplicated nodes
+# Graph-level pass to replase tranpose node on 3D tensors with permutation
+# This simplifies the kernel fusion interface
 ################################################################################
+def pass_trans_2_permute(module, graph):
+    for node in graph.nodes:
+        if node.target == torch.ops.aten.transpose:
+            shape = list(node.meta['tensor_meta'].shape)
+            if len(shape) >= 3:
+                dim = [i for i in range(len(shape))]
+                dim[node.args[1]] = node.args[2]
+                dim[node.args[2]] = node.args[1]
 
-def pass_remove_duplicated_node(module, graph):
-    modified = True
-    while(modified):
-        modified = False
-        for i, u in enumerate(graph.nodes):
-            for j, v in enumerate(graph.nodes):
-                if i == j: continue
-                if node_equal(u, v):
-                    v.replace_all_uses_with(u)
-                    graph.eliminate_dead_code()
-                    modified = True
-                    break
-            if modified == True:
-                break
-    
-    graph.lint()
+                permute_node = inject_permute(node, graph, node.args[0], dims=dim)
+                node.replace_all_uses_with(permute_node)
+                graph.erase_node(node)
+
+
+
+                

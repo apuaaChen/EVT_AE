@@ -146,7 +146,9 @@ public:
 
         if (column_ < extent_column_){
             *frag_ptr = *pointer_;
-        } 
+        } else {
+            frag.fill(Element(-1e+6));
+        }
 
         pointer_ += ShapeVec::kColumn;
         column_ += Shape::kColumn;

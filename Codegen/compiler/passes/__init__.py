@@ -31,3 +31,4 @@ from passes.gemm_fusion import pass_gemm_fusion
 from passes.softmax_fusion import pass_softmax_fusion
 from passes.stream_manager import pass_assign_stream
 from passes.trans_2_permute import pass_trans_2_permute
+from passes.mark_epilogue_permute import pass_mark_epilogue_permutations

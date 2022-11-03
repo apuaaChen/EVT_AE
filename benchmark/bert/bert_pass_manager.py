@@ -47,6 +47,9 @@ def pre_partition_optimization(joint_module):
     # # pass: strength reduction
     # pass_stength_reduction(joint_module, graph)
 
+    # pass: mark permutation in epilogue
+    pass_mark_epilogue_permutations(joint_module, graph)
+
     # pass: gemm fusion
     pass_gemm_fusion(joint_module, graph)
 

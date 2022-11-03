@@ -1,6 +1,7 @@
 from copy import copy
 import torch
 import operator
+import numpy as np
 
 
 class IterVar:
@@ -33,7 +34,7 @@ class IterFactor:
 
 
 class Tensor:
-    def __init__(self, iter_vars=None, dims=None) -> None:
+    def __init__(self, iter_vars=None, dims=None, valid=True) -> None:
         # inject 
         if iter_vars is not None and dims is None:
             self.dims = []
@@ -50,6 +51,8 @@ class Tensor:
             self.dims = dims
         else:
             raise NotImplementedError()
+        
+        self.valid = valid
     
     def __str__(self):
         iter_str = ""
@@ -63,6 +66,7 @@ class Tensor:
         return tensor_str
     
     def view(self, new_shape) -> None:
+        assert self.valid
         new_strides = []
         stride = 1
         for dim in reversed(new_shape):
@@ -72,13 +76,13 @@ class Tensor:
 
         # get new dims
         new_dims = []
-
         for stride, extend in zip(new_strides, new_shape):
             new_dim = []
             for dim in self.dims:
                 for iter_factor in dim:
                     if iter_factor.factor < 1:
-                        raise NotImplementedError()
+                        return Tensor(dims=self.dims, valid=False)
+                        # raise NotImplementedError()
                     factor = iter_factor.factor * iter_factor.stride / stride
                     mod = extend
                     # check 1: if iter_var / factor is always < 1
@@ -94,12 +98,20 @@ class Tensor:
                             mod=mod, stride=stride)
                     )
             if len(new_dim) > 1:
-                raise NotImplementedError("currently do not support multiple iterator in the same dimensionn")
+                return Tensor(dims=self.dims, valid=False)
             new_dims.append(new_dim)
         new_tensor = Tensor(dims=new_dims)
         return new_tensor
     
+    def permute(self, permute) -> None:
+        assert self.valid
+        assert len(permute) == len(self.dims)
+        new_tensor_dims = [self.dims[i] for i in permute]
+        new_tensor = Tensor(dims=new_tensor_dims)
+        return new_tensor
+    
     def debroadcast(self, new_shape) -> 'Tensor':
+        assert self.valid
         new_tensor_dims = []
         new_stride = 1
         for dim, shape in zip(reversed(self.dims), reversed(new_shape)):
@@ -117,11 +129,13 @@ class Tensor:
         return new_tensor
     
     def get_index(self, idx) -> 'Tensor':
+        assert self.valid
         new_tensor_dims = [self.dims[idx]]
         new_tensor = Tensor(dims=new_tensor_dims)
         return new_tensor
     
     def squeeze(self, squeeze_idx) -> 'Tensor':
+        assert self.valid
         new_tensor_dims = []
         for idx, dim in enumerate(self.dims):
             if len(dim) > 1:
@@ -146,7 +160,7 @@ class Tensor:
                     debroadcast_tensor = self.debroadcast(list(arg.meta["tensor_meta"].shape))
                     arg.meta['tensor'] = debroadcast_tensor
             node.meta["tensor"] = copy(self)
-        elif node.target in [torch.ops.aten.neg, torch.ops.aten.native_dropout]:
+        elif node.target in [torch.ops.aten.neg, torch.ops.aten.native_dropout, torch.ops.aten.clone]:
             node.meta["tensor"] = copy(self)
         elif node.target in [operator.getitem]:
             if len(node.meta["tensor_meta"].shape) != len(self.dims):
@@ -155,6 +169,8 @@ class Tensor:
                 if dim[0].mod != node_dim:
                     raise NotImplementedError()
             node.meta["tensor"] = copy(self)
+        elif node.target in [torch.ops.aten.permute]:
+            node.meta["tensor"] = self.permute(node.args[1])
         else:
             raise NotImplementedError("unsupported operator")
     
@@ -168,10 +184,15 @@ class Tensor:
             input = node.args[0]
             if 'tensor' in input.meta.keys(): return
             input.meta['tensor'] = self.view(new_shape=list(input.meta['tensor_meta'].shape))
-        elif node.target in [torch.ops.aten._to_copy, torch.ops.aten.neg, torch.ops.aten.native_dropout, operator.getitem, torch.ops.aten.ne]:
+        elif node.target in [torch.ops.aten._to_copy, torch.ops.aten.neg, torch.ops.aten.native_dropout, operator.getitem, torch.ops.aten.ne, torch.ops.aten.clone]:
             input = node.args[0]
             if 'tensor' in input.meta.keys(): return
             input.meta['tensor'] = copy(self)
+        elif node.target in [torch.ops.aten.permute]:
+            input = node.args[0]
+            if 'tensor' in input.meta.keys(): return
+            permute = node.args[1]
+            input.meta['tensor'] = self.permute(list(np.argsort(permute)))
         elif node.target in [torch.ops.aten.unsqueeze]:
             input = node.args[0]
             if 'tensor' in input.meta.keys(): return
@@ -198,6 +219,9 @@ class Tensor:
 
 # tensor = Tensor(iter_vars)
 # print(tensor)
+
+# permuted = tensor.permute([1, 0, 2])
+# print(permuted)
 
 # tensor.view([8, 16, 512, 512])
 # print(tensor)

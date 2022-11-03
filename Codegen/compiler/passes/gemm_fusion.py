@@ -286,7 +286,7 @@ class FusedBMM:
         with nvtx.annotate("cutlass_bmm"):
             lhs = lhs.contiguous()
             rhs = rhs.contiguous()
-            kwargs = {"problem_size": [self.problem_size.m(), self.problem_size.n()]}
+            kwargs = {"problem_size": [self.problem_size.m(), self.problem_size.n()], "batch_size": self.batch}
             for output_node in self.outputs:
                 kwargs["output_" + output_node.name] = torch.empty(
                     size=output_node.meta['tensor_meta'].shape,
@@ -317,6 +317,7 @@ def pass_gemm_fusion(module, graph):
     Fuse GEMM kernel with its epilogues
     """
     gemm_idx = 0
+    bmm_idx = 0
     for node in graph.nodes:
         if node.op == "call_function":
             if node.target == torch.ops.aten.mm:
@@ -336,8 +337,11 @@ def pass_gemm_fusion(module, graph):
                     output_node.replace_all_uses_with(get_item_node)
                 
                 gemm_idx += 1
-            
-            elif node.target == torch.ops.aten.bmm:
+
+    for node in graph.nodes:
+        if node.op == "call_function":    
+            if node.target == torch.ops.aten.bmm:
+                if bmm_idx > 1: break
                 fused_bmm = FusedBMM(node)
                 graph.inserting_after(fused_bmm.epilogue_functor.root)
                 fused_node = graph.call_function(fused_bmm, args=tuple(fused_bmm.args))
@@ -349,7 +353,7 @@ def pass_gemm_fusion(module, graph):
                     get_item_node = graph.call_function(operator.getitem, args=(fused_node, idx))
                     graph.inserting_after(get_item_node)
                     output_node.replace_all_uses_with(get_item_node)
-                break
+                bmm_idx += 1
                 
     graph.eliminate_dead_code()
     graph.lint()

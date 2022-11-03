@@ -35,8 +35,18 @@ class FusedSoftmax:
     def __init__(self, node) -> None:
         assert node.target == torch.ops.aten._softmax
 
-        self.shape = node.meta["tensor_meta"].shape
+        # update the softmax shape
+        shape = node.meta["tensor_meta"].shape
         reduction_dim = node.args[1]
+        if reduction_dim < 0:
+            reduction_dim = len(shape) + reduction_dim
+        independent_size = 1
+        for idx, dim in enumerate(shape):
+            if idx == reduction_dim: continue
+            independent_size *= dim
+        self.shape = (independent_size, shape[reduction_dim])
+        reduction_dim = 1
+
 
         Input = TensorDescription(cutlass.float16, cutlass.RowMajor, 8)
         Output = TensorDescription(cutlass.float16, cutlass.RowMajor, 8)
@@ -185,6 +195,7 @@ def pass_softmax_fusion(module, graph):
                     get_item_node = graph.call_function(operator.getitem, args=(fused_node, idx))
                     graph.inserting_after(get_item_node)
                     output_node.replace_all_uses_with(get_item_node)
+                break
     
     graph.eliminate_dead_code()
     graph.lint()

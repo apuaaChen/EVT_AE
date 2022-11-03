@@ -241,6 +241,8 @@ using ${operation_name}_default =
         ${alignment_output},
         ${element_accumulator}>::SoftmaxKernel;
 
+// debug
+
 ${epilogue_visitor}
 
 using ${operation_name}_Epilogue = typename cutlass::softmax::threadblock::EpilogueWithVisitorFromExistingEpilogue<

@@ -1,7 +1,6 @@
-import enum
-import math
 from copy import copy
 import torch
+import operator
 
 
 class IterVar:
@@ -117,6 +116,11 @@ class Tensor:
         new_tensor = Tensor(dims=new_tensor_dims)
         return new_tensor
     
+    def get_index(self, idx) -> 'Tensor':
+        new_tensor_dims = [self.dims[idx]]
+        new_tensor = Tensor(dims=new_tensor_dims)
+        return new_tensor
+    
     def squeeze(self, squeeze_idx) -> 'Tensor':
         new_tensor_dims = []
         for idx, dim in enumerate(self.dims):
@@ -142,7 +146,14 @@ class Tensor:
                     debroadcast_tensor = self.debroadcast(list(arg.meta["tensor_meta"].shape))
                     arg.meta['tensor'] = debroadcast_tensor
             node.meta["tensor"] = copy(self)
-        elif node.target in [torch.ops.aten.neg]:
+        elif node.target in [torch.ops.aten.neg, torch.ops.aten.native_dropout]:
+            node.meta["tensor"] = copy(self)
+        elif node.target in [operator.getitem]:
+            if len(node.meta["tensor_meta"].shape) != len(self.dims):
+                raise NotImplementedError()
+            for dim, node_dim in zip(self.dims, node.meta["tensor_meta"].shape):
+                if dim[0].mod != node_dim:
+                    raise NotImplementedError()
             node.meta["tensor"] = copy(self)
         else:
             raise NotImplementedError("unsupported operator")
@@ -157,7 +168,7 @@ class Tensor:
             input = node.args[0]
             if 'tensor' in input.meta.keys(): return
             input.meta['tensor'] = self.view(new_shape=list(input.meta['tensor_meta'].shape))
-        elif node.target in [torch.ops.aten._to_copy]:
+        elif node.target in [torch.ops.aten._to_copy, torch.ops.aten.neg, torch.ops.aten.native_dropout, operator.getitem, torch.ops.aten.ne]:
             input = node.args[0]
             if 'tensor' in input.meta.keys(): return
             input.meta['tensor'] = copy(self)
@@ -165,6 +176,10 @@ class Tensor:
             input = node.args[0]
             if 'tensor' in input.meta.keys(): return
             input.meta['tensor'] = self.squeeze(node.args[1])
+        elif node.target in [torch.ops.aten.one_hot]:
+            input = node.args[0]
+            if 'tensor' in input.meta.keys(): return
+            input.meta['tensor'] = self.get_index(0)
         elif node.target in [torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten._softmax]:
             raise NotImplementedError()
         else:
@@ -203,8 +218,8 @@ class Tensor:
 # tensor = Tensor(iter_vars=iter_vars)
 # print(tensor)
 
-# reshaped = tensor.view([512, 8, 1024])
-# bias = reshaped.debroadcast([1024,])
-# new_reshaped = reshaped.view([512, 128, 64])
+# reshaped = tensor.view([4096, 1024])
+# # bias = reshaped.debroadcast([1024,])
+# # new_reshaped = reshaped.view([512, 128, 64])
 # print(reshaped)
-# print(bias)
+# # print(bias)

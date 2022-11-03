@@ -51,7 +51,7 @@ def pre_partition_optimization(joint_module):
     pass_gemm_fusion(joint_module, graph)
 
     # pass: softmax fusion
-    # pass_softmax_fusion(joint_module, graph)
+    pass_softmax_fusion(joint_module, graph)
 
     # pass: assign stream
     # pass_assign_stream(joint_module, graph)

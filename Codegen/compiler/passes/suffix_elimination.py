@@ -79,6 +79,8 @@ def pass_suffix_elimination(module, graph):
         if node.op == "call_function":
             try:
                 node.target = suffix_dict[node.target]
+                if node.target == torch.ops.aten.native_dropout:
+                    node.meta["tensor_meta"] = node.args[0].meta["tensor_meta"]._replace()
             except:
                 print(node.target)
     

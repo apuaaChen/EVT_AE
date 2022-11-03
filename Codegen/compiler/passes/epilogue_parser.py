@@ -21,6 +21,8 @@ from treelib import Tree
 from nodes import *
 from functools import reduce
 from passes.iterator import *
+import operator
+import philox
 
 
 torch_2_cutlass_type = {
@@ -129,6 +131,38 @@ class BinOpNodeDAG(BinOpNode):
     
     def get_argument(self, visitor_args, kwargs):
         return super().get_argument(visitor_args, kwargs)
+
+class DropoutForwardNodeDAG(DropoutForwardNode):
+    cnt = 0
+    def __init__(self, element_accumulator, element_compute, elements_per_access, node, anchor) -> None:
+        self.op = "dropout_forward"
+        self.tag = "DropoutForward" + str(DropoutForwardNodeDAG.cnt)
+        self.id = self.op + str(DropoutForwardNodeDAG.cnt)
+
+        self.p = 1. - node.args[1]
+        if anchor.target in [torch.ops.aten.mm, torch.ops.aten.bmm]:
+            self.iterator_type = "cutlass::epilogue::threadblock::PredicatedTileIterator"
+        elif anchor.target in [torch.ops.aten._softmax]:
+            self.iterator_type = "cutlass::softmax::threadblock::RowTileIterator"
+        
+        # get mask ptr
+        for user in node.users.keys():
+            if user.target == operator.getitem and user.meta["tensor_meta"].dtype == torch.bool:
+                self.mask_ptr = "output_" + user.name + "_ptr"
+
+        # data types
+        self.element_accumulator = element_accumulator
+        self.element_compute = element_compute
+        self.elements_per_access = elements_per_access
+    
+    def get_argument(self, visitor_args, kwargs):
+        seed, offset = philox.philox_state(1024)
+        self.argument = self.epilogue_node.argument_type(
+            self.p, seed, offset, kwargs[self.mask_ptr],
+            kwargs["problem_size"][1], 
+            kwargs["problem_size"][0] * kwargs["problem_size"][1],
+            *visitor_args
+        )
 
 class TensorInputNodeDAG(TensorInputNode):
     def __init__(self, element_accumulator, node, valid_iters=None) -> None:
@@ -241,10 +275,8 @@ class EpilogueASTDAG:
             print(self.root)
 
         self.outputs = []
-        if anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm]:
+        if anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax]:
             self.ast_top_down_parsing_bmm(self.root, parse_output=True)
-        else:
-            self.ast_top_down_parsing(self.root, parse_output=True)
 
         if self.anchor.target == torch.ops.aten._softmax:
             print(self.outputs)
@@ -372,98 +404,6 @@ class EpilogueASTDAG:
                         # the iterator is not broadcastable
                         self.root_candidates[node] = []
 
-    def get_candidate_root(self, node):
-        """
-        This function performs DFS search for all the candidate root nodes for 
-        the epilogue visitor tree
-        """
-        if node.op == "call_function":
-            user_nodes = list(node.users.keys())
-            for usr in user_nodes:
-                if (usr.target in [
-                    torch.ops.aten.mul,
-                    torch.ops.aten.div,
-                    torch.ops.aten.add,
-                    torch.ops.aten.sub]):
-                    # we need to check if the broadcast is supported by the 
-                    # epilogue tree
-                    # the view + broadcast could violate the rule
-                    if usr.args[0] == node:
-                        adder = usr.args[1]
-                    else:
-                        adder = usr.args[0]
-                    adder_shape = get_shape(adder)
-                    
-                    valid = False
-                    # case 1: tensor adder with batch
-                    if len(adder_shape) == len(self.shape):
-                        same_shape = True
-                        for dim_a, dim_mm in zip(adder_shape, self.shape):
-                            if dim_a not in [dim_mm, 1]:
-                                same_shape = False
-                                break
-                        if same_shape:
-                            valid = True
-                    # case 2: tensor adder or broadcast
-                    elif len(adder_shape) >= 2:
-                        if adder_shape[-1] in [1, self.shape[-1]] and adder_shape[-2] in [1, self.shape[-2]]:
-                            valid = True
-                    # row broadcast
-                    elif len(adder_shape) == 1:
-                        if adder_shape[-1] in [1, self.shape[-1]]:
-                            valid = True
-                    # constant factor
-                    elif len(adder_shape) == 0:
-                        valid = True
-                    if valid:
-                        self.get_candidate_root(usr)
-                    else:
-                        if node not in self.root_candidates.keys():
-                            self.root_candidates[node] = []
-
-                elif (usr.target in [
-                    torch.ops.aten._unsafe_view,
-                    torch.ops.aten.view,
-                    torch.ops.aten.neg]):
-                    #
-                    self.get_candidate_root(usr)
-                elif (usr.target in [
-                    torch.ops.aten.sum,]):
-                    # TODO: this condition is to filter non-reduction dim 
-                    # It is not regious for things like -1
-                    if usr.args[1][0] != self.anchor.args[1]: continue
-                    if usr not in self.root_candidates.keys():
-                        self.root_candidates[usr] = []
-                else:
-                    if node not in self.root_candidates.keys():
-                        self.root_candidates[node] = []
-    
-    def ast_top_down_parsing(self, node, parse_output=False):
-        """
-        This function parses the ast from the root in the top-down manner
-        """
-        if parse_output:
-            if len(node.users) > 1 or node == self.root:
-                if reduce(lambda x, y: x * y, self.shape) == reduce(lambda x, y: x * y, node.meta["tensor_meta"].shape):
-                    if node not in self.outputs:
-                        self.outputs.append(node)
-        if node.op == "call_function":
-            if node.target in [torch.ops.aten.view, torch.ops.aten._unsafe_view, torch.ops.aten.unsqueeze, torch.ops.aten._to_copy]:
-                return self.ast_top_down_parsing(node.args[0], parse_output)
-            elif node.target in [torch.ops.aten.add, torch.ops.aten.sub,
-                torch.ops.aten.mul, torch.ops.aten.div]:
-                # Check the broadcast rule
-                lhs_nodes = self.ast_top_down_parsing(node.args[0], parse_output)
-                rhs_nodes = self.ast_top_down_parsing(node.args[1], parse_output)
-                return lhs_nodes + rhs_nodes + [node, ]
-            elif node.target in [torch.ops.aten.neg, torch.ops.aten.sum]:
-                return self.ast_top_down_parsing(node.args[0], parse_output) + [node,]
-            elif node.target in [torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten.one_hot, torch.ops.aten.ne, torch.ops.aten.bmm]:
-                return [node,]
-            else:
-                return []
-        else:
-            return []
     
     def ast_top_down_parsing_bmm(self, node, parse_output=False):
         """
@@ -471,10 +411,21 @@ class EpilogueASTDAG:
         """
         if parse_output:
             if len(node.users) > 1 or node == self.root:
-                if reduce(lambda x, y: x * y, self.shape) == reduce(lambda x, y: x * y, node.meta["tensor_meta"].shape):
+                # case for multiple output nodes. All its users are getitem
+                if list(node.users.keys())[0].target == operator.getitem:
+                    for user in node.users:
+                        assert user.target == operator.getitem
+                        if "in_ast" in user.meta.keys():
+                            if len(user.users) > 1:
+                                self.outputs.append(user)
+                        else:
+                            self.outputs.append(user)
+                elif reduce(lambda x, y: x * y, self.shape) == reduce(lambda x, y: x * y, node.meta["tensor_meta"].shape):
                     if node not in self.outputs:
                         self.outputs.append(node)
         if node.op == "call_function":
+            if node.target == operator.getitem:
+                print(node.meta['tensor'])
             try:
                 if node.meta["tensor"] != "output_view":   
                     node.meta["tensor"].get_node_tensor_top_down(node)
@@ -483,13 +434,17 @@ class EpilogueASTDAG:
                     torch.ops.aten.unsqueeze, torch.ops.aten._to_copy]:
                     #
                     return self.ast_top_down_parsing_bmm(node.args[0], parse_output)
+                elif node.target in [operator.getitem]:
+                    if parse_output:
+                        node.meta["in_ast"] = True
+                    return self.ast_top_down_parsing_bmm(node.args[0], parse_output)
                 elif node.target in [torch.ops.aten.add, torch.ops.aten.sub,
                     torch.ops.aten.mul, torch.ops.aten.div]:
                     #
                     lhs_nodes = self.ast_top_down_parsing_bmm(node.args[0], parse_output)
                     rhs_nodes = self.ast_top_down_parsing_bmm(node.args[1], parse_output)
                     return lhs_nodes + rhs_nodes + [node, ]
-                elif node.target in [torch.ops.aten.neg, torch.ops.aten.sum]:
+                elif node.target in [torch.ops.aten.neg, torch.ops.aten.sum, torch.ops.aten.native_dropout]:
                     return self.ast_top_down_parsing_bmm(node.args[0], parse_output) + [node,]
                 elif node.target in [torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten.one_hot, torch.ops.aten.ne, torch.ops.aten.bmm]:
                     return [node,]
@@ -544,8 +499,30 @@ class EpilogueASTDAG:
             ]
             self.anchor.meta["tensor"] = Tensor(iter_vars)
             self.get_candidate_root_bmm(self.anchor)
+        elif self.anchor.target == torch.ops.aten._softmax:
+            # TODO: get iterators
+            print(self.anchor.args)
+            # The softmax can take an arbitrary dim 
+            shape = self.anchor.meta["tensor_meta"].shape
+            reduction_dim = self.anchor.args[1]
+            if reduction_dim < 0:
+                reduction_dim = len(shape) + reduction_dim
+            independent_size = 1
+            for idx, dim in enumerate(shape):
+                if idx == reduction_dim: continue
+                independent_size *= dim
+            shape = (independent_size, shape[reduction_dim])
+            iter_vars = [
+                IterVar("m", extend=shape[0]),
+                IterVar("n", extend=shape[1])
+            ]
+            self.anchor.meta["tensor"] = Tensor(iter_vars).view(self.anchor.meta["tensor_meta"].shape)
+            print(self.anchor.meta["tensor"])
+            self.get_candidate_root_bmm(self.anchor)
+            print(self.root_candidates)
         else:
-            self.get_candidate_root(self.anchor)
+            raise NotImplementedError()
+            # self.get_candidate_root(self.anchor)
 
         # filter root candiates
         for root in self.root_candidates.keys():
@@ -556,7 +533,7 @@ class EpilogueASTDAG:
                         self.root_candidates[others].append(root)
                         self.root_candidates[root] = None
 
-        if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm]:
+        if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax]:
             root_to_remove = []
             for root in self.root_candidates.keys():
                 if self.root_candidates[root] is not None:
@@ -570,17 +547,7 @@ class EpilogueASTDAG:
             for root in root_to_remove:
                 self.root_candidates.pop(root)
         else:
-            root_to_remove = []
-            for root in self.root_candidates.keys():
-                if self.root_candidates[root] is not None:
-                    node_list = self.ast_top_down_parsing(root)
-                    self.root_candidates[root] += node_list
-                    if self.anchor not in self.root_candidates[root]:
-                        self.root_candidates[root] = None
-                else:
-                    root_to_remove.append(root)
-            for root in root_to_remove:
-                self.root_candidates.pop(root)
+            raise NotImplementedError
         
         # get the root with lowest cost
         max_cost = -1
@@ -593,10 +560,12 @@ class EpilogueASTDAG:
             if cost > max_cost:
                 max_cost = cost
                 self.root = root
+        # TODO: handle the case that cost of two graphs is the same
 
     def visit(self, node):
-        if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm]:
+        if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax]:
             if 'tensor' not in node.meta.keys():
+                print(node)
                 raise RuntimeError("The node to fuse doesn't have tensor attribute")
         if node in self.outputs:
             # visit the output node
@@ -607,9 +576,9 @@ class EpilogueASTDAG:
                 self.epilogue_tree.create_node(name_node.tag, name_node.id, parent=self.stack[-1], data=name_node)
             self.stack.append(name_node.id)
         if node.op == "call_function":
-            if node.target in [torch.ops.aten.view, torch.ops.aten._unsafe_view, torch.ops.aten.unsqueeze, torch.ops.aten._to_copy]:
+            if node.target in [torch.ops.aten.view, torch.ops.aten._unsafe_view, torch.ops.aten.unsqueeze, torch.ops.aten._to_copy, operator.getitem]:
                 self.visit(node.args[0])
-            if node.target in [torch.ops.aten.add, torch.ops.aten.mul, torch.ops.aten.sub, torch.ops.aten.div]:
+            elif node.target in [torch.ops.aten.add, torch.ops.aten.mul, torch.ops.aten.sub, torch.ops.aten.div]:
                 binop = BinOpNodeDAG(
                     self.element_accumulator, self.element_compute,
                     self.elements_per_access, node)
@@ -663,9 +632,25 @@ class EpilogueASTDAG:
                 self.epilogue_tree.create_node(
                     name_node.tag, name_node.id, 
                     data=name_node, parent=self.stack[-1])
+            elif node.target in [torch.ops.aten.native_dropout]:
+                dropout_node = DropoutForwardNodeDAG(
+                    self.element_accumulator, self.element_compute, 
+                    self.elements_per_access, node, self.anchor)
+                self.epilogue_tree.create_node(
+                    dropout_node.tag, dropout_node.id, data=dropout_node,
+                    parent=self.stack[-1]
+                )
+                self.stack.append(dropout_node.id)
+                self.visit(node.args[0])
+                self.stack.pop()
+            else:
+                print("got not implemented node")
+                print(node)
+                print(node.target)
+                raise NotImplementedError
 
         elif node.op in ["placeholder", "get_attr"]:
-            if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm]:
+            if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax]:
                 source_type = torch_2_cutlass_type[node.meta['tensor_meta'].dtype]
 
                 node_tensor = node.meta['tensor']
@@ -697,49 +682,6 @@ class EpilogueASTDAG:
                     )
                 elif valid_iters['m'] is not None and valid_iters['n'] is not None:
                     name_node = TensorInputNodeDAG(self.element_accumulator, node, valid_iters)
-                else:
-                    raise NotImplementedError()
-            else:
-                # get data type
-                source_type = torch_2_cutlass_type[node.meta['tensor_meta'].dtype]
-                # need to check shape here
-                operand_shape = node.meta['tensor_meta'].shape
-                if len(operand_shape) >= 2:
-                    if (operand_shape[-1] == self.shape[-1] 
-                        and operand_shape[-2] == self.shape[-2]):
-                        #
-                        name_node = TensorInputNodeDAG(self.element_accumulator, node)
-                    elif (operand_shape[-1] == self.shape[-1] and operand_shape[-2] == 1):
-                        name_node = RowBroadcastNodeDAG(
-                            self.element_accumulator, self.element_compute, node)
-                        self.input_args[name_node.id] = ["row",]
-                    elif (operand_shape[-1] == 1 and operand_shape[-2] == self.shape[-2]):
-                        name_node = ColumnBroadcastNodeDAG(
-                            self.element_accumulator, source_type, node, source_type
-                        )
-                        self.input_args[name_node.id] = ["column",]
-                    elif (operand_shape[-1] == 1 and operand_shape[-2] == 1):
-                        name_node = ScalarInputNodeDAG(node)
-                        self.input_args[name_node.id] = ["scalar"]
-                    elif (operand_shape[-1] == self.shape[-1] and len(self.shape) == 3 and self.shape[0] % operand_shape[-2] == 0):
-                        name_node = RowBroadcastNodeDAG(
-                            self.element_accumulator, self.element_compute, node)
-                        self.input_args[name_node.id] = ["row",]
-                    else:
-                        raise NotImplementedError()
-                elif len(operand_shape) == 1:
-                    if operand_shape[0] == self.shape[-1]:
-                        name_node = RowBroadcastNodeDAG(
-                            self.element_accumulator, self.element_compute, node)
-                    elif operand_shape[0] == self.shape[-2]:
-                        name_node = ColumnBroadcastNodeDAG(
-                            self.element_accumulator, source_type, node, source_type)
-                    elif operand_shape[0] == 1:
-                        name_node = ScalarInputNodeDAG(node)
-                    else:
-                        raise NotImplementedError()
-                elif len(operand_shape) == 0:
-                    name_node = ScalarInputNodeDAG(node)
                 else:
                     raise NotImplementedError()
                 

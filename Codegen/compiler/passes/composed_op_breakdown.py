@@ -37,12 +37,11 @@ def pass_composed_op_breakdown(module, graph):
                     reduction = "mean"
                 elif node.args[4] == 2:
                     reduction = "sum"
-                print(node.args)
                 label_node = node.args[2]
                 one_hot_node = inject_onehot(node, graph, node.meta["tensor_meta"].shape[1], label_node)
                 neg_node = inject_neg(one_hot_node, graph, one_hot_node)
                 mul_node = inject_mul(neg_node, graph, neg_node, node.args[0])
-                if node.args[5] > 0:
+                if node.args[5] >= 0:
                     ne_node = inject_ne(mul_node, graph, label_node, node.args[5])
                     unsqueeze_node = inject_unsqueeze(ne_node, graph, ne_node, 1)
                     mul_mask_node = inject_mul(unsqueeze_node, graph, mul_node, unsqueeze_node)

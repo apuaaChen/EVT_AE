@@ -32,6 +32,17 @@ torch_2_cutlass_type = {
     torch.int32: cutlass.int32
 }
 
+def dfs(node, target):
+    if node == target:
+        return True
+    else:
+        if len(node.all_input_nodes) == 0:
+            return False
+        else:
+            for input in node.all_input_nodes:
+                if dfs(input, target): return True
+            return False
+
 ################################################################################
 # Epilogue nodes
 ################################################################################
@@ -185,6 +196,7 @@ class DropoutForwardNodeDAG(DropoutForwardNode):
     def __init__(self, element_accumulator, element_compute, elements_per_access, node, anchor) -> None:
         self.op = "dropout_forward"
         self.tag = "DropoutForward" + str(DropoutForwardNodeDAG.cnt)
+        self.type = "tensor"
         self.id = self.op + str(DropoutForwardNodeDAG.cnt)
 
         self.p = 1. - node.args[1]
@@ -202,6 +214,7 @@ class DropoutForwardNodeDAG(DropoutForwardNode):
         self.element_accumulator = element_accumulator
         self.element_compute = element_compute
         self.elements_per_access = elements_per_access
+        DropoutForwardNodeDAG.cnt += 1
     
     def get_argument(self, visitor_args, kwargs):
         seed, offset = philox.philox_state(1024)
@@ -219,6 +232,7 @@ class TensorInputNodeDAG(TensorInputNode):
         self.type = "tensor"
         self.element_accumulator = element_accumulator
         self.valid_iters = valid_iters
+        self.element_input = torch_2_cutlass_type[node.meta['tensor_meta'].dtype]
     
     def get_argument(self, visitor_args, kwargs):
         try:
@@ -318,15 +332,15 @@ class EpilogueASTDAG:
         
         self.shape = list(anchor.meta['tensor_meta'].shape)
         self.get_root()
-
-        if self.anchor.target == torch.ops.aten.bmm:
+        print("GET ROOT ===================================================")
+        if self.anchor.target == torch.ops.aten.mm:
             print(self.root)
 
         self.outputs = []
         if anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax]:
             self.ast_top_down_parsing_bmm(self.root, parse_output=True)
 
-        if self.anchor.target == torch.ops.aten.bmm:
+        if self.anchor.target == torch.ops.aten.mm:
             print(self.outputs)
         self.stack = []
         self.reduction_source = {}
@@ -456,6 +470,9 @@ class EpilogueASTDAG:
         """
         This function parses the ast from the root in the top-down manner
         """
+        # step 1: check if the node is a dependency of anchor
+        if node != self.anchor and dfs(self.anchor, node):
+            return [node,]
         if parse_output:
             if len(node.users) > 1 or node == self.root:
                 # case for multiple output nodes. All its users are getitem
@@ -605,10 +622,17 @@ class EpilogueASTDAG:
         # TODO: handle the case that cost of two graphs is the same
 
     def visit(self, node):
+        is_input = False
+        # TODO: the tensor input can be output of another node
+        if node != self.anchor and dfs(self.anchor, node):
+            # the node will be treated as a tensor input node
+            is_input = True
         if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax]:
             if 'tensor' not in node.meta.keys():
+                print(node)
                 raise RuntimeError("The node to fuse doesn't have tensor attribute")
         if node in self.outputs:
+            assert not is_input
             # visit the output node
             name_node = TensorOutputNodeDAG(self.element_accumulator, node)
             if len(self.stack) == 0:
@@ -616,7 +640,7 @@ class EpilogueASTDAG:
             else:
                 self.epilogue_tree.create_node(name_node.tag, name_node.id, parent=self.stack[-1], data=name_node)
             self.stack.append(name_node.id)
-        if node.op == "call_function":
+        if node.op == "call_function" and not is_input:
             if node.target in [torch.ops.aten.view, torch.ops.aten._unsafe_view, torch.ops.aten.unsqueeze, torch.ops.aten._to_copy, operator.getitem, torch.ops.aten.clone, torch.ops.aten.permute]:
                 self.visit(node.args[0])
             elif node.target in [torch.ops.aten.add, torch.ops.aten.mul, torch.ops.aten.sub, torch.ops.aten.div]:
@@ -690,7 +714,10 @@ class EpilogueASTDAG:
                 print(node.target)
                 raise NotImplementedError
 
-        elif node.op in ["placeholder", "get_attr"]:
+        elif node.op in ["placeholder", "get_attr"] or is_input:
+            if is_input:
+                print("hhhashasjdhjashhhhh=============================================")
+                print(node)
             if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax]:
                 source_type = torch_2_cutlass_type[node.meta['tensor_meta'].dtype]
 
@@ -777,7 +804,7 @@ class EpilogueVisitTreeDAG(EpilogueVisitTree):
         )
 
         tree = function.epilogue_tree
-        if node.target in [torch.ops.aten.bmm]:
+        if node.target in [torch.ops.aten.mm]:
             tree.show()
         self.tree = tree
         self.args = function.args
@@ -788,7 +815,7 @@ class EpilogueVisitTreeDAG(EpilogueVisitTree):
         function.pass_inject_reduction(self.tree, self.tree.root)
         function.pass_inject_epilogue_op(self.tree, self.tree.root)
 
-        if node.target == torch.ops.aten.bmm:
+        if node.target == torch.ops.aten.mm:
             tree.show()
 
         visitor = self.tree.get_node(self.tree.root).data.epilogue_node

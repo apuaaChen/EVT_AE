@@ -22,7 +22,19 @@ import torch
 def pass_mark_epilogue_permutations(module, graph):
     for node in graph.nodes:
         if node.target == torch.ops.aten.permute:
-            if len(node.users) == 1:
-                if list(node.users.keys())[0].target == torch.ops.aten.clone:
-                    node.meta["epilogue_permute"] = True
-                    print(node)
+            # step 1: check if clone node exists
+            clone_node = None
+            for user in list(node.users.keys()):
+                if user.target == torch.ops.aten.clone:
+                    clone_node = user
+                    break
+            
+            if clone_node is not None:
+                for user in list(node.users.keys()):
+                    if user != clone_node:
+                        user.replace_input_with(node, clone_node)
+                node.meta["epilogue_permute"] = True
+
+    
+    graph.eliminate_dead_code()
+    graph.lint()

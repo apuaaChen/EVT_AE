@@ -279,8 +279,6 @@ struct ${operation_name}${operation_suffix} :
         
         code =  SubstituteTemplate(self.cutlass_template_visitor, values)
 
-        print("========================")
-        print(code)
         return code
 
 

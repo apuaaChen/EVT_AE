@@ -122,41 +122,11 @@ class FusedSoftmax:
             s1 = torch.cuda.current_stream()
             self.operation.run(arguments, stream=s1.cuda_stream)
 
-            # TODO: the code below emulates the epilogue function
-            # primals_4 = args[1]
-            # const_div = args[0]
-            # _tensor_constant0_1 = args[2]
-            # tangents_1 = args[3]
-
-            
-            # print(_tensor_constant0_1)
-            # print(const_div)
-            # print(TorchFrontend.argument(tangents_1))
-            # # print(softmax_output)
-            # # print(softmax_output_origin)
-            # print(primals_4)
-            # softmax_output = torch.ops.aten._softmax(args[-3], -1, False)
-            
-            # ne = torch.ops.aten.ne(primals_4, 0)
-            # one_hot = torch.ops.aten.one_hot(primals_4, num_classes = 32320)
-            # mul_6 = torch.ops.aten.mul(one_hot, _tensor_constant0_1)
-            # add_1 = torch.ops.aten.add(const_div, mul_6)
-            # sub = torch.ops.aten.sub(add_1, softmax_output)
-            # neg_4 = torch.ops.aten.neg(sub)
-            # print(neg_4[0][784:792])
-            # mul_11 = torch.ops.aten.mul(neg_4, tangents_1)
-            # unsqueeze_4 = torch.ops.aten.unsqueeze(ne, 1)
-            # mul_12 = torch.ops.aten.mul(mul_11, unsqueeze_4)
-            # view_2 = torch.ops.aten.view(mul_12, [28, 128, 32320])
-            # view_4 = torch.ops.aten.view(view_2, [3584, 32320])
-
             results = []
             for output_node in self.outputs:
                 results.append(kwargs["output_" + output_node.name])
 
             # results_origin = [view_4, view_2]
-            # print(results_origin[0])
-            # print(results[0])
         return results
 
 def get_topological_index(graph, node):
@@ -189,10 +159,10 @@ def pass_softmax_fusion(module, graph):
                 fused_node.meta = {}
                 fused_node.meta['tensor_meta'] = fused_softmax.epilogue_functor.root.meta['tensor_meta']._replace()
                 graph.inserting_after(fused_node)
-                print(fused_softmax.outputs)
 
                 for idx, output_node in enumerate(fused_softmax.outputs):
                     get_item_node = graph.call_function(operator.getitem, args=(fused_node, idx))
+                    get_item_node.meta["tensor_meta"] = output_node.meta["tensor_meta"]._replace()
                     graph.inserting_after(get_item_node)
                     output_node.replace_all_uses_with(get_item_node)
                 break

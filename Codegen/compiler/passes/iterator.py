@@ -160,7 +160,7 @@ class Tensor:
                     debroadcast_tensor = self.debroadcast(list(arg.meta["tensor_meta"].shape))
                     arg.meta['tensor'] = debroadcast_tensor
             node.meta["tensor"] = copy(self)
-        elif node.target in [torch.ops.aten.neg, torch.ops.aten.native_dropout, torch.ops.aten.clone]:
+        elif node.target in [torch.ops.aten.neg, torch.ops.aten.native_dropout, torch.ops.aten.clone, torch.ops.aten.gelu]:
             node.meta["tensor"] = copy(self)
         elif node.target in [operator.getitem]:
             if len(node.meta["tensor_meta"].shape) != len(self.dims):
@@ -184,7 +184,7 @@ class Tensor:
             input = node.args[0]
             if 'tensor' in input.meta.keys(): return
             input.meta['tensor'] = self.view(new_shape=list(input.meta['tensor_meta'].shape))
-        elif node.target in [torch.ops.aten._to_copy, torch.ops.aten.neg, torch.ops.aten.native_dropout, operator.getitem, torch.ops.aten.ne, torch.ops.aten.clone]:
+        elif node.target in [torch.ops.aten._to_copy, torch.ops.aten.neg, torch.ops.aten.native_dropout, operator.getitem, torch.ops.aten.ne, torch.ops.aten.clone, torch.ops.aten.gelu]:
             input = node.args[0]
             if 'tensor' in input.meta.keys(): return
             input.meta['tensor'] = copy(self)
@@ -205,45 +205,3 @@ class Tensor:
             raise NotImplementedError()
         else:
             raise NotImplementedError()
-
-
-
-
-
-
-# iter_vars = [
-#     IterVar("b", 128),
-#     IterVar("m", 512),
-#     IterVar("n", 512)
-# ]
-
-# tensor = Tensor(iter_vars)
-# print(tensor)
-
-# permuted = tensor.permute([1, 0, 2])
-# print(permuted)
-
-# tensor.view([8, 16, 512, 512])
-# print(tensor)
-
-# mask = tensor.debroadcast([8, 1, 1, 512])
-# print(mask)
-# mask_squeeze_1 = mask.squeeze(2)
-# mask_squeeze_2 = mask_squeeze_1.squeeze(1)
-# print(mask_squeeze_2)
-# print("============")
-# print(tensor.debroadcast([512]))
-
-# iter_vars = [
-#     IterVar("m", 4096),
-#     IterVar("n", 1024)
-# ]
-
-# tensor = Tensor(iter_vars=iter_vars)
-# print(tensor)
-
-# reshaped = tensor.view([4096, 1024])
-# # bias = reshaped.debroadcast([1024,])
-# # new_reshaped = reshaped.view([512, 128, 64])
-# print(reshaped)
-# # print(bias)

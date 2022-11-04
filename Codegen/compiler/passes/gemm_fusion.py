@@ -27,6 +27,16 @@ import operator
 # Graph-level pass to fuse GEMM kernels
 ################################################################################
 
+def pass_dead_code_elimination_non_topo(module, graph):
+    changed = True
+    while(changed):
+        changed = False
+        for node in graph.nodes:
+            if node.op == "call_function":
+                if len(node.users) == 0:
+                    graph.erase_node(node)
+                    changed = True
+                    break
 
 class FusedGEMM:
     __name__ = "cutlass_gemm_with_visitor"
@@ -321,7 +331,7 @@ def pass_gemm_fusion(module, graph):
     for node in graph.nodes:
         if node.op == "call_function":
             if node.target == torch.ops.aten.mm:
-                if gemm_idx > 2:
+                if gemm_idx > 8:
                     break
 
                 fused_gemm = FusedGEMM(node)
@@ -331,12 +341,17 @@ def pass_gemm_fusion(module, graph):
                 fused_node.meta['tensor_meta'] = fused_gemm.epilogue_functor.root.meta['tensor_meta']._replace()
                 graph.inserting_after(fused_node)
 
+                print("===============Print Outputs==================")
+                print(fused_gemm.outputs)
                 for idx, output_node in enumerate(fused_gemm.outputs):
                     get_item_node = graph.call_function(operator.getitem, args=(fused_node, idx))
+                    get_item_node.meta["tensor_meta"] = output_node.meta["tensor_meta"]._replace()
                     graph.inserting_after(get_item_node)
                     output_node.replace_all_uses_with(get_item_node)
+
                 
                 gemm_idx += 1
+                # graph.eliminate_dead_code()
 
     for node in graph.nodes:
         if node.op == "call_function":    
@@ -351,9 +366,12 @@ def pass_gemm_fusion(module, graph):
 
                 for idx, output_node in enumerate(fused_bmm.outputs):
                     get_item_node = graph.call_function(operator.getitem, args=(fused_node, idx))
+                    get_item_node.meta["tensor_meta"] = output_node.meta["tensor_meta"]._replace()
                     graph.inserting_after(get_item_node)
                     output_node.replace_all_uses_with(get_item_node)
                 bmm_idx += 1
-                
+                # graph.eliminate_dead_code()
+
+    pass_dead_code_elimination_non_topo(module, graph)      
     graph.eliminate_dead_code()
     graph.lint()

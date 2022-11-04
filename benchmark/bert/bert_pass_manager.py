@@ -63,4 +63,4 @@ def pre_partition_optimization(joint_module):
     joint_module.recompile()
 
     # visualize graph
-    pass_print_graph(joint_module, "./joint_graph.svg")
+    # pass_print_graph(joint_module, "./joint_graph.svg")

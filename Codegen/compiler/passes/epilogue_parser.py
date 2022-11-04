@@ -53,7 +53,6 @@ class TensorOutputNodeDAG(TensorOutputNode):
         self.tag = "TensorOutput:" + self.tag
         self.type = "tensor"
         self.element_accumulator = element_accumulator
-        print(node.meta['tensor'])
 
         # get the permutation of output
         valid_iters = {
@@ -74,7 +73,6 @@ class TensorOutputNodeDAG(TensorOutputNode):
         for key in valid_iters.keys():
             if valid_iters[key] is not None:
                 permute.append(valid_iters[key])
-        print(permute)
         self.permute = permute
     
     def get_argument(self, visitor_args, kwargs):
@@ -118,6 +116,7 @@ operators = {
     torch.ops.aten.mul: "Mult",
     torch.ops.aten.neg: "Mult",
     torch.ops.aten.ne: "Ne",
+    torch.ops.aten.gelu: "GeLU"
 }
 
 
@@ -332,7 +331,7 @@ class EpilogueASTDAG:
         
         self.shape = list(anchor.meta['tensor_meta'].shape)
         self.get_root()
-        print("GET ROOT ===================================================")
+
         if self.anchor.target == torch.ops.aten.mm:
             print(self.root)
 
@@ -340,8 +339,6 @@ class EpilogueASTDAG:
         if anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax]:
             self.ast_top_down_parsing_bmm(self.root, parse_output=True)
 
-        if self.anchor.target == torch.ops.aten.mm:
-            print(self.outputs)
         self.stack = []
         self.reduction_source = {}
 
@@ -457,7 +454,6 @@ class EpilogueASTDAG:
                 except:
                     if node.target == torch.ops.aten.permute:
                         if "epilogue_permute" not in node.meta.keys():
-                            print("get permute!!!")
                             self.root_candidates[node.args[0]] = []
                         else:
                             self.root_candidates[node] = []
@@ -505,7 +501,7 @@ class EpilogueASTDAG:
                     lhs_nodes = self.ast_top_down_parsing_bmm(node.args[0], parse_output)
                     rhs_nodes = self.ast_top_down_parsing_bmm(node.args[1], parse_output)
                     return lhs_nodes + rhs_nodes + [node, ]
-                elif node.target in [torch.ops.aten.neg, torch.ops.aten.sum, torch.ops.aten.native_dropout, torch.ops.aten.permute]:
+                elif node.target in [torch.ops.aten.neg, torch.ops.aten.sum, torch.ops.aten.native_dropout, torch.ops.aten.permute, torch.ops.aten.gelu]:
                     return self.ast_top_down_parsing_bmm(node.args[0], parse_output) + [node,]
                 elif node.target in [torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten.one_hot, torch.ops.aten.ne, torch.ops.aten.bmm]:
                     return [node,]
@@ -579,8 +575,7 @@ class EpilogueASTDAG:
             self.get_candidate_root_bmm(self.anchor)
         else:
             raise NotImplementedError()
-            # self.get_candidate_root(self.anchor)
-        print(self.root_candidates)
+
         # filter root candiates
         for root in self.root_candidates.keys():
             if root.target == torch.ops.aten.sum:
@@ -589,6 +584,9 @@ class EpilogueASTDAG:
                     if root.args[0] in others.args:
                         self.root_candidates[others].append(root)
                         self.root_candidates[root] = None
+        
+        if self.anchor.target == torch.ops.aten.mm:
+            print(self.root_candidates)
 
         if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax]:
             root_to_remove = []
@@ -605,8 +603,6 @@ class EpilogueASTDAG:
                 self.root_candidates.pop(root)
         else:
             raise NotImplementedError
-        
-        print(self.root_candidates)
         
         # get the root with lowest cost
         max_cost = -1
@@ -666,6 +662,18 @@ class EpilogueASTDAG:
                 self.stack.append(unaryop.id)
                 self.visit(node.args[0])
                 self.stack.pop()
+            elif node.target in [torch.ops.aten.gelu]:
+                unaryop = UnaryNodeDAG(
+                    self.element_accumulator, self.element_compute,
+                    self.elements_per_access, node, args=[]
+                )
+                self.epilogue_tree.create_node(
+                    unaryop.tag, unaryop.id, data=unaryop,
+                    parent=self.stack[-1]
+                )
+                self.stack.append(unaryop.id)
+                self.visit(node.args[0])
+                self.stack.pop()
             elif node.target in [torch.ops.aten.ne]:
                 unaryop = UnaryNodeDAG(
                     self.element_accumulator, self.element_compute,
@@ -715,9 +723,6 @@ class EpilogueASTDAG:
                 raise NotImplementedError
 
         elif node.op in ["placeholder", "get_attr"] or is_input:
-            if is_input:
-                print("hhhashasjdhjashhhhh=============================================")
-                print(node)
             if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax]:
                 source_type = torch_2_cutlass_type[node.meta['tensor_meta'].dtype]
 
@@ -804,8 +809,6 @@ class EpilogueVisitTreeDAG(EpilogueVisitTree):
         )
 
         tree = function.epilogue_tree
-        if node.target in [torch.ops.aten.mm]:
-            tree.show()
         self.tree = tree
         self.args = function.args
         self.root = function.root
@@ -815,11 +818,11 @@ class EpilogueVisitTreeDAG(EpilogueVisitTree):
         function.pass_inject_reduction(self.tree, self.tree.root)
         function.pass_inject_epilogue_op(self.tree, self.tree.root)
 
-        if node.target == torch.ops.aten.mm:
-            tree.show()
-
         visitor = self.tree.get_node(self.tree.root).data.epilogue_node
         self.visitor = visitor
+
+        if function.anchor.target == torch.ops.aten.mm:
+            self.tree.show()
 
         # create argument data type
         class _Argument(ctypes.Structure):

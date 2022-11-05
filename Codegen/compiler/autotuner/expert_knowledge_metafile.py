@@ -328,6 +328,8 @@ class GemmUniversalRule:
             threadblock_shape, self.Mma.operator, threadblock_shape[2] // warp_shape[2], element_C, alignment_C
         )
 
+        self.Visitor = EpilogueWithVisitor(warp_shape, instruction_shape, self.Epilogue, alignment_C)
+
 class DefaultMma:
     def __init__(
         self, 
@@ -841,7 +843,7 @@ class RowArrangement:
 
 class OutputTileOptimalThreadMap:
     def __init__(self, shape, count, threads, elements_per_access, element_size) -> None:
-
+        self.count = count
         class Detail:
             def __init__(self) -> None:
                 warp_count = threads // 32
@@ -906,6 +908,15 @@ class DefaultThreadMapTensorOp:
         )
         pass
 
+
+class EpilogueWithVisitor:
+    def __init__(self, warp_shape, operator_shape, epilogue, elements_per_access) -> None:
+        policy_operator_count_krow = (warp_shape[0] + operator_shape[0] - 1) // operator_shape[0]
+        policy_operator_count_kcolumn = (warp_shape[1] + operator_shape[1] - 1) // operator_shape[1]
+        operator_fragment_kelements = operator_shape[0] * operator_shape[1] // 32
+        accumulator_tile_kelements = operator_fragment_kelements * policy_operator_count_krow * policy_operator_count_kcolumn
+        accumulator_fragment_count = accumulator_tile_kelements // (epilogue.output_tile_threadmp.count.tile * elements_per_access)
+        assert accumulator_fragment_count > 0
 
 
 

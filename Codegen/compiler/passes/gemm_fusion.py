@@ -331,7 +331,7 @@ def pass_gemm_fusion(module, graph):
     for node in graph.nodes:
         if node.op == "call_function":
             if node.target == torch.ops.aten.mm:
-                if gemm_idx > 8:
+                if gemm_idx > 12:
                     break
 
                 fused_gemm = FusedGEMM(node)
@@ -341,8 +341,6 @@ def pass_gemm_fusion(module, graph):
                 fused_node.meta['tensor_meta'] = fused_gemm.epilogue_functor.root.meta['tensor_meta']._replace()
                 graph.inserting_after(fused_node)
 
-                print("===============Print Outputs==================")
-                print(fused_gemm.outputs)
                 for idx, output_node in enumerate(fused_gemm.outputs):
                     get_item_node = graph.call_function(operator.getitem, args=(fused_node, idx))
                     get_item_node.meta["tensor_meta"] = output_node.meta["tensor_meta"]._replace()
@@ -356,7 +354,7 @@ def pass_gemm_fusion(module, graph):
     for node in graph.nodes:
         if node.op == "call_function":    
             if node.target == torch.ops.aten.bmm:
-                if bmm_idx > 1: break
+                if bmm_idx > 3: break
                 fused_bmm = FusedBMM(node)
                 graph.inserting_after(fused_bmm.epilogue_functor.root)
                 fused_node = graph.call_function(fused_bmm, args=tuple(fused_bmm.args))

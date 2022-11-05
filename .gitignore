@@ -8,3 +8,9 @@ src/sptrain.egg-info/*
 thirdparty/*
 *.svg
 *.png
+*.db
+=0.7
+.vscode/settings.json
+*.model
+*.txt
+*.onnx

@@ -141,9 +141,12 @@ def pass_softmax_fusion(module, graph):
     """
     Fuse Softmax kernel with its epilogues
     """
+    softmax_idx = 0
     for node in graph.nodes:
         if node.op == "call_function":
             if node.target == torch.ops.aten._softmax:
+                if softmax_idx > 1:
+                    break
                 fused_softmax = FusedSoftmax(node)
                 inserting_point = fused_softmax.epilogue_functor.root
                 inserting_idx = get_topological_index(graph, inserting_point)
@@ -165,7 +168,8 @@ def pass_softmax_fusion(module, graph):
                     get_item_node.meta["tensor_meta"] = output_node.meta["tensor_meta"]._replace()
                     graph.inserting_after(get_item_node)
                     output_node.replace_all_uses_with(get_item_node)
-                break
+                
+                softmax_idx += 1
     
     graph.eliminate_dead_code()
     graph.lint()

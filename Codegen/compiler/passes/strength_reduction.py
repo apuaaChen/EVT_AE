@@ -24,3 +24,13 @@ def pass_stength_reduction(module, graph):
         if node.op == "call_function":
             if node.target == torch.ops.aten.add_:
                 node.target = torch.ops.aten.add
+    
+    for node in graph.nodes:
+        if node.op == "get_attr":
+            shape = list(node.meta["tensor_meta"].shape)
+            numel = 1
+            for dim in shape:
+                numel *= dim
+            if numel == 1 and "fake_loss" not in node.target:
+                value = getattr(module, node.target).detach().cpu().item()
+                node.replace_all_uses_with(value)

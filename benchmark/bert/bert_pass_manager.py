@@ -44,16 +44,16 @@ def pre_partition_optimization(joint_module):
     # # pass: update attributes
     # pass_update_attributes(joint_module, graph)
 
-    # # pass: strength reduction
-    # pass_stength_reduction(joint_module, graph)
+    # pass: strength reduction
+    pass_stength_reduction(joint_module, graph)
 
     # pass: mark permutation in epilogue
     pass_mark_epilogue_permutations(joint_module, graph)
 
-    # pass: gemm fusion
+    # # pass: gemm fusion
     pass_gemm_fusion(joint_module, graph)
 
-    # pass: softmax fusion
+    # # pass: softmax fusion
     pass_softmax_fusion(joint_module, graph)
 
     # pass: assign stream

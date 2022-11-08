@@ -38,13 +38,25 @@ public:
     // Iterators
     //
 
-    using Reduction = cutlass::softmax::threadblock::SoftmaxReduction<
+    using BlockReduction = cutlass::softmax::threadblock::SoftmaxBlockReduction<
         ThreadblockShape, 
         WarpCount, 
         ElementInput, 
         kElementsPerAccess, 
         ElementAccumulator
     >;
+
+    using WarpReduction = cutlass::softmax::threadblock::SoftmaxWarpReduction<
+        ThreadblockShape, 
+        WarpCount, 
+        ElementInput, 
+        kElementsPerAccess, 
+        ElementAccumulator
+    >;
+
+    using Reduction = typename platform::conditional<WarpCount::kColumn == 1,
+                                                     WarpReduction,
+                                                     BlockReduction>::type;
 
     using Epilogue = cutlass::softmax::threadblock::DefaultEpilogueSoftmax<
         ElementAccumulator,

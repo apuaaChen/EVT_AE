@@ -37,6 +37,8 @@ public:
     
     using InputTileIterator = cutlass::softmax::threadblock::RowTileIterator<ThreadMap, Element>;
 
+    using InputFragment = Array<Element, InputTileIterator::Iterations::kColumn * kElementsPerAccess>;
+
     using Fragment = typename InputTileIterator::Fragment;
 
     using AccumulatorFragment = Array<ElementAccumulator, kElementsPerAccess>;
@@ -102,6 +104,39 @@ public:
         row_idx(threadblock_offset.row()),
         column_idx((InputTileIterator::ThreadMap::initial_offset(thread_idx) + threadblock_offset).column())
     { }
+
+    CUTLASS_DEVICE
+    void operator()(
+        Visitor & visitor,
+        InputFragment& input_buffer,
+        ElementAccumulator const row_max,
+        ElementAccumulator const row_sum
+    ) {
+
+        const typename InputTileIterator::Fragment* input_frag = reinterpret_cast<const typename InputTileIterator::Fragment*>(&input_buffer);
+        
+        AccumulatorFragment compute_frag;
+        NumericArrayConverter<ElementAccumulator, Element, kElementsPerAccess> input_converter;
+        NumericArrayConverter<Element, ElementAccumulator, kElementsPerAccess> output_converter;
+        
+        visitor.begin_epilogue();
+
+        for (int i = 0; i < InputTileIterator::Iterations::kColumn; i ++) {
+            compute_frag = input_converter(*input_frag);
+            compute_frag = minus_op(compute_frag, row_max);
+            compute_frag = exp_op(compute_frag);
+            compute_frag = div_op(compute_frag, row_sum);
+            visitor.visit(
+                row_idx,
+                column_idx,
+                compute_frag);
+            
+            column_idx += InputTileIterator::Shape::kColumn;
+            input_frag ++;
+        }
+
+        visitor.end_epilogue();
+    }
 
     CUTLASS_DEVICE
     void operator()(

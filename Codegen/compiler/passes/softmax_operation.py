@@ -184,6 +184,10 @@ class SoftmaxOperation:
 
         self.warp_count_row = warp_count[0]
         self.warp_count_column = warp_count[1]
+        if self.warp_count_column == 1:
+            self.mode = "Warp"
+        else:
+            self.mode = "Block"
 
         self.alignment_input = input.alignment
         self.alignment_output = output.alignment
@@ -249,9 +253,11 @@ using ${operation_name}_Epilogue = typename cutlass::softmax::threadblock::Epilo
     ${operation_name}_EpilogueVisitor,
     typename ${operation_name}_default::Epilogue>::Epilogue;
 
+// Debug2
+
 /// using ${operation_name}_base = ${operation_name}_default;
 using ${operation_name}_base = 
-    cutlass::softmax::kernel::SoftmaxUniversalwithEpilogueVisitor<
+    cutlass::softmax::kernel::SoftmaxUniversalwithEpilogueVisitor${Mode}<
         typename ${operation_name}_default::Reduction,
         ${operation_name}_Epilogue
     >;
@@ -272,7 +278,8 @@ struct ${operation_name}${operation_suffix} :
             'alignment_input': str(operation.alignment_input),
             'element_output': DataTypeTag[operation.element_output],
             'alignment_output': str(operation.alignment_output),
-            'element_accumulator': DataTypeTag[operation.element_accumulator]
+            'element_accumulator': DataTypeTag[operation.element_accumulator],
+            'Mode': operation.mode
         }
 
         values['epilogue_visitor'] = operation.epilogue_functor.emit(operation)

@@ -53,7 +53,7 @@ class FusedSoftmax:
 
         tile_description = TileDescription(
             threadblock_shape=[1, self.shape[reduction_dim], 1], stages=1,
-            warp_count=[1, 4, 1], math_instruction=None
+            warp_count=[1, 1, 1], math_instruction=None
         )
 
         epilogue_functor = LinearCombination(
@@ -73,8 +73,8 @@ class FusedSoftmax:
         self.epilogue_functor.initialize(node)
 
         self.operation = SoftmaxOperation(
-            input=Input, output=Output, threadblock_tile=[1, self.shape[reduction_dim], 1],
-            warp_count=[1, 4, 1], element_accumulator=cutlass.float32, epilogue_functor=self.epilogue_functor
+            input=Input, output=Output, threadblock_tile=tile_description.threadblock_shape,
+            warp_count=tile_description.warp_count, element_accumulator=cutlass.float32, epilogue_functor=self.epilogue_functor
         )
         cutlass_path = os.getenv('CUTLASS_PATH')
         assert cutlass_path is not None, "Environment variable 'CUTLASS_PATH' is not defined."

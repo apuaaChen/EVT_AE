@@ -177,6 +177,7 @@ def pass_softmax_fusion(module, graph):
                 for idx, output_node in enumerate(fused_softmax.outputs):
                     get_item_node = graph.call_function(operator.getitem, args=(fused_node, idx))
                     get_item_node.meta["tensor_meta"] = output_node.meta["tensor_meta"]._replace()
+                    get_item_node.meta["unfusible"] = True
                     graph.inserting_after(get_item_node)
                     output_node.replace_all_uses_with(get_item_node)
                 

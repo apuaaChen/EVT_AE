@@ -133,6 +133,11 @@ class Heuristics:
         wm = tiling_size_list[0]
         wn = tiling_size_list[1]
         wk = tiling_size_list[2]
+        if wn >= 128:
+            # TODO: this is a heuristic as 
+            # python gemm.py -i 16 8 16 -ta float16 -tb float16 -tc float16 -tacc float32 -m multiply_add -op TensorOp -b 128 128 32 -s 3 -w 4 1 1 -cc 80 -la RowMajor -aa 8 -lb RowMajor -ab 8 -lc RowMajor -ac 8 -te float32 -ep LinearCombination -sw IdentitySwizzle2 -p 512 512 128 -alpha 1.0 -beta 0.0 -gm Gemm -k 1
+            # lead to error
+            return False
 
         buffer_a_size = element_size[self.element_a] * wm * wk * 2 # double buffer
         buffer_b_size = element_size[self.element_b] * wn * wk * 2 # double buffer

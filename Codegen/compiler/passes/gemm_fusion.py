@@ -356,7 +356,7 @@ def pass_gemm_fusion(module, graph):
     for node in graph.nodes:
         if node.op == "call_function":
             if node.target == torch.ops.aten.mm:
-                if gemm_idx > 18:
+                if gemm_idx > 29:
                     break
 
                 fused_gemm = FusedGEMM(node)
@@ -369,17 +369,20 @@ def pass_gemm_fusion(module, graph):
                 for idx, output_node in enumerate(fused_gemm.outputs):
                     get_item_node = graph.call_function(operator.getitem, args=(fused_node, idx))
                     get_item_node.meta["tensor_meta"] = output_node.meta["tensor_meta"]._replace()
+                    get_item_node.meta["unfusible"] = True
                     graph.inserting_after(get_item_node)
                     output_node.replace_all_uses_with(get_item_node)
 
                 
                 gemm_idx += 1
+                pass_dead_code_elimination_non_topo(module, graph)      
+                graph.eliminate_dead_code()
                 # graph.eliminate_dead_code()
 
     for node in graph.nodes:
         if node.op == "call_function":    
             if node.target == torch.ops.aten.bmm:
-                if bmm_idx > 3: break
+                if bmm_idx > 4: break
                 fused_bmm = FusedBMM(node)
                 graph.inserting_after(fused_bmm.epilogue_functor.root)
                 fused_node = graph.call_function(fused_bmm, args=tuple(fused_bmm.args))
@@ -390,9 +393,13 @@ def pass_gemm_fusion(module, graph):
                 for idx, output_node in enumerate(fused_bmm.outputs):
                     get_item_node = graph.call_function(operator.getitem, args=(fused_node, idx))
                     get_item_node.meta["tensor_meta"] = output_node.meta["tensor_meta"]._replace()
+                    get_item_node.meta["unfusible"] = True
                     graph.inserting_after(get_item_node)
                     output_node.replace_all_uses_with(get_item_node)
                 bmm_idx += 1
+
+                pass_dead_code_elimination_non_topo(module, graph)      
+                graph.eliminate_dead_code()
                 # graph.eliminate_dead_code()
 
     pass_dead_code_elimination_non_topo(module, graph)      

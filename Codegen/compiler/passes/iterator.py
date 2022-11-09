@@ -168,7 +168,7 @@ class Tensor:
     def get_node_tensor_bottom_up(self, node):
         if node.target in [torch.ops.aten.view, torch.ops.aten._unsafe_view]:
             node.meta["tensor"] = self.view(node.args[1])
-        elif node.target in [torch.ops.aten.add, torch.ops.aten.sub, torch.ops.aten.mul, torch.ops.aten.div, torch.ops.aten.tanh_backward]:
+        elif node.target in [torch.ops.aten.add, torch.ops.aten.sub, torch.ops.aten.mul, torch.ops.aten.div, torch.ops.aten.tanh_backward, torch.ops.aten.gelu_backward]:
             for arg in node.args:
                 if isinstance(arg, fx.Node):
                     if not 'tensor' in arg.meta.keys():
@@ -191,7 +191,7 @@ class Tensor:
     
     def get_node_tensor_top_down(self, node):
         # if the node has 'tensor' in meta data
-        if node.target in [torch.ops.aten.add, torch.ops.aten.sub, torch.ops.aten.mul, torch.ops.aten.div, torch.ops.aten.tanh_backward]:
+        if node.target in [torch.ops.aten.add, torch.ops.aten.sub, torch.ops.aten.mul, torch.ops.aten.div, torch.ops.aten.tanh_backward, torch.ops.aten.gelu_backward]:
             for input in node.all_input_nodes:
                 if 'tensor' in input.meta.keys(): continue
                 input.meta['tensor'] = self.debroadcast(list(input.meta['tensor_meta'].shape))

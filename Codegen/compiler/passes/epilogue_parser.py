@@ -118,7 +118,8 @@ operators = {
     torch.ops.aten.ne: "Ne",
     torch.ops.aten.gelu: "GeLU",
     torch.ops.aten.tanh: "tanh",
-    torch.ops.aten.tanh_backward: "TanhBackward"
+    torch.ops.aten.tanh_backward: "TanhBackward",
+    torch.ops.aten.gelu_backward: "GeluBackward"
 }
 
 
@@ -492,11 +493,14 @@ class EpilogueASTDAG:
                     #
                     return self.ast_top_down_parsing_bmm(node.args[0], parse_output)
                 elif node.target in [operator.getitem]:
-                    if parse_output:
-                        node.meta["in_ast"] = True
-                    return self.ast_top_down_parsing_bmm(node.args[0], parse_output)
+                    if "unfusible" not in node.meta.keys():
+                        if parse_output:
+                            node.meta["in_ast"] = True
+                        return self.ast_top_down_parsing_bmm(node.args[0], parse_output)
+                    else:
+                        return []
                 elif node.target in [torch.ops.aten.add, torch.ops.aten.sub,
-                    torch.ops.aten.mul, torch.ops.aten.div, torch.ops.aten.tanh_backward]:
+                    torch.ops.aten.mul, torch.ops.aten.div, torch.ops.aten.tanh_backward, torch.ops.aten.gelu_backward]:
                     #
                     if isinstance(node.args[0], fx.Node):
                         lhs_nodes = self.ast_top_down_parsing_bmm(node.args[0], parse_output)
@@ -645,9 +649,14 @@ class EpilogueASTDAG:
                 self.epilogue_tree.create_node(name_node.tag, name_node.id, parent=self.stack[-1], data=name_node)
             self.stack.append(name_node.id)
         if node.op == "call_function" and not is_input:
-            if node.target in [torch.ops.aten.view, torch.ops.aten._unsafe_view, torch.ops.aten.unsqueeze, torch.ops.aten._to_copy, operator.getitem, torch.ops.aten.clone, torch.ops.aten.permute]:
+            if node.target in [torch.ops.aten.view, torch.ops.aten._unsafe_view, torch.ops.aten.unsqueeze, torch.ops.aten._to_copy, torch.ops.aten.clone, torch.ops.aten.permute]:
                 self.visit(node.args[0])
-            elif node.target in [torch.ops.aten.add, torch.ops.aten.mul, torch.ops.aten.sub, torch.ops.aten.div, torch.ops.aten.tanh_backward]:
+            elif node.target in [operator.getitem]:
+                if "unfusible" in node.meta.keys():
+                    is_input = True
+                else:
+                    self.visit(node.args[0])
+            elif node.target in [torch.ops.aten.add, torch.ops.aten.mul, torch.ops.aten.sub, torch.ops.aten.div, torch.ops.aten.tanh_backward, torch.ops.aten.gelu_backward]:
                 # check number of nonconstant node
                 if len(node.all_input_nodes) == 1:
                     args = []

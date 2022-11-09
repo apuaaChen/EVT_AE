@@ -116,7 +116,9 @@ operators = {
     torch.ops.aten.mul: "Mult",
     torch.ops.aten.neg: "Mult",
     torch.ops.aten.ne: "Ne",
-    torch.ops.aten.gelu: "GeLU"
+    torch.ops.aten.gelu: "GeLU",
+    torch.ops.aten.tanh: "tanh",
+    torch.ops.aten.tanh_backward: "TanhBackward"
 }
 
 
@@ -332,8 +334,6 @@ class EpilogueASTDAG:
         self.shape = list(anchor.meta['tensor_meta'].shape)
         self.get_root()
 
-        if self.anchor.target == torch.ops.aten.mm:
-            print(self.root)
 
         self.outputs = []
         if anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax]:
@@ -496,14 +496,20 @@ class EpilogueASTDAG:
                         node.meta["in_ast"] = True
                     return self.ast_top_down_parsing_bmm(node.args[0], parse_output)
                 elif node.target in [torch.ops.aten.add, torch.ops.aten.sub,
-                    torch.ops.aten.mul, torch.ops.aten.div]:
+                    torch.ops.aten.mul, torch.ops.aten.div, torch.ops.aten.tanh_backward]:
                     #
-                    lhs_nodes = self.ast_top_down_parsing_bmm(node.args[0], parse_output)
-                    rhs_nodes = self.ast_top_down_parsing_bmm(node.args[1], parse_output)
+                    if isinstance(node.args[0], fx.Node):
+                        lhs_nodes = self.ast_top_down_parsing_bmm(node.args[0], parse_output)
+                    else:
+                        lhs_nodes = []
+                    if isinstance(node.args[1], fx.Node):
+                        rhs_nodes = self.ast_top_down_parsing_bmm(node.args[1], parse_output)
+                    else:
+                        rhs_nodes = []
                     return lhs_nodes + rhs_nodes + [node, ]
-                elif node.target in [torch.ops.aten.neg, torch.ops.aten.sum, torch.ops.aten.native_dropout, torch.ops.aten.permute, torch.ops.aten.gelu]:
+                elif node.target in [torch.ops.aten.neg, torch.ops.aten.sum, torch.ops.aten.native_dropout, torch.ops.aten.permute, torch.ops.aten.gelu, torch.ops.aten.tanh, torch.ops.aten.one_hot, torch.ops.aten.ne]:
                     return self.ast_top_down_parsing_bmm(node.args[0], parse_output) + [node,]
-                elif node.target in [torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten.one_hot, torch.ops.aten.ne, torch.ops.aten.bmm]:
+                elif node.target in [torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten.bmm]:
                     return [node,]
                 else:
                     return []
@@ -526,6 +532,8 @@ class EpilogueASTDAG:
                 return cost
             else:
                 return 0
+        else:
+            return 0
     
     def get_root(self):
         """
@@ -585,9 +593,6 @@ class EpilogueASTDAG:
                         self.root_candidates[others].append(root)
                         self.root_candidates[root] = None
         
-        if self.anchor.target == torch.ops.aten.mm:
-            print(self.root_candidates)
-
         if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax]:
             root_to_remove = []
             for root in self.root_candidates.keys():
@@ -603,6 +608,9 @@ class EpilogueASTDAG:
                 self.root_candidates.pop(root)
         else:
             raise NotImplementedError
+        
+        if self.anchor.target == torch.ops.aten.mm:
+            print(self.root_candidates)
         
         # get the root with lowest cost
         max_cost = -1
@@ -639,16 +647,27 @@ class EpilogueASTDAG:
         if node.op == "call_function" and not is_input:
             if node.target in [torch.ops.aten.view, torch.ops.aten._unsafe_view, torch.ops.aten.unsqueeze, torch.ops.aten._to_copy, operator.getitem, torch.ops.aten.clone, torch.ops.aten.permute]:
                 self.visit(node.args[0])
-            elif node.target in [torch.ops.aten.add, torch.ops.aten.mul, torch.ops.aten.sub, torch.ops.aten.div]:
-                binop = BinOpNodeDAG(
-                    self.element_accumulator, self.element_compute,
-                    self.elements_per_access, node)
+            elif node.target in [torch.ops.aten.add, torch.ops.aten.mul, torch.ops.aten.sub, torch.ops.aten.div, torch.ops.aten.tanh_backward]:
+                # check number of nonconstant node
+                if len(node.all_input_nodes) == 1:
+                    args = []
+                    for arg in node.args:
+                        if arg not in node.all_input_nodes:
+                            args.append(arg)
+                    binop = UnaryNodeDAG(
+                        self.element_accumulator, self.element_compute,
+                        self.elements_per_access, node, args
+                    )
+                else:
+                    binop = BinOpNodeDAG(
+                        self.element_accumulator, self.element_compute,
+                        self.elements_per_access, node)
                 self.epilogue_tree.create_node(
                     binop.tag, binop.id, data=binop,
                     parent=self.stack[-1])
                 self.stack.append(binop.id)
-                self.visit(node.args[0])
-                self.visit(node.args[1])
+                for arg in node.all_input_nodes:
+                    self.visit(arg)
                 self.stack.pop()
             elif node.target in [torch.ops.aten.neg]:
                 unaryop = UnaryNodeDAG(
@@ -662,7 +681,7 @@ class EpilogueASTDAG:
                 self.stack.append(unaryop.id)
                 self.visit(node.args[0])
                 self.stack.pop()
-            elif node.target in [torch.ops.aten.gelu]:
+            elif node.target in [torch.ops.aten.gelu, torch.ops.aten.tanh]:
                 unaryop = UnaryNodeDAG(
                     self.element_accumulator, self.element_compute,
                     self.elements_per_access, node, args=[]
@@ -717,12 +736,14 @@ class EpilogueASTDAG:
                 self.visit(node.args[0])
                 self.stack.pop()
             else:
-                print("got not implemented node")
-                print(node)
-                print(node.target)
-                raise NotImplementedError
+                # print("got not implemented node")
+                # print(node)
+                # print(node.target)
+                # raise NotImplementedError
+                # TODO: currently we treat all unknown nodes as input nodes
+                is_input = True
 
-        elif node.op in ["placeholder", "get_attr"] or is_input:
+        if node.op in ["placeholder", "get_attr"] or is_input:
             if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax]:
                 source_type = torch_2_cutlass_type[node.meta['tensor_meta'].dtype]
 

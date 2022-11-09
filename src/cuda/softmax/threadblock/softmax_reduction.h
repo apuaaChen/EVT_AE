@@ -203,7 +203,7 @@ struct SoftmaxWarpReduction {
 
     static const int kNumThreads = 32;
 
-    static const int kInputBufferSize = ThreadblockShape::kColumn / 32;
+    static const int kInputBufferSize = InputIterator::Iterations::kColumn * kElementsPerAccess;
 
     using WarpReduce = cub::WarpReduce<ElementAccumulator>;
 

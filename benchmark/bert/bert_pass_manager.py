@@ -24,25 +24,26 @@ def pre_partition_optimization(joint_module):
     # # pass_shape_prop(joint_module, graph)
 
     # # pass: composed op breakdown
-    # pass_composed_op_breakdown(joint_module, graph)
+    pass_composed_op_breakdown(joint_module, graph)
  
     # pass: remove duplicated nodes
     pass_remove_duplicated_node(joint_module, graph)
 
+    # pass: merge common factor of add / sub operators
+    pass_merge_common_factor(joint_module, graph)
+
+    # pass: update attributes
+    pass_update_attributes(joint_module, graph)
+
+    # pass: constant reduction
+    pass_constant_folding(joint_module, graph)
+
     # pass: replace tranpose 3D with permute
     pass_trans_2_permute(joint_module, graph)
 
-    # # # pass: merge common factor of add / sub operators
-    # pass_merge_common_factor(joint_module, graph)
 
-    # # pass: update attributes
-    # pass_update_attributes(joint_module, graph)
-
-    # # pass: constant reduction
-    # pass_constant_folding(joint_module, graph)
-
-    # # pass: update attributes
-    # pass_update_attributes(joint_module, graph)
+    # pass: update attributes
+    pass_update_attributes(joint_module, graph)
 
     # pass: strength reduction
     pass_stength_reduction(joint_module, graph)
@@ -63,4 +64,4 @@ def pre_partition_optimization(joint_module):
     joint_module.recompile()
 
     # visualize graph
-    # pass_print_graph(joint_module, "./joint_graph.svg")
+    # pass_print_graph(joint_module, "./joint_graph_err.svg")

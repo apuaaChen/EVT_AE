@@ -180,7 +180,7 @@ def remove_factor_denominator(node, common_factor):
                 # case: div node
                 if node.args[1] in common_factor:
                     # case: denominator is common factor
-                    node.replace_all_uses_with(node.arg[0])
+                    node.replace_all_uses_with(node.args[0])
                     return remove_factor_denominator(node.args[0], common_factor)
                 else:
                     lhs_empty = remove_factor_denominator(node.args[0], common_factor)

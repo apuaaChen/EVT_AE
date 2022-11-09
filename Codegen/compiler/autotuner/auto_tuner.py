@@ -81,13 +81,17 @@ def sample_parameters_with_ML(heuristics, num_samples, num_features, model, prob
 
 def generate_code_and_profile(
     parameters, input_shape, element_a, layout_a, element_b, layout_b, 
-    element_c, layout_c, element_accumulator):
+    element_c, layout_c, element_accumulator, alignment_a, alignment_b, alignment_c):
+
+    M, N, K = input_shape
+
     #
     operation = generate_code(
         parameter=parameters, element_a=element_a, layout_a=layout_a,
         element_b=element_b, layout_b=layout_b, element_c=element_c,
-        layout_c=layout_c, element_accumulator=element_accumulator)
-    M, N, K = input_shape
+        layout_c=layout_c, element_accumulator=element_accumulator,
+        align_a=alignment_a, align_b=alignment_b, align_c=alignment_c)
+    
 
     tensor_A = torch.empty(size=(M * K,), dtype=torch.float16, device="cuda")
     tensor_B = torch.empty(size=(N * K,), dtype=torch.float16, device="cuda")
@@ -206,7 +210,7 @@ class Autotuner:
         self.cache = ConfigCache()
     
     def __call__(self, problem_size, element_a, layout_a, element_b, layout_b, 
-        element_c, layout_c, element_accumulator):
+        element_c, layout_c, element_accumulator, alignment_a, alignment_b, alignment_c):
 
         assert layout_c == cutlass.RowMajor, "Currently only support RowMajor output"
 
@@ -218,11 +222,15 @@ class Autotuner:
         if best_parameter is not None:
             return best_parameter
 
+        self.model = xgb.XGBRegressor()
+        self.cold = True
+        
         # search for best config
         heuristics = Heuristics(
             a100_metafile, element_a=element_a, element_b=element_b,
             element_c=element_c, element_accumulator=element_accumulator,
-            layout_a=layout_a, layout_b=layout_b
+            layout_a=layout_a, layout_b=layout_b, alignment_a=alignment_a, 
+            alignment_b=alignment_b, alignment_c=alignment_c
         )
 
         features = np.zeros((0, NUM_FEATURES))
@@ -263,7 +271,8 @@ class Autotuner:
                 latency = generate_code_and_profile(
                     parameter, problem_size, element_a=element_a, layout_a=layout_a,
                     element_b=element_b, layout_b=layout_b, element_c=element_c,
-                    layout_c=layout_c, element_accumulator=element_accumulator
+                    layout_c=layout_c, element_accumulator=element_accumulator,
+                    alignment_a=alignment_a, alignment_b=alignment_b, alignment_c=alignment_c
                 )
                 profiled_latency.append(latency)
             

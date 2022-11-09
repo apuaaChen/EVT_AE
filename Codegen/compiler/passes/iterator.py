@@ -2,6 +2,7 @@ from copy import copy
 import torch
 import operator
 import numpy as np
+import torch.fx as fx
 
 
 class IterVar:
@@ -67,6 +68,19 @@ class Tensor:
     
     def view(self, new_shape) -> None:
         assert self.valid
+
+        # preprocessing new_shape
+        total_numel = 1
+        for dim in self.dims:
+            total_numel *= dim[0].mod
+        
+        total_numel_new_shape = 1
+        for dim in new_shape:
+            if dim != -1:
+                total_numel_new_shape *= dim
+        
+        new_shape = [dim if dim != -1 else total_numel / total_numel_new_shape for dim in new_shape]
+        
         new_strides = []
         stride = 1
         for dim in reversed(new_shape):
@@ -154,13 +168,14 @@ class Tensor:
     def get_node_tensor_bottom_up(self, node):
         if node.target in [torch.ops.aten.view, torch.ops.aten._unsafe_view]:
             node.meta["tensor"] = self.view(node.args[1])
-        elif node.target in [torch.ops.aten.add, torch.ops.aten.sub, torch.ops.aten.mul, torch.ops.aten.div]:
+        elif node.target in [torch.ops.aten.add, torch.ops.aten.sub, torch.ops.aten.mul, torch.ops.aten.div, torch.ops.aten.tanh_backward]:
             for arg in node.args:
-                if not 'tensor' in arg.meta.keys():
-                    debroadcast_tensor = self.debroadcast(list(arg.meta["tensor_meta"].shape))
-                    arg.meta['tensor'] = debroadcast_tensor
+                if isinstance(arg, fx.Node):
+                    if not 'tensor' in arg.meta.keys():
+                        debroadcast_tensor = self.debroadcast(list(arg.meta["tensor_meta"].shape))
+                        arg.meta['tensor'] = debroadcast_tensor
             node.meta["tensor"] = copy(self)
-        elif node.target in [torch.ops.aten.neg, torch.ops.aten.native_dropout, torch.ops.aten.clone, torch.ops.aten.gelu]:
+        elif node.target in [torch.ops.aten.neg, torch.ops.aten.native_dropout, torch.ops.aten.clone, torch.ops.aten.gelu, torch.ops.aten.tanh]:
             node.meta["tensor"] = copy(self)
         elif node.target in [operator.getitem]:
             if len(node.meta["tensor_meta"].shape) != len(self.dims):
@@ -176,7 +191,7 @@ class Tensor:
     
     def get_node_tensor_top_down(self, node):
         # if the node has 'tensor' in meta data
-        if node.target in [torch.ops.aten.add, torch.ops.aten.sub, torch.ops.aten.mul, torch.ops.aten.div]:
+        if node.target in [torch.ops.aten.add, torch.ops.aten.sub, torch.ops.aten.mul, torch.ops.aten.div, torch.ops.aten.tanh_backward]:
             for input in node.all_input_nodes:
                 if 'tensor' in input.meta.keys(): continue
                 input.meta['tensor'] = self.debroadcast(list(input.meta['tensor_meta'].shape))
@@ -184,7 +199,7 @@ class Tensor:
             input = node.args[0]
             if 'tensor' in input.meta.keys(): return
             input.meta['tensor'] = self.view(new_shape=list(input.meta['tensor_meta'].shape))
-        elif node.target in [torch.ops.aten._to_copy, torch.ops.aten.neg, torch.ops.aten.native_dropout, operator.getitem, torch.ops.aten.ne, torch.ops.aten.clone, torch.ops.aten.gelu]:
+        elif node.target in [torch.ops.aten._to_copy, torch.ops.aten.neg, torch.ops.aten.native_dropout, operator.getitem, torch.ops.aten.ne, torch.ops.aten.clone, torch.ops.aten.gelu, torch.ops.aten.tanh]:
             input = node.args[0]
             if 'tensor' in input.meta.keys(): return
             input.meta['tensor'] = copy(self)

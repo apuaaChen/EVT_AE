@@ -58,6 +58,7 @@ def pass_composed_op_breakdown(module, graph):
                     else:
                         node.replace_all_uses_with(mul_node)
             elif node.target == torch.ops.aten._log_softmax_backward_data:
+                softmax_node = node.args[1].args[0]
                 sum_node = inject_sum(node, graph, node.args[0], 1)
                 unsqueeze_node = inject_unsqueeze(sum_node, graph, sum_node, 1)
                 mul_node = inject_mul(unsqueeze_node, graph, unsqueeze_node, softmax_node)

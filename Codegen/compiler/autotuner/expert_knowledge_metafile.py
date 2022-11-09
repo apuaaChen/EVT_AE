@@ -40,7 +40,7 @@ class Heuristics:
     # We only check a few heuristics such as tiling size should be power of 2.
     # We expect ML cost model to learn heuristics between parameters and GPU metafile.
     def __init__(
-        self, metafile, element_a, element_b, element_c, element_accumulator, layout_a, layout_b) -> None:
+        self, metafile, element_a, element_b, element_c, element_accumulator, layout_a, layout_b, alignment_a, alignment_b, alignment_c) -> None:
         #
         self.metafile = metafile
         self.element_a = element_a
@@ -48,9 +48,9 @@ class Heuristics:
         self.element_c = element_c
         self.layout_a = layout_a
         self.layout_b = layout_b
-        self.alignment_a = 8
-        self.alignment_b = 8
-        self.alignment_c = 8
+        self.alignment_a = alignment_a
+        self.alignment_b = alignment_b
+        self.alignment_c = alignment_c
         self.element_accumulator = element_accumulator
         self.set_parameter_range()
 

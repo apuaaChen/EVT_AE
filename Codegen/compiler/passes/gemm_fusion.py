@@ -38,6 +38,12 @@ def pass_dead_code_elimination_non_topo(module, graph):
                     changed = True
                     break
 
+def get_alignment(dim):
+    if dim % 8 == 0: return 8
+    elif dim % 4 == 0: return 4
+    elif dim % 2 == 0: return 2
+    else: return 1
+
 class FusedGEMM:
     __name__ = "cutlass_gemm_with_visitor"
     def __init__(self, node) -> None:
@@ -83,12 +89,30 @@ class FusedGEMM:
             opcode_class=cutlass.OpClass.TensorOp
         )
 
+        # get max alignment
+        if lhs_layout == cutlass.RowMajor:
+            align_a = get_alignment(K)
+        elif lhs_layout == cutlass.ColumnMajor:
+            align_a = get_alignment(M)
+        else:
+            raise NotImplementedError
+        
+        if rhs_layout == cutlass.RowMajor:
+            align_b = get_alignment(N)
+        elif rhs_layout == cutlass.ColumnMajor:
+            align_b = get_alignment(K)
+        else:
+            raise NotImplementedError
+        
+        align_c = get_alignment(N)
+
         # launch autotuner
         best_config = autotuner(
             problem_size=[M, N, K], element_a=cutlass.float16, layout_a=lhs_layout,
             element_b=cutlass.float16, layout_b=rhs_layout, 
             element_c=cutlass.float16, layout_c=cutlass.RowMajor, 
-            element_accumulator=cutlass.float32)
+            element_accumulator=cutlass.float32, alignment_a=align_a,
+            alignment_b=align_b, alignment_c=align_c)
 
         threadblock_shape = best_config[0:3]
         threadblock_shape = [int(t) for t in threadblock_shape]
@@ -105,9 +129,10 @@ class FusedGEMM:
             threadblock_shape, stages, warp_count, math_inst
         )
 
-        A = TensorDescription(cutlass.float16, lhs_layout, 8)
-        B = TensorDescription(cutlass.float16, rhs_layout, 8)
-        C = TensorDescription(cutlass.float16, cutlass.RowMajor, 8)
+
+        A = TensorDescription(cutlass.float16, lhs_layout, align_a)
+        B = TensorDescription(cutlass.float16, rhs_layout, align_b)
+        C = TensorDescription(cutlass.float16, cutlass.RowMajor, align_c)
 
         epilogue_functor = LinearCombination(
             element_output=C.element, epilogue_vector_length=C.alignment,
@@ -331,7 +356,7 @@ def pass_gemm_fusion(module, graph):
     for node in graph.nodes:
         if node.op == "call_function":
             if node.target == torch.ops.aten.mm:
-                if gemm_idx > 12:
+                if gemm_idx > 18:
                     break
 
                 fused_gemm = FusedGEMM(node)

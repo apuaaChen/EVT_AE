@@ -24,7 +24,8 @@ def pass_update_attributes(module, graph):
     for node in graph.nodes:
         if node.op == "get_attr":
             attr = node.target
-            tensor = getattr(module, attr).to(torch.float16).to("cuda")
+            # tensor = getattr(module, attr).to(torch.float16).to("cuda")
+            tensor = getattr(module, attr).to("cuda")
             setattr(module, attr, tensor)
             node.meta = {}
             node.meta['tensor_meta'] = TensorMetadata(

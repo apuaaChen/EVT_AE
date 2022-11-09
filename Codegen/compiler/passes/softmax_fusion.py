@@ -47,13 +47,24 @@ class FusedSoftmax:
         self.shape = (independent_size, shape[reduction_dim])
         reduction_dim = 1
 
+        # get alignment
+        if self.shape[1] % 8 == 0:
+            alignment = 8
+        elif self.shape[1] % 4 == 0:
+            alignment = 4
+        elif self.shape[1] % 2 == 0:
+            alignment = 2
+        else:
+            alignment = 1
 
-        Input = TensorDescription(cutlass.float16, cutlass.RowMajor, 8)
-        Output = TensorDescription(cutlass.float16, cutlass.RowMajor, 8)
+        Input = TensorDescription(cutlass.float16, cutlass.RowMajor, alignment)
+        Output = TensorDescription(cutlass.float16, cutlass.RowMajor, alignment)
+
+        warp_count = min(max(1, (self.shape[1] + (32 * alignment) - 1) // (32 * alignment)), 4)
 
         tile_description = TileDescription(
             threadblock_shape=[1, self.shape[reduction_dim], 1], stages=1,
-            warp_count=[1, 1, 1], math_instruction=None
+            warp_count=[1, warp_count, 1], math_instruction=None
         )
 
         epilogue_functor = LinearCombination(
@@ -145,7 +156,7 @@ def pass_softmax_fusion(module, graph):
     for node in graph.nodes:
         if node.op == "call_function":
             if node.target == torch.ops.aten._softmax:
-                if softmax_idx > 1:
+                if softmax_idx > 3:
                     break
                 fused_softmax = FusedSoftmax(node)
                 inserting_point = fused_softmax.epilogue_functor.root

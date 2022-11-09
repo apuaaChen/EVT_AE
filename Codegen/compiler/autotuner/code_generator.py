@@ -11,7 +11,7 @@ import cutlass
 #           The length of this vector must be exactly the same as the number of "%s" in config_template
 #  
 def generate_code(
-    parameter, element_a, layout_a, element_b, layout_b, element_c, layout_c, element_accumulator):
+    parameter, element_a, layout_a, element_b, layout_b, element_c, layout_c, element_accumulator, align_a=8, align_b=8, align_c=8):
 
     math_inst = MathInstruction(
         instruction_shape=[16, 8, 16],
@@ -31,9 +31,9 @@ def generate_code(
         threadblock_shape, stages, warp_count, math_inst
     )
 
-    A = TensorDescription(element_a, layout_a, 8)
-    B = TensorDescription(element_b, layout_b, 8)
-    C = TensorDescription(element_c, layout_c, 8)
+    A = TensorDescription(element_a, layout_a, align_a)
+    B = TensorDescription(element_b, layout_b, align_b)
+    C = TensorDescription(element_c, layout_c, align_c)
 
     epilogue_functor = LinearCombination(
         element_output=C.element, epilogue_vector_length=C.alignment,

@@ -22,6 +22,7 @@ from passes.epilogue_parser import EpilogueVisitTreeDAG
 from passes import autotuner
 import nvtx
 import operator
+from .softmax_operation import SoftmaxArguments, SoftmaxOperation
 
 ################################################################################
 # Graph-level pass to fuse GEMM kernels
@@ -262,7 +263,7 @@ class FusedBMM:
         # launch autotuner
         # TODO: implement the autotuner for batched case
         tile_description = TileDescription(
-            threadblock_shape=[128, 128, 64], stages=3, warp_count=[2, 2, 1], math_instruction=math_inst
+            threadblock_shape=[128, 128, 32], stages=5, warp_count=[2, 2, 1], math_instruction=math_inst
         )
 
         A = TensorDescription(cutlass.float16, self.lhs_layout, 8)
@@ -286,6 +287,8 @@ class FusedBMM:
         )
 
         self.epilogue_functor.initialize(node)
+
+        C = TensorDescription(cutlass.float16, self.epilogue_functor.output_layout, 8)
 
         self.operation = GemmOperationUniversal(
             arch=80, tile_description=tile_description,
@@ -321,7 +324,10 @@ class FusedBMM:
         with nvtx.annotate("cutlass_bmm"):
             lhs = lhs.contiguous()
             rhs = rhs.contiguous()
-            kwargs = {"problem_size": [self.problem_size.m(), self.problem_size.n()], "batch_size": self.batch}
+            if self.epilogue_functor.output_layout == cutlass.RowMajor:
+                kwargs = {"problem_size": [self.problem_size.m(), self.problem_size.n()], "batch_size": self.batch}
+            else:
+                kwargs = {"problem_size": [self.problem_size.n(), self.problem_size.m()], "batch_size": self.batch}
             for output_node in self.outputs:
                 kwargs["output_" + output_node.name] = torch.empty(
                     size=output_node.meta['tensor_meta'].shape,
@@ -347,18 +353,158 @@ class FusedBMM:
                 results.append(kwargs["output_" + output_node.name])
         return results
 
+
+################################################################################
+# Graph-level pass to fuse Softmax kernels
+################################################################################
+
+class FusedSoftmax:
+    __name__ = "cutlass_softmax_with_visitor"
+    def __init__(self, node) -> None:
+        assert node.target == torch.ops.aten._softmax
+
+        # update the softmax shape
+        shape = node.meta["tensor_meta"].shape
+        reduction_dim = node.args[1]
+        if reduction_dim < 0:
+            reduction_dim = len(shape) + reduction_dim
+        independent_size = 1
+        for idx, dim in enumerate(shape):
+            if idx == reduction_dim: continue
+            independent_size *= dim
+        self.shape = (independent_size, shape[reduction_dim])
+        reduction_dim = 1
+
+        # get alignment
+        if self.shape[1] % 8 == 0:
+            alignment = 8
+        elif self.shape[1] % 4 == 0:
+            alignment = 4
+        elif self.shape[1] % 2 == 0:
+            alignment = 2
+        else:
+            alignment = 1
+
+        Input = TensorDescription(cutlass.float16, cutlass.RowMajor, alignment)
+        Output = TensorDescription(cutlass.float16, cutlass.RowMajor, alignment)
+
+        warp_count = min(max(1, (self.shape[1] + (32 * alignment * 2) - 1) // (32 * alignment * 2)), 4)
+
+        tile_description = TileDescription(
+            threadblock_shape=[1, self.shape[reduction_dim], 1], stages=1,
+            warp_count=[1, warp_count, 1], math_instruction=None
+        )
+
+        epilogue_functor = LinearCombination(
+            element_output=Output.element, 
+            epilogue_vector_length=Output.alignment,
+            element_accumulator=cutlass.float32,
+            element_epilogue=cutlass.float32)
+        
+        self.epilogue_functor = EpilogueVisitTreeDAG(
+            elementwise_functor=epilogue_functor, 
+            tile_description=tile_description, 
+            element_accumulator=cutlass.float32,
+            elements_per_access=Output.alignment,
+            element_compute=cutlass.float32, element_output=Output.element
+        )
+
+        self.epilogue_functor.initialize(node)
+
+        self.operation = SoftmaxOperation(
+            input=Input, output=Output, threadblock_tile=tile_description.threadblock_shape,
+            warp_count=tile_description.warp_count, element_accumulator=cutlass.float32, epilogue_functor=self.epilogue_functor
+        )
+        cutlass_path = os.getenv('CUTLASS_PATH')
+        assert cutlass_path is not None, "Environment variable 'CUTLASS_PATH' is not defined."
+        cuda_install_path = os.getenv('CUDA_INSTALL_PATH')
+        assert cuda_install_path is not None, "Environment variable 'CUDA_INSTALL_PATH' is not defined."
+        include_paths = [
+            cuda_install_path + '/include',
+            cutlass_path + '/include',
+            cutlass_path + '/tools/util/include',
+            cutlass_path + '/tools/library/scripts/pycutlass/src/cpp/include',
+            '/opt/conda/lib/python3.8/site-packages/torch/include/',
+            '/workspace/sparseTraining/src/cuda/'
+        ]
+        compile_options = CompilationOptions(
+            ['-std=c++14'], [80, ], include_paths=include_paths
+        )
+
+        pycutlass.compiler.add_module([self.operation,], compile_options)
+
+        self.args = self.epilogue_functor.args + list(node.args)
+        self.outputs = self.epilogue_functor.outputs
+    
+    def __call__(self, *args):
+        kwargs = {"problem_size": [self.shape[0], self.shape[1]]}
+        with nvtx.annotate("cutlass_softmax"):
+            for output_node in self.outputs:
+                kwargs["output_" + output_node.name] = torch.empty(
+                    size=output_node.meta['tensor_meta'].shape,
+                    dtype=output_node.meta['tensor_meta'].dtype,
+                    device="cuda"
+                )
+            for idx, epilogue_arg in enumerate(self.epilogue_functor.args):
+                kwargs[epilogue_arg.name] = args[idx]
+            
+            # output_op = self.operation.epilogue_type(**kwargs)
+            # TODO: to deprecate
+            # softmax_output = torch.empty_like(args[-3])
+
+            output_op = self.operation.epilogue_type(**kwargs)            
+
+            arguments = SoftmaxArguments(
+                operation=self.operation, problem_size=kwargs["problem_size"],
+                input=args[-3], output_op=output_op
+            )
+            s1 = torch.cuda.current_stream()
+            self.operation.run(arguments, stream=s1.cuda_stream)
+
+            results = []
+            for output_node in self.outputs:
+                results.append(kwargs["output_" + output_node.name])
+
+            # results_origin = [view_4, view_2]
+        return results
+
+
+def get_topological_index(graph, node):
+    """
+    Get the node index in topological order
+    """
+    for idx, node_ in enumerate(graph.nodes):
+        if node == node_:
+            return idx
+
+def erase_node_recursive(graph, node):
+    inputs = node.all_input_nodes
+    if node.op == "call_function":
+        graph.erase_node(node)
+    for input in inputs:
+        if len(input.users) == 0:
+            erase_node_recursive(graph, input)
+
+def update_topological_index(graph):
+    """
+    Update the topological index of each node
+    """
+    for idx, node in enumerate(graph.nodes):
+        node.meta["topo_idx"] = idx
+    
+
 def pass_gemm_fusion(module, graph):
     """
     Fuse GEMM kernel with its epilogues
     """
     gemm_idx = 0
     bmm_idx = 0
+    softmax_idx = 0
     for node in graph.nodes:
         if node.op == "call_function":
             if node.target == torch.ops.aten.mm:
-                if gemm_idx > 29:
-                    break
-
+                update_topological_index(graph)
+                # if gemm_idx <= 43:
                 fused_gemm = FusedGEMM(node)
                 graph.inserting_after(fused_gemm.epilogue_functor.root)
                 fused_node = graph.call_function(fused_gemm, args=tuple(fused_gemm.args))
@@ -372,17 +518,14 @@ def pass_gemm_fusion(module, graph):
                     get_item_node.meta["unfusible"] = True
                     graph.inserting_after(get_item_node)
                     output_node.replace_all_uses_with(get_item_node)
+                    erase_node_recursive(graph, output_node)
 
                 
                 gemm_idx += 1
-                pass_dead_code_elimination_non_topo(module, graph)      
-                graph.eliminate_dead_code()
-                # graph.eliminate_dead_code()
 
-    for node in graph.nodes:
-        if node.op == "call_function":    
-            if node.target == torch.ops.aten.bmm:
-                if bmm_idx > 4: break
+            elif node.target == torch.ops.aten.bmm:
+                update_topological_index(graph)
+                # if bmm_idx <= 11: 
                 fused_bmm = FusedBMM(node)
                 graph.inserting_after(fused_bmm.epilogue_functor.root)
                 fused_node = graph.call_function(fused_bmm, args=tuple(fused_bmm.args))
@@ -396,12 +539,41 @@ def pass_gemm_fusion(module, graph):
                     get_item_node.meta["unfusible"] = True
                     graph.inserting_after(get_item_node)
                     output_node.replace_all_uses_with(get_item_node)
+                    erase_node_recursive(graph, output_node)
                 bmm_idx += 1
 
-                pass_dead_code_elimination_non_topo(module, graph)      
-                graph.eliminate_dead_code()
-                # graph.eliminate_dead_code()
+            elif node.target == torch.ops.aten._softmax:
+                update_topological_index(graph)
+                # if softmax_idx <= 3:
+                fused_softmax = FusedSoftmax(node)
+                inserting_point = fused_softmax.epilogue_functor.root
+                inserting_idx = get_topological_index(graph, inserting_point)
 
-    pass_dead_code_elimination_non_topo(module, graph)      
-    graph.eliminate_dead_code()
-    graph.lint()
+                for output in fused_softmax.outputs:
+                    idx = get_topological_index(graph, output)
+                    if idx < inserting_idx:
+                        inserting_idx = idx
+                        inserting_point = output
+                
+                graph.inserting_after(inserting_point)
+                fused_node = graph.call_function(fused_softmax, args=tuple(fused_softmax.args))
+                fused_node.meta = {}
+                fused_node.meta['tensor_meta'] = fused_softmax.epilogue_functor.root.meta['tensor_meta']._replace()
+                graph.inserting_after(fused_node)
+
+                for idx, output_node in enumerate(fused_softmax.outputs):
+                    get_item_node = graph.call_function(operator.getitem, args=(fused_node, idx))
+                    get_item_node.meta["tensor_meta"] = output_node.meta["tensor_meta"]._replace()
+                    get_item_node.meta["unfusible"] = True
+                    graph.inserting_after(get_item_node)
+                    output_node.replace_all_uses_with(get_item_node)
+                    erase_node_recursive(graph, output_node)
+                
+                softmax_idx += 1
+
+    try:
+        graph.lint()
+        graph.eliminate_dead_code()
+    except:
+        pass_dead_code_elimination_non_topo(module, graph)      
+        graph.eliminate_dead_code()

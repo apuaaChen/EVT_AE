@@ -64,6 +64,12 @@ def pass_composed_op_breakdown(module, graph):
                 mul_node = inject_mul(unsqueeze_node, graph, unsqueeze_node, softmax_node)
                 sub_node = inject_sub(mul_node, graph, node.args[0], mul_node)
                 node.replace_all_uses_with(sub_node)
+            elif node.target == torch.ops.aten.native_dropout_backward:
+                grad_Y = node.args[0]
+                mask = node.args[1]
+                mul_node = inject_mul(node, graph, grad_Y, mask)
+                mul_node2 = inject_mul(mul_node, graph, mul_node, node.args[2])
+                node.replace_all_uses_with(mul_node2)
             
     graph.eliminate_dead_code()
     graph.lint()

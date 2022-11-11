@@ -187,6 +187,7 @@ class Tensor:
         elif node.target in [torch.ops.aten.permute]:
             node.meta["tensor"] = self.permute(node.args[1])
         else:
+            print(node.target)
             raise NotImplementedError("unsupported operator")
     
     def get_node_tensor_top_down(self, node):

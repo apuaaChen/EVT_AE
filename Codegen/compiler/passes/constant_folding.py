@@ -54,17 +54,19 @@ def neighbor_constant_folding(module, graph):
                 if node.target == torch.ops.aten.mul:
                     lhs = node.args[0]
                     rhs = node.args[1]
-                    if lhs.op == "get_attr":
-                        tensor = getattr(module, lhs.target)
-                        if tensor.numel() == 1:
-                            if tensor.item() == 1:
-                                node.replace_all_uses_with(rhs)
+                    if isinstance(lhs, fx.Node):
+                        if lhs.op == "get_attr":
+                            tensor = getattr(module, lhs.target)
+                            if tensor.numel() == 1:
+                                if tensor.item() == 1:
+                                    node.replace_all_uses_with(rhs)
                     
-                    if rhs.op == "get_attr":
-                        tensor = getattr(module, rhs.target)
-                        if tensor.numel() == 1:
-                            if tensor.item() == 1:
-                                node.replace_all_uses_with(lhs)
+                    if isinstance(rhs, fx.Node):
+                        if rhs.op == "get_attr":
+                            tensor = getattr(module, rhs.target)
+                            if tensor.numel() == 1:
+                                if tensor.item() == 1:
+                                    node.replace_all_uses_with(lhs)
                 elif node.target == torch.ops.aten.div:
                     denominator = node.args[1]
                     if isinstance(denominator, fx.Node):

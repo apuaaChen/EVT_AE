@@ -29,19 +29,26 @@ torch_2_cutlass_type = {
     torch.float32: cutlass.float32,
     torch.float16: cutlass.float16,
     torch.int64: cutlass.int64,
-    torch.int32: cutlass.int32
+    torch.int32: cutlass.int32,
+    torch.bool: cutlass.int8
 }
 
 def dfs(node, target):
     if node == target:
         return True
     else:
-        if len(node.all_input_nodes) == 0:
-            return False
-        else:
-            for input in node.all_input_nodes:
-                if dfs(input, target): return True
-            return False
+        try:
+            if node.meta['topo_idx'] > target.meta['topo_idx']:
+                return False
+            if len(node.users) == 0:
+                return False
+            else:
+                for user in node.users.keys():
+                    if dfs(user, target): return True
+                return False
+        except:
+            print("DFS Error!!!!")
+            print(node)
 
 ################################################################################
 # Epilogue nodes
@@ -73,7 +80,15 @@ class TensorOutputNodeDAG(TensorOutputNode):
         for key in valid_iters.keys():
             if valid_iters[key] is not None:
                 permute.append(valid_iters[key])
-        self.permute = permute
+        self.permute = list(np.argsort(permute))
+        # an attribute to track the layout of 
+        if self.permute in [[0, 1, 2], [1, 0, 2], [0, 1]]:
+            self.layout = cutlass.RowMajor
+        elif self.permute in [[0, 2, 1], [2, 0, 1], [1, 0]]:
+            self.layout = cutlass.ColumnMajor
+        else:
+            print(self.permute)
+            raise NotImplementedError()
     
     def get_argument(self, visitor_args, kwargs):
         if len(self.permute) == 3:
@@ -90,7 +105,16 @@ class TensorOutputNodeDAG(TensorOutputNode):
             elif self.permute == [1, 0, 2]:
                 ldt = kwargs["problem_size"][1] * batch_size
                 batch_stride = kwargs["problem_size"][1]
+            # case 3: [0, 2, 1] -> [B, N, M]
+            elif self.permute == [0, 2, 1]:
+                ldt = kwargs["problem_size"][1]
+                batch_stride = kwargs["problem_size"][0] * kwargs["problem_size"][1]
+            # case 4: [2, 0, 1] -> [N, B, M]
+            elif self.permute == [2, 0, 1]:
+                ldt = kwargs["problem_size"][1] * batch_size
+                batch_stride = kwargs["problem_size"][1]
             else:
+                print(self.permute)
                 raise NotImplementedError("Unsupported output permutation")
         else:
             ldt = kwargs["problem_size"][1]
@@ -219,7 +243,9 @@ class DropoutForwardNodeDAG(DropoutForwardNode):
         DropoutForwardNodeDAG.cnt += 1
     
     def get_argument(self, visitor_args, kwargs):
-        seed, offset = philox.philox_state(1024)
+        # seed, offset = philox.philox_state(1024)
+        seed = 0
+        offset = 0
         self.argument = self.epilogue_node.argument_type(
             self.p, seed, offset, kwargs[self.mask_ptr],
             kwargs["problem_size"][1], 
@@ -341,6 +367,7 @@ class EpilogueASTDAG:
             self.ast_top_down_parsing_bmm(self.root, parse_output=True)
 
         self.stack = []
+        self.get_item_stack = []
         self.reduction_source = {}
 
         self.input_args = {}
@@ -350,6 +377,8 @@ class EpilogueASTDAG:
 
         # parse epilogue tree from DAG
         self.epilogue_tree = Tree()
+
+        self.output_layouts = []
 
         self.visit(self.root)
 
@@ -449,6 +478,10 @@ class EpilogueASTDAG:
         if node.op == "call_function":
             # get all user nodes
             user_nodes = list(node.users.keys())
+            # simple heuristic to stop dropout from tracing too deep
+            if node.target == torch.ops.aten.native_dropout:
+                node.meta['tensor'].get_node_tensor_bottom_up(user_nodes[1])
+                user_nodes = [user_nodes[0], ]
             for usr in user_nodes:
                 try:
                     node.meta['tensor'].get_node_tensor_bottom_up(usr)
@@ -468,7 +501,10 @@ class EpilogueASTDAG:
         This function parses the ast from the root in the top-down manner
         """
         # step 1: check if the node is a dependency of anchor
-        if node != self.anchor and dfs(self.anchor, node):
+        if node.op == "call_function":
+            if node != self.anchor and dfs(node, self.anchor):
+                return [node,]
+        else:
             return [node,]
         if parse_output:
             if len(node.users) > 1 or node == self.root:
@@ -613,9 +649,6 @@ class EpilogueASTDAG:
         else:
             raise NotImplementedError
         
-        if self.anchor.target == torch.ops.aten.mm:
-            print(self.root_candidates)
-        
         # get the root with lowest cost
         max_cost = -1
         self.root = None
@@ -630,10 +663,14 @@ class EpilogueASTDAG:
         # TODO: handle the case that cost of two graphs is the same
 
     def visit(self, node):
+        
         is_input = False
         # TODO: the tensor input can be output of another node
-        if node != self.anchor and dfs(self.anchor, node):
-            # the node will be treated as a tensor input node
+        if node.op == "call_function":
+            if node != self.anchor and dfs(node, self.anchor):
+                # the node will be treated as a tensor input node
+                is_input = True
+        else:
             is_input = True
         if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax]:
             if 'tensor' not in node.meta.keys():
@@ -643,6 +680,8 @@ class EpilogueASTDAG:
             assert not is_input
             # visit the output node
             name_node = TensorOutputNodeDAG(self.element_accumulator, node)
+            if name_node.layout not in self.output_layouts:
+                self.output_layouts.append(name_node.layout)
             if len(self.stack) == 0:
                 self.epilogue_tree.create_node(name_node.tag, name_node.id, data=name_node)
             else:
@@ -655,7 +694,9 @@ class EpilogueASTDAG:
                 if "unfusible" in node.meta.keys():
                     is_input = True
                 else:
+                    self.get_item_stack.append(node)
                     self.visit(node.args[0])
+                    self.get_item_stack.pop(-1)
             elif node.target in [torch.ops.aten.add, torch.ops.aten.mul, torch.ops.aten.sub, torch.ops.aten.div, torch.ops.aten.tanh_backward, torch.ops.aten.gelu_backward]:
                 # check number of nonconstant node
                 if len(node.all_input_nodes) == 1:
@@ -726,7 +767,7 @@ class EpilogueASTDAG:
                 self.stack.append(one_hot_op.id)
                 self.visit(node.args[0])
                 self.stack.pop()
-            elif node.target == self.anchor.target:
+            elif node == self.anchor:
                 name_node = AccumulatorNodeDAG(
                     self.element_accumulator, self.elements_per_access, node
                 )
@@ -745,15 +786,14 @@ class EpilogueASTDAG:
                 self.visit(node.args[0])
                 self.stack.pop()
             else:
-                # print("got not implemented node")
-                # print(node)
-                # print(node.target)
                 # raise NotImplementedError
                 # TODO: currently we treat all unknown nodes as input nodes
                 is_input = True
 
         if node.op in ["placeholder", "get_attr"] or is_input:
             if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax]:
+                if node.target in [torch.ops.aten.native_dropout]:
+                    node = self.get_item_stack[-1]
                 source_type = torch_2_cutlass_type[node.meta['tensor_meta'].dtype]
 
                 node_tensor = node.meta['tensor']
@@ -843,6 +883,10 @@ class EpilogueVisitTreeDAG(EpilogueVisitTree):
         self.args = function.args
         self.root = function.root
         self.outputs = function.outputs
+        
+        assert len(function.output_layouts) == 1
+
+        self.output_layout = function.output_layouts[0]
         
         function.pass_binary_2_unary(self.tree, self.tree.root)
         function.pass_inject_reduction(self.tree, self.tree.root)

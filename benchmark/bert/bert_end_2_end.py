@@ -61,11 +61,11 @@ def compiler_fn(fx_module: torch.fx.GraphModule, _):
 
 # Step 1: get training data
 i = 2
-input_ids = torch.load("/workspace/bert/batch/input_ids_iter%d.pt"%i)
-token_type_ids = torch.load("/workspace/bert/batch/token_type_ids_iter%d.pt"%i)
-attention_mask = torch.load("/workspace/bert/batch/attention_mask_iter%d.pt"%i).to(torch.float16)
-next_sentence_labels = torch.load("/workspace/bert/batch/next_sentence_labels_iter%d.pt"%i)
-labels = torch.load("/workspace/bert/batch/labels_iter%d.pt"%i)
+input_ids = torch.load("/workspace/bert/batch/input_ids_iter%d.pt"%i).unsqueeze(0).expand([4, 8, 512]).contiguous().view([-1, 512])
+token_type_ids = torch.load("/workspace/bert/batch/token_type_ids_iter%d.pt"%i).unsqueeze(0).expand([4, 8, 512]).contiguous().view([-1, 512])
+attention_mask = torch.load("/workspace/bert/batch/attention_mask_iter%d.pt"%i).to(torch.float16).unsqueeze(0).expand([4, 8, 512]).contiguous().view([-1, 512])
+next_sentence_labels = torch.load("/workspace/bert/batch/next_sentence_labels_iter%d.pt"%i).unsqueeze(0).expand([4, 8]).contiguous().view([-1])
+labels = torch.load("/workspace/bert/batch/labels_iter%d.pt"%i).unsqueeze(0).expand([4, 8, 512]).contiguous().view([-1, 512])
 
 batch = {
     "input_ids": input_ids,
@@ -217,24 +217,36 @@ def take_training_step(model, batch, optimizer):
     with nvtx.annotate("update"):
         optimizer.step()
 
-# for i in range(20):
-#     take_training_step(model, criterion, batch)
-
-#########################
-# Functional Verification
-#########################
-
-with nvtx.annotate("unfused"):
-    take_training_step(model, batch, optimizer)
-
-with nvtx.annotate("fused"):
-    take_training_step(model_fused, batch, optimizer_fused)
+take_training_step(model_fused, batch, optimizer_fused)
+take_training_step(model, batch, optimizer)
 
 
-for param1, param2 in zip(list(model.named_parameters()), list(model_fused.orig_module.named_parameters())):
-    print(torch.sum(torch.isclose(param1[1].grad, param2[1].grad, rtol=1e-1)) / param2[1].grad.numel())
-    try:
-        assert torch.sum(torch.isclose(param1[1].grad, param2[1].grad, rtol=1e-1)) / param2[1].grad.numel() > 0.95
-    except:
-        print(param1[1].grad)
-        print(param2[1].grad)
+with nvtx.annotate("Compare"):
+    for i in range(40):
+        with nvtx.annotate("fused"):
+            take_training_step(model_fused, batch, optimizer_fused)
+
+    for i in range(40):
+        with nvtx.annotate("unfused"):
+            take_training_step(model, batch, optimizer)
+
+
+
+# # #########################
+# # # Functional Verification
+# # #########################
+
+# with nvtx.annotate("unfused"):
+#     take_training_step(model, batch, optimizer)
+
+# with nvtx.annotate("fused"):
+#     take_training_step(model_fused, batch, optimizer_fused)
+
+
+# for param1, param2 in zip(list(model.named_parameters()), list(model_fused.orig_module.named_parameters())):
+#     print(torch.sum(torch.isclose(param1[1].grad, param2[1].grad, rtol=1e-1)) / param2[1].grad.numel())
+#     try:
+#         assert torch.sum(torch.isclose(param1[1].grad, param2[1].grad, rtol=1e-1)) / param2[1].grad.numel() > 0.95
+#     except:
+#         print(param1[1].grad)
+#         print(param2[1].grad)

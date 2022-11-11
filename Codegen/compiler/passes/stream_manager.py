@@ -53,11 +53,17 @@ def pass_assign_stream(module, graph):
         for node in wavefront:
             if node.op in ["placeholder", "get_attr"]:
                 node.meta["stream"] = default_stream
-            if node.op == "call_function":
-                if node.target in [torch.ops.aten.view, torch.ops.aten.unsqueeze, operator.getitem]:
+            elif node.op == "call_function":
+                if node.target in [torch.ops.aten.view, torch.ops.aten.unsqueeze, operator.getitem, torch.ops.aten.permute, torch.ops.aten.squeeze, torch.ops.aten._unsafe_view]:
                     node.meta["stream"] = node.all_input_nodes[0].meta["stream"]
                 else:
-                    stream = torch.cuda.Stream()
+                    stream = None
+                    if len(node.all_input_nodes) == 1:
+                        if len(node.all_input_nodes[0].users) == 1:
+                            stream = node.all_input_nodes[0].meta["stream"]
+                    if stream is None:
+                        stream = torch.cuda.Stream()
+
                     node.meta["stream"] = stream
                     class CallFunctionWithStream:
                         __name__ = node.target.__name__
@@ -70,16 +76,16 @@ def pass_assign_stream(module, graph):
                             self.stream = node.meta["stream"]
                             self.target = node.target
                         
-                        def __call__(self, *args):
+                        def __call__(self, *args, **kwargs):
                             for input_stream in self.input_streams:
                                 self.stream.wait_stream(input_stream)
                             with torch.cuda.stream(self.stream):  
                                 # print(node.target)          
-                                return self.target(*args)
+                                return self.target(*args, **kwargs)
 
                     node.target = CallFunctionWithStream(node)
 
-            if node.op == "output":
+            elif node.op == "output":
                 # inject the final synchronization node
                 node.meta["stream"] = default_stream
 
@@ -120,5 +126,8 @@ def pass_assign_stream(module, graph):
                     graph.inserting_after(get_item_node)
 
                     node.replace_input_with(output_node, get_item_node)
+            else:
+                print(node)
+                raise NotImplementedError()
     graph.lint()
 

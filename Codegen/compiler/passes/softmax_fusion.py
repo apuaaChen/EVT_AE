@@ -182,6 +182,7 @@ def pass_softmax_fusion(module, graph):
                     output_node.replace_all_uses_with(get_item_node)
                 
                 softmax_idx += 1
+                # graph.eliminate_dead_code()
     
     graph.eliminate_dead_code()
     graph.lint()

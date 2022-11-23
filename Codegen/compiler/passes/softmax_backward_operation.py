@@ -10,57 +10,47 @@ import nvtx
 #
 ################################################################################
 
-def get_softmax_arguments(epilogue_functor):
+def get_softmax_backward_arguments(epilogue_functor):
 
     _EpilogueOutputOpParams = epilogue_functor.epilogue_type
 
-    # class _EpilogueArguments(ctypes.Structure):
-    #     _fields_ = [
-    #         ("ptr_input", ctypes.c_void_p),
-    #         ("ptr_output", ctypes.c_void_p),
-    #         ("problem_size", MatrixCoord_),
-    #     ]
-    #     def __init__(self, input, output, problem_size) -> None:
-    #         assert isinstance(input, torch.Tensor)
-    #         self.ptr_input = int(TorchFrontend.argument(input))
-    #         assert isinstance(output, torch.Tensor)
-    #         self.ptr_output = int(TorchFrontend.argument(output))
-    #         self.problem_size = MatrixCoord_(problem_size[0], problem_size[1])
-
-
-    class _SoftmaxArguments(ctypes.Structure):
+    class _SoftmaxBackwardArguments(ctypes.Structure):
         _fields_ = [
-            ("ptr_input", ctypes.c_void_p),
+            ("ptr_o_softmax", ctypes.c_void_p),
+            ("ptr_grad_softmax", ctypes.c_void_p),
             ("problem_size", MatrixCoord_),
-            ("ptr_input_2", ctypes.c_void_p),
+            ("ptr_o_softmax_2", ctypes.c_void_p),
+            ("ptr_grad_softmax_2", ctypes.c_void_p),
             ("problem_size_2", MatrixCoord_),
             ("epilogue_args", _EpilogueOutputOpParams)
         ]
-    
-    return _SoftmaxArguments, _EpilogueOutputOpParams
 
-class SoftmaxArguments:
+    return _SoftmaxBackwardArguments, _EpilogueOutputOpParams
+
+class SoftmaxBackwardArguments:
     def __init__(
-        self, operation: 'SoftmaxOperation', problem_size: 'list[int]', 
-        input: 'Tensor', output_op: 'Tensor', **kwargs) -> None:
+        self, operation: 'SoftmaxBackwardOperation', problem_size: 'list[int]',
+        o_softmax: 'Tensor', grad_softmax: 'Tensor', output_op, **kwargs) -> None:
         # get pointers
-        assert isinstance(input, torch.Tensor)
-        self.ptr_input = TorchFrontend.argument(input)
+        assert isinstance(o_softmax, torch.Tensor)
+        assert isinstance(grad_softmax, torch.Tensor)
+
+        self.ptr_o_softmax = TorchFrontend.argument(o_softmax)
+        self.ptr_grad_softmax = TorchFrontend.argument(grad_softmax)
         self.output_op = output_op
-        # assert isinstance(output, torch.Tensor)
-        # self.ptr_output = TorchFrontend.argument(output)
 
         self.operation = operation
         self.problem_size = problem_size
 
         self.initialize()
-
+    
     def get_arguments(self):
-
         self.arguments = self.operation.argument_type(
-            int(self.ptr_input), 
+            int(self.ptr_o_softmax),
+            int(self.ptr_grad_softmax),
             MatrixCoord_(self.problem_size[0], self.problem_size[1]),
-            int(self.ptr_input), 
+            int(self.ptr_o_softmax),
+            int(self.ptr_grad_softmax),
             MatrixCoord_(self.problem_size[0], self.problem_size[1]),
             self.output_op
         )
@@ -77,9 +67,9 @@ class SoftmaxArguments:
         self.launch_config = launch_config
 
 
-class SoftmaxRT(ExecutableOperation):
+class SoftmaxBackwardRT(ExecutableOperation):
     """
-    SoftmaxRT manages the CUTLASS runtime components
+    SoftmaxBackwardRT manages the CUTLASS runtime components
     """
 
     HostTemplate = r'''
@@ -125,12 +115,12 @@ ${operation_name}(${operation_name}${operation_suffix}::Params params) {
     op(params, *shared_storage);
 }
     '''
-    def __init__(self, operation: 'SoftmaxOperation'):
+    def __init__(self, operation: 'SoftmaxBackwardOperation'):
         super().__init__(operation)
 
-        self.emitter = EmitSoftmaxUniversalInstance('_type')
+        self.emitter = EmitSoftmaxBackwardUniversalInstance('_type')
 
-        self.argument_type, self.epilogue_type = get_softmax_arguments(operation.epilogue_functor)
+        self.argument_type, self.epilogue_type = get_softmax_backward_arguments(operation.epilogue_functor)
         self.argtype = [
             ctypes.POINTER(self.argument_type)
         ]
@@ -160,7 +150,7 @@ ${operation_name}(${operation_name}${operation_suffix}::Params params) {
         )
 
 
-class SoftmaxOperation:
+class SoftmaxBackwardOperation:
     """
     CUTLASS Softmax Operation
     """
@@ -192,7 +182,7 @@ class SoftmaxOperation:
         self.alignment_input = input.alignment
         self.alignment_output = output.alignment
 
-        self.rt_module = SoftmaxRT(self)
+        self.rt_module = SoftmaxBackwardRT(self)
 
         self.argument_type = self.rt_module.argument_type
         self.epilogue_type = self.rt_module.epilogue_type
@@ -201,7 +191,7 @@ class SoftmaxOperation:
     def procedural_name(self):
         return "softmax_kernel"
     
-    def run(self, arguments: SoftmaxArguments, stream=cuda.CUstream(0)) -> cuda.CUresult:
+    def run(self, arguments: SoftmaxBackwardArguments, stream=cuda.CUstream(0)) -> cuda.CUresult:
         """
         Configure and launch the cuda kernel with input arguments
         """
@@ -217,8 +207,7 @@ class SoftmaxOperation:
         return err
 
 
-
-class EmitSoftmaxUniversalInstance:
+class EmitSoftmaxBackwardUniversalInstance:
     def __init__(self, operation_suffix='') -> None:
         self.operation_suffix = operation_suffix
         self.includes = [
@@ -229,14 +218,14 @@ class EmitSoftmaxUniversalInstance:
             "cutlass/arch/mma.h",
             "cutlass/layout/matrix.h",
             "epilogue/epilogue_visitor_generic.h",
-            "softmax/kernel/default_softmax_universal.h",
-            "softmax/kernel/softmax_universal_with_visitor.h",
-            "softmax/epilogue/epilogue_with_visitor.h"
+            "softmax/kernel/default_softmax_backward_universal.h",
+            "softmax/kernel/softmax_backward_universal_with_visitor.h",
+            "softmax/epilogue/epilogue_backward_with_visitor.h"
         ]
 
         self.cutlass_template_visitor = """
 using ${operation_name}_default =
-    typename cutlass::softmax::kernel::DefaultSoftmaxUniversal<
+    typename cutlass::softmax::kernel::DefaultSoftmaxBackwardUniversal<
         cutlass::MatrixShape<${threadblock_row}, ${threadblock_column}>,
         cutlass::MatrixShape<${warp_count_row}, ${warp_count_column}>,
         ${element_input}, 
@@ -245,19 +234,17 @@ using ${operation_name}_default =
         ${alignment_output},
         ${element_accumulator}>::SoftmaxKernel;
 
-// debug
-
 ${epilogue_visitor}
 
-using ${operation_name}_Epilogue = typename cutlass::softmax::threadblock::EpilogueWithVisitorFromExistingEpilogue<
+// debug
+
+using ${operation_name}_Epilogue = typename cutlass::softmax::threadblock::EpilogueBackwardWithVisitorFromExistingEpilogue<
     ${operation_name}_EpilogueVisitor,
     typename ${operation_name}_default::Epilogue>::Epilogue;
 
-// Debug4
-
 /// using ${operation_name}_base = ${operation_name}_default;
 using ${operation_name}_base = 
-    cutlass::softmax::kernel::SoftmaxUniversalwithEpilogueVisitor${Mode}<
+    cutlass::softmax::kernel::SoftmaxBackwardUniversalwithEpilogueVisitor${Mode}<
         typename ${operation_name}_default::Reduction,
         ${operation_name}_Epilogue
     >;
@@ -287,73 +274,3 @@ struct ${operation_name}${operation_suffix} :
         code =  SubstituteTemplate(self.cutlass_template_visitor, values)
 
         return code
-
-
-if __name__ == "__main__":
-    pycutlass.get_memory_pool(init_pool_size=2**10, max_pool_size=2**32)
-    pycutlass.compiler.nvcc()
-
-    num_classes = 32320
-    Input = TensorDescription(cutlass.float16, cutlass.RowMajor, 8)
-    Output = TensorDescription(cutlass.float16, cutlass.RowMajor, 8)
-
-    epilogue_functor = LinearCombination(
-        element_output=Output.element, epilogue_vector_length=Output.alignment,
-        element_accumulator=cutlass.float32,
-        element_epilogue=cutlass.float32)
-
-    class DirectOutput(EpilogueVisitTree):
-        def __call__(self, accum: 'tensor'):
-            D = accum
-            return D
-    
-    epilogue_functor = DirectOutput(
-        elementwise_functor=epilogue_functor, 
-        tile_description=TileDescription(
-            [1, num_classes, 1], stages=1, warp_count=[1, 4, 1],
-            math_instruction=None),
-        element_accumulator=cutlass.float32, elements_per_access=8,
-        element_compute=cutlass.float32, element_output=cutlass.float16
-    )
-    epilogue_functor.initialize()
-
-    operation = SoftmaxOperation(
-        input=Input, output=Output, threadblock_tile=[1, num_classes, 1],
-        warp_count=[1, 4, 1], element_accumulator=cutlass.float32, epilogue_functor=epilogue_functor
-    )
-    cutlass_path = os.getenv('CUTLASS_PATH')
-    assert cutlass_path is not None, "Environment variable 'CUTLASS_PATH' is not defined."
-    cuda_install_path = os.getenv('CUDA_INSTALL_PATH')
-    assert cuda_install_path is not None, "Environment variable 'CUDA_INSTALL_PATH' is not defined."
-    include_paths = [
-        cuda_install_path + '/include',
-        cutlass_path + '/include',
-        cutlass_path + '/tools/util/include',
-        cutlass_path + '/tools/library/scripts/pycutlass/src/cpp/include',
-        '/opt/conda/lib/python3.8/site-packages/torch/include/',
-        '/workspace/sparseTraining/src/cuda/'
-    ]
-
-    compile_options = CompilationOptions(
-        ['-std=c++14'], [80, ], include_paths=include_paths
-    )
-
-    pycutlass.compiler.add_module([operation,], compile_options)
-
-    data = torch.randn(size=(3584, 32320), dtype=torch.float16, device="cuda")
-    output = torch.empty_like(data)
-
-    arguments = SoftmaxArguments(operation=operation, problem_size=[3584, 32320], input=data, output=output)
-
-    operation.run(arguments)
-
-    for i in range(10):
-        with nvtx.annotate("my_softmax"):
-            operation.run(arguments)
-    
-    for i in range(10):
-        with nvtx.annotate("torch"):
-            torch.ops.aten._softmax(data, dim=1, half_to_float=False)
-
-    # arguments.sync()
-

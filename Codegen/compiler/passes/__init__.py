@@ -14,7 +14,7 @@
 # limitations under the License.
 ################################################################################
 from autotuner.auto_tuner import Autotuner
-autotuner = Autotuner(verbose=True, load_model=False)
+autotuner = Autotuner(verbose=True, load_model=False, autotuning_rounds=15)
 from passes.suffix_elimination import pass_suffix_elimination
 from passes.print_graph import pass_print_graph
 from passes.eliminate_transparent import pass_eliminate_transparent_node

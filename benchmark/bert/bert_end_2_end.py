@@ -208,6 +208,7 @@ def scale_loss(loss,
 batch = {k: v.to("cuda", non_blocking=True) for k, v in batch.items()}
 
 def take_training_step(model, batch, optimizer):
+    torch.cuda.synchronize()
     optimizer.zero_grad()
     with nvtx.annotate("forward"):
         loss = model(input_ids=batch['input_ids'], token_type_ids=batch['token_type_ids'], attention_mask=batch['attention_mask'], masked_lm_labels=batch['labels'], labels=batch['labels'], next_sentence_labels=batch['next_sentence_labels'])

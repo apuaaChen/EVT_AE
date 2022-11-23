@@ -187,7 +187,6 @@ class Tensor:
         elif node.target in [torch.ops.aten.permute]:
             node.meta["tensor"] = self.permute(node.args[1])
         else:
-            print(node.target)
             raise NotImplementedError("unsupported operator")
     
     def get_node_tensor_top_down(self, node):
@@ -217,7 +216,7 @@ class Tensor:
             input = node.args[0]
             if 'tensor' in input.meta.keys(): return
             input.meta['tensor'] = self.get_index(0)
-        elif node.target in [torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten._softmax]:
+        elif node.target in [torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data]:
             raise NotImplementedError()
         else:
             raise NotImplementedError()

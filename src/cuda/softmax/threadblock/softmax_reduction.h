@@ -207,7 +207,8 @@ struct SoftmaxWarpReduction {
 
     using WarpReduce = cub::WarpReduce<ElementAccumulator>;
 
-    using InputFragment = Array<ElementInput, kInputBufferSize>;
+    using InputFragment = Array<ElementAccumulator, kInputBufferSize>;
+    using AccumulatorFragment = Array<ElementAccumulator, kElementsPerAccess>;
 
     using MaxFragment = Array<ElementAccumulator, kElementsPerAccess>;
     using SumExpFragment = Array<ElementAccumulator, kElementsPerAccess>;
@@ -287,12 +288,14 @@ public:
         cutlass::fast_exp_op<SumExpFragment> exp_op;
         cutlass::plus<SumExpFragment> plus_op;
 
-        typename InputIterator::Fragment* tmp_input = reinterpret_cast<typename InputIterator::Fragment*>(&input_buffer);
+        AccumulatorFragment* input_buffer_ptr = reinterpret_cast<AccumulatorFragment*>(&input_buffer);
 
         for (int i = 0; i < InputIterator::Iterations::kColumn; i ++) {
-            input_iterator_.load(*tmp_input);
-            max_accumulator = maximum_op(converter(*tmp_input), max_accumulator);
-            tmp_input ++;
+            typename InputIterator::Fragment tmp_input;
+            input_iterator_.load(tmp_input);
+            *input_buffer_ptr = converter(tmp_input);
+            max_accumulator = maximum_op(*input_buffer_ptr, max_accumulator);
+            input_buffer_ptr ++;
         }
 
         /// Get the maximum entry in the array of each thread
@@ -310,13 +313,13 @@ public:
         SumExpFragment sum_exp_accumulator;
         sum_exp_accumulator.clear();
 
-        tmp_input = reinterpret_cast<typename InputIterator::Fragment*>(&input_buffer);
+        input_buffer_ptr = reinterpret_cast<AccumulatorFragment*>(&input_buffer);
 
         for (int i = 0; i < InputIterator::Iterations::kColumn; i ++) {
-            SumExpFragment tmp_result = minus_op(converter(*tmp_input), row_max);
-            tmp_result = exp_op(tmp_result);
-            sum_exp_accumulator = plus_op(tmp_result, sum_exp_accumulator);
-            tmp_input ++;
+            *input_buffer_ptr = minus_op(*input_buffer_ptr, row_max);
+            *input_buffer_ptr = exp_op(*input_buffer_ptr);
+            sum_exp_accumulator = plus_op(*input_buffer_ptr, sum_exp_accumulator);
+            input_buffer_ptr ++;
         }
 
         ElementAccumulator row_sum_exp = ElementAccumulator(0);

@@ -12,7 +12,6 @@ namespace threadblock {
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
-
 template<
     typename Visitor_,
     typename ElementAccumulator_,
@@ -21,7 +20,7 @@ template<
     typename ThreadblockShape_,
     typename WarpCount_
 >
-class EpilogueWithVisitor {
+class EpilogueBackwardWithVisitor {
 
 public:
     using Visitor = Visitor_;
@@ -37,25 +36,24 @@ public:
     
     using InputTileIterator = cutlass::softmax::threadblock::RowTileIterator<ThreadMap, Element>;
 
-    using InputFragment = Array<ElementAccumulator, InputTileIterator::Iterations::kColumn * kElementsPerAccess>;
+    using InputFragment = Array<Element, InputTileIterator::Iterations::kColumn * kElementsPerAccess>;
 
     using Fragment = typename InputTileIterator::Fragment;
 
     using AccumulatorFragment = Array<ElementAccumulator, kElementsPerAccess>;
 
-    using Minus = cutlass::minus<AccumulatorFragment>;
-    using Exp = cutlass::fast_exp_op<AccumulatorFragment>;
-    using Div = cutlass::divides<AccumulatorFragment>;
+    using Mult = cutlass::multiplies<AccumulatorFragment>;
+    using Sub = cutlass::minus<AccumulatorFragment>;
 
     //
     // Structures
     //
-
     struct Arguments {
         //
         // Data members
         //
-        Element* input;
+        Element* o_softmax;
+        Element* grad_softmax;
         MatrixCoord problem_size;
     };
 
@@ -63,7 +61,8 @@ public:
         //
         // Data members
         //
-        Element* input;
+        Element* o_softmax;
+        Element* grad_softmax;
         MatrixCoord problem_size;
 
         //
@@ -71,17 +70,18 @@ public:
         //
         CUTLASS_HOST_DEVICE
         Params(Arguments const &args):
-            input(args.input),
+            o_softmax(args.o_softmax),
+            grad_softmax(args.grad_softmax),
             problem_size(args.problem_size)
         { }
     };
 
 private:
-    InputTileIterator input_iterator_;
+    InputTileIterator o_softmax_iterator_;
+    InputTileIterator grad_softmax_iterator_;
 
-    Minus minus_op;
-    Exp exp_op;
-    Div div_op;
+    Mult mult_op;
+    Sub sub_op;
 
     int row_idx;
     int column_idx;
@@ -89,14 +89,21 @@ private:
 public:
     /// Constructor
     CUTLASS_DEVICE
-    EpilogueWithVisitor(
+    EpilogueBackwardWithVisitor(
         Params const & params,
         int thread_idx,
         MatrixCoord threadblock_offset = MatrixCoord()
     ):
-        input_iterator_(
+        o_softmax_iterator_(
             typename InputTileIterator::Params(params.problem_size.column()),
-            params.input,
+            params.o_softmax,
+            params.problem_size,
+            thread_idx,
+            threadblock_offset
+        ),
+        grad_softmax_iterator_(
+            typename InputTileIterator::Params(params.problem_size.column()),
+            params.grad_softmax,
             params.problem_size,
             thread_idx,
             threadblock_offset
@@ -108,29 +115,27 @@ public:
     CUTLASS_DEVICE
     void operator()(
         Visitor & visitor,
-        InputFragment& input_buffer,
-        ElementAccumulator const row_max,
         ElementAccumulator const row_sum
-    ) {
-
-        const AccumulatorFragment* input_frag = reinterpret_cast<const AccumulatorFragment*>(&input_buffer);
-        
+     ) {
+        typename InputTileIterator::Fragment o_softmax_frag;
+        typename InputTileIterator::Fragment grad_softmax_frag;
         AccumulatorFragment compute_frag;
+
         NumericArrayConverter<ElementAccumulator, Element, kElementsPerAccess> input_converter;
         NumericArrayConverter<Element, ElementAccumulator, kElementsPerAccess> output_converter;
-        
+
         visitor.begin_epilogue();
 
-        #pragma unroll
         for (int i = 0; i < InputTileIterator::Iterations::kColumn; i ++) {
-            compute_frag = div_op(*input_frag, row_sum);
+            o_softmax_iterator_.load(o_softmax_frag);
+            grad_softmax_iterator_.load(grad_softmax_frag);
+            compute_frag = mult_op(input_converter(o_softmax_frag), sub_op(input_converter(grad_softmax_frag), row_sum));
             visitor.visit(
                 row_idx,
                 column_idx,
-                compute_frag);
-            
+                compute_frag
+            );
             column_idx += InputTileIterator::Shape::kColumn;
-            input_frag ++;
         }
 
         visitor.end_epilogue();
@@ -139,43 +144,42 @@ public:
     CUTLASS_DEVICE
     void operator()(
         Visitor & visitor,
-        ElementAccumulator const row_max,
+        InputFragment& o_softmax_buffer,
+        InputFragment& grad_softmax_buffer,
         ElementAccumulator const row_sum
-    ) {
+    ){
+        const typename InputTileIterator::Fragment* o_softmax_frag = reinterpret_cast<const typename InputTileIterator::Fragment*>(&o_softmax_buffer);
+        const typename InputTileIterator::Fragment* grad_softmax_frag = reinterpret_cast<const typename InputTileIterator::Fragment*>(&grad_softmax_buffer);
 
-        typename InputTileIterator::Fragment input_frag;
         AccumulatorFragment compute_frag;
         NumericArrayConverter<ElementAccumulator, Element, kElementsPerAccess> input_converter;
         NumericArrayConverter<Element, ElementAccumulator, kElementsPerAccess> output_converter;
-        
+
         visitor.begin_epilogue();
 
         for (int i = 0; i < InputTileIterator::Iterations::kColumn; i ++) {
-            input_iterator_.load(input_frag);
-            compute_frag = input_converter(input_frag);
-            compute_frag = minus_op(compute_frag, row_max);
-            compute_frag = exp_op(compute_frag);
-            compute_frag = div_op(compute_frag, row_sum);
+            compute_frag = mult_op(input_converter(*o_softmax_frag), sub_op(input_converter(*grad_softmax_frag), row_sum));
             visitor.visit(
                 row_idx,
                 column_idx,
-                compute_frag);
-            
+                compute_frag
+            );
             column_idx += InputTileIterator::Shape::kColumn;
+            o_softmax_frag ++;
+            grad_softmax_frag ++;
         }
 
         visitor.end_epilogue();
     }
-
 };
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Helper to create an EpilogueWithVisitor from an existing epilogue
 template <typename Visitor_, typename Existing_>
-struct EpilogueWithVisitorFromExistingEpilogue {
+struct EpilogueBackwardWithVisitorFromExistingEpilogue {
 
-    using Epilogue = EpilogueWithVisitor<
+    using Epilogue = EpilogueBackwardWithVisitor<
         Visitor_,
         typename Existing_::ElementAccumulator,
         typename Existing_::Element,
@@ -184,6 +188,7 @@ struct EpilogueWithVisitorFromExistingEpilogue {
         typename Existing_::WarpCount
     >;
 };
+
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 

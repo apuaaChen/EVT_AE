@@ -14,7 +14,7 @@
 # limitations under the License.
 ################################################################################
 import torch
-
+from nodes import *
 
 ################################################################################
 # Graph-level pass to perform stength reduction
@@ -34,3 +34,13 @@ def pass_stength_reduction(module, graph):
             if numel == 1 and "fake_loss" not in node.target:
                 value = getattr(module, node.target).detach().cpu().item()
                 node.replace_all_uses_with(value)
+    
+    # mul is much faster than div in epilogue
+    for node in graph.nodes:
+        if node.op == "call_function":
+            if node.target == torch.ops.aten.div:
+                if len(node.all_input_nodes) == 1:
+                    if node.args[0] == node.all_input_nodes[0]:
+                        mul_node = inject_mul(node, graph, node.args[0], 1./node.args[1])
+                        node.replace_all_uses_with(mul_node)
+                        graph.erase_node(node)

@@ -62,8 +62,13 @@ class FusedSoftmax:
 
         warp_count = min(max(1, (self.shape[1] + (32 * alignment) - 1) // (32 * alignment)), 4)
 
+        # To tune: 
+        batch_size = 32
+
+        self.shape = (self.shape[0] // 32, self.shape[1])
+
         tile_description = TileDescription(
-            threadblock_shape=[1, self.shape[reduction_dim], 1], stages=1,
+            threadblock_shape=[1, self.shape[reduction_dim], batch_size], stages=1,
             warp_count=[1, warp_count, 1], math_instruction=None
         )
 

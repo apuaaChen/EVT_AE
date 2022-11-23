@@ -174,7 +174,7 @@ def inject_ne(inject_point, graph, lhs, rhs, tmp_lhs=None, tmp_rhs=None):
     ne_node = graph.call_function(torch.ops.aten.ne, args=(tmp_lhs, tmp_rhs))
     shape = get_broadcast_shape(lhs, rhs)
     ne_node.meta = {}
-    ne_node.meta['tensor_meta'] = inject_point.meta['tensor_meta']._replace(shape=shape, dtype=torch.bool)
+    ne_node.meta['tensor_meta'] = inject_point.meta['tensor_meta']._replace(shape=tuple(shape), dtype=torch.bool)
     return ne_node
 
 def inject_unsqueeze(inject_point, graph, parent_node, dim, tmp_node=None):
@@ -206,7 +206,7 @@ def inject_sum(inject_point, graph, parent_node, dim, tmp_node=None):
         dim = dim + len(shape) + 1
     shape.pop(dim)
     sum_node.meta['tensor_meta'] = parent_node.meta['tensor_meta']._replace(
-        shape=shape
+        shape=tuple(shape)
     )
     
     return sum_node

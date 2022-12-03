@@ -8,7 +8,10 @@ from apex import amp
 from lamb_amp_opt.fused_lamb import FusedLAMBAMP
 from amp_helper import scale_loss
 from aot_helper import compiler_fn, partition_func
-
+import pycutlass
+from pycutlass import *
+pycutlass.get_memory_pool(init_pool_size=2**20, max_pool_size=2**30)
+pycutlass.compiler.nvcc()
 import nvtx
 
 
@@ -123,9 +126,9 @@ for i in range(40):
         with scale_loss(loss, optimizer) as scaled_loss:
             scaled_loss.backward()
 
-s = torch.cuda.Stream(priority=-1)
-s.wait_stream(torch.cuda.current_stream())
-with torch.cuda.stream(s):
-    for i in range(40):
-        with nvtx.annotate("fused"):
-            model_fused.training_with_graph(input_ids, token_type_ids, attention_mask, labels, labels, next_sentence_labels)
+# s = torch.cuda.Stream(priority=-1)
+# s.wait_stream(torch.cuda.current_stream())
+# with torch.cuda.stream(s):
+for i in range(40):
+    with nvtx.annotate("fused"):
+        model_fused.training_with_graph(input_ids, token_type_ids, attention_mask, labels, labels, next_sentence_labels)

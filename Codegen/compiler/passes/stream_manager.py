@@ -116,8 +116,6 @@ def pass_assign_stream(module, graph,):
                 # inject the final synchronization node
                 node.meta["stream"] = default_stream
 
-                print("hhhhhhhhhhhh")
-
                 class OutputSyncOp:
                     __name__ = "output_stream_sync"
                     def __init__(self, node) -> None:

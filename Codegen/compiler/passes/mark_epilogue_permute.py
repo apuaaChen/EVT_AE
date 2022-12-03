@@ -34,6 +34,15 @@ def pass_mark_epilogue_permutations(module, graph):
                     if user != clone_node:
                         user.replace_input_with(node, clone_node)
                 node.meta["epilogue_permute"] = True
+                continue
+            # step 2: check if view node exists
+            view_node = None
+            for user in list(node.users.keys()):
+                if user.target in [torch.ops.aten.view, torch.ops.aten._unsafe_view]:
+                    view_node = user
+                    break
+            if view_node is not None:
+                node.meta["epilogue_permute"] = True
 
     
     graph.eliminate_dead_code()

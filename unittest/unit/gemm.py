@@ -39,7 +39,7 @@ class GemmTestSm80(unittest.TestCase):
         out = symbolic_traced(gradient_input, input)
         ref = module_reference(gradient_input, input)
         
-        self.assertTrue(torch.allclose(out, ref, atol=0.5))
+        self.assertTrue(torch.allclose(out, ref, atol=1))
             
 if __name__ == '__main__':
     unittest.main()

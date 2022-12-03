@@ -347,6 +347,9 @@ def constant_graph_folding(module, graph):
                 # only inject the subgraph nodes if it is simpler (only one node)
                 # pass_print_graph(submodule, "./sub_module.svg")
                 inject_subgraph(node, node, module, graph, submodule, subgraph)
+            else:
+                pass
+                # pass_print_graph(submodule, "./sub_module_large_%d.svg" % num_subgraph_nodes)
             
 
 

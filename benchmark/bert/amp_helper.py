@@ -1,5 +1,8 @@
 from apex.amp._amp_state import _amp_state
 import contextlib
+import torch
+
+scaler = torch.cuda.amp.GradScaler()
 
 @contextlib.contextmanager
 def scale_loss(loss,
@@ -11,7 +14,7 @@ def scale_loss(loss,
     if not optimizer._amp_stash.params_have_scaled_gradients:
         optimizer._prepare_amp_backward()
 
-    yield loss.float()
+    yield loss.float() * 2048
 
     loss_scaler.clear_overflow_state()
 

@@ -24,6 +24,7 @@ import nvtx
 import operator
 from .softmax_operation import SoftmaxArguments, SoftmaxOperation
 from .softmax_backward_operation import SoftmaxBackwardArguments, SoftmaxBackwardOperation
+from autotuner.design_space_descriptor import GemmConfigDescriptor
 
 
 def get_priority(node):
@@ -65,6 +66,7 @@ class FusedGEMM:
     __name__ = "cutlass_gemm_with_visitor"
     def __init__(self, node) -> None:
         assert node.target == torch.ops.aten.mm
+        self.node = node
         lhs_node = node.args[0]
         rhs_node = node.args[1]
 
@@ -123,22 +125,51 @@ class FusedGEMM:
         
         align_c = get_alignment(N)
 
+        A = TensorDescription(cutlass.float16, lhs_layout, align_a)
+        B = TensorDescription(cutlass.float16, rhs_layout, align_b)
+        C = TensorDescription(cutlass.float16, cutlass.RowMajor, align_c)
+
+        # epilogue functor
+        epilogue_functor = LinearCombination(
+            element_output=C.element, epilogue_vector_length=C.alignment,
+            element_accumulator=math_inst.element_accumulator,
+            element_epilogue=cutlass.float32)
+        
+        # Creating the epilogue visitor tree
+        self.epilogue_functor = EpilogueVisitTreeDAG(
+            elementwise_functor=epilogue_functor, 
+            element_accumulator=math_inst.element_accumulator,
+            elements_per_access=C.alignment,
+            element_compute=cutlass.float32, element_output=C.element
+        )
+
+        self.is_direct_output = self.epilogue_functor.initialize(node)
+        
         # launch autotuner
-        best_config = autotuner(
+        gemm_descriptor = GemmConfigDescriptor(
             problem_size=[M, N, K], element_a=cutlass.float16, layout_a=lhs_layout,
             element_b=cutlass.float16, layout_b=rhs_layout, 
             element_c=cutlass.float16, layout_c=cutlass.RowMajor, 
             element_accumulator=cutlass.float32, alignment_a=align_a,
-            alignment_b=align_b, alignment_c=align_c)
+            alignment_b=align_b, alignment_c=align_c,
+            enable_split_k = self.is_direct_output
+        )
+        best_config = autotuner(gemm_descriptor)
+        
+        print(best_config)
 
-        threadblock_shape = best_config[0:3]
-        threadblock_shape = [int(t) for t in threadblock_shape]
-        warp_shape = best_config[3:6]
-        warp_count = [t // w for t, w in zip(threadblock_shape, warp_shape)]
-        warp_count = [int(t) for t in warp_count]
-        stages = int(best_config[6])
+        threadblock_shape = [
+            best_config['block_x'], best_config['block_y'], best_config['block_z']]
+        warp_count = [
+            best_config['block_x'] // best_config['warp_x'],
+            best_config['block_y'] // best_config['warp_y'],
+            best_config['block_z'] // best_config['warp_z']
+        ]
 
-        log_swizzle = best_config[7]
+        stages = best_config['stage']
+
+        log_swizzle = best_config['log_swizzle']
+        self.split_k_slices = best_config['split_k_slices']
         swizzling_functor = getattr(cutlass, "IdentitySwizzle%d"%int(pow(2, log_swizzle)))
 
 
@@ -146,34 +177,21 @@ class FusedGEMM:
             threadblock_shape, stages, warp_count, math_inst
         )
 
+        
 
-        A = TensorDescription(cutlass.float16, lhs_layout, align_a)
-        B = TensorDescription(cutlass.float16, rhs_layout, align_b)
-        C = TensorDescription(cutlass.float16, cutlass.RowMajor, align_c)
-
-        epilogue_functor = LinearCombination(
-            element_output=C.element, epilogue_vector_length=C.alignment,
-            element_accumulator=math_inst.element_accumulator,
-            element_epilogue=cutlass.float32)
-
-        # Creating the epilogue visitor tree
-        self.epilogue_functor = EpilogueVisitTreeDAG(
-            elementwise_functor=epilogue_functor, 
-            tile_description=tile_description, 
-            element_accumulator=math_inst.element_accumulator,
-            elements_per_access=C.alignment,
-            element_compute=cutlass.float32, element_output=C.element
-        )
-
-        self.epilogue_functor.initialize(node)
-
-        # Initialize the epilogue visitor tree
-
-        self.operation = GemmOperationUniversal(
-            arch=80, tile_description=tile_description,
-            A=A, B=B, C=C, epilogue_functor=self.epilogue_functor,
-            swizzling_functor=swizzling_functor, visitor=True
-        )
+        if self.is_direct_output:
+            self.operation = GemmOperationUniversal(
+                arch=80, tile_description=tile_description,
+                A=A, B=B, C=C, epilogue_functor=epilogue_functor,
+                swizzling_functor=swizzling_functor, visitor=False
+            )
+        else:
+            self.epilogue_functor.optimize(tile_description)
+            self.operation = GemmOperationUniversal(
+                arch=80, tile_description=tile_description,
+                A=A, B=B, C=C, epilogue_functor=self.epilogue_functor,
+                swizzling_functor=swizzling_functor, visitor=True
+            )
 
         pycutlass.compiler.add_module([self.operation,])
 
@@ -208,21 +226,39 @@ class FusedGEMM:
             for idx, epilogue_arg in enumerate(self.epilogue_functor.args):
                 kwargs[epilogue_arg.name] = args[idx]
 
-            output_op = self.operation.epilogue_type(**kwargs)
-            arguments = GemmArguments(
-                operation=self.operation, problem_size=problem_size,
-                A=lhs, B=rhs, C=lhs, D=lhs,
-                output_op=output_op, gemm_mode=cutlass.gemm.Mode.Gemm
-            )
+            if self.is_direct_output:
+                output_tensor = None
+                for key in kwargs.keys():
+                    if "output" in key:
+                        output_tensor = kwargs[key]
+                output_op = self.operation.epilogue_type(1.0, 0.0)
+                arguments = GemmArguments(
+                    operation=self.operation, problem_size=problem_size,
+                    A=lhs, B=rhs, C=output_tensor, D=output_tensor,
+                    output_op=output_op, gemm_mode=cutlass.gemm.Mode.Gemm,
+                    split_k_slices=self.split_k_slices
+                )
+            else:
+                output_op = self.operation.epilogue_type(**kwargs)
+                arguments = GemmArguments(
+                    operation=self.operation, problem_size=problem_size,
+                    A=lhs, B=rhs, C=lhs, D=lhs,
+                    output_op=output_op, gemm_mode=cutlass.gemm.Mode.Gemm
+                )
             if self.stream is None: 
                 self.operation.run(arguments, stream=torch.cuda.current_stream().cuda_stream)
             else:
                 self.stream.wait_stream(torch.cuda.current_stream())
                 self.operation.run(arguments, stream=self.stream.cuda_stream)
-
+                # torch.cuda.current_stream().wait_stream(self.stream)
+            # if self.is_direct_output:
+            #     print(output_tensor)
             results = []
             for output_node in self.outputs:
                 results.append(kwargs["output_" + output_node.name])
+            if hasattr(arguments, "workspace_buffer"):
+                self.workspace_buffer = arguments.workspace_buffer
+                self.node.meta["workspace_buffer"] = arguments.workspace_buffer
         return results
 
 
@@ -301,13 +337,13 @@ class FusedBMM:
         # Creating the epilogue visitor tree
         self.epilogue_functor = EpilogueVisitTreeDAG(
             elementwise_functor=epilogue_functor, 
-            tile_description=tile_description, 
             element_accumulator=math_inst.element_accumulator,
             elements_per_access=C.alignment,
             element_compute=cutlass.float32, element_output=C.element
         )
 
         self.epilogue_functor.initialize(node)
+        self.epilogue_functor.optimize(tile_description)
 
         C = TensorDescription(cutlass.float16, self.epilogue_functor.output_layout, 8)
 
@@ -429,13 +465,13 @@ class FusedSoftmax:
         
         self.epilogue_functor = EpilogueVisitTreeDAG(
             elementwise_functor=epilogue_functor, 
-            tile_description=tile_description, 
             element_accumulator=cutlass.float32,
             elements_per_access=Output.alignment,
             element_compute=cutlass.float32, element_output=Output.element
         )
 
         self.epilogue_functor.initialize(node)
+        self.epilogue_functor.optimize(tile_description)
 
         self.operation = SoftmaxOperation(
             input=Input, output=Output, threadblock_tile=tile_description.threadblock_shape,
@@ -549,13 +585,13 @@ class FusedSoftmaxBackward:
         
         self.epilogue_functor = EpilogueVisitTreeDAG(
             elementwise_functor=epilogue_functor, 
-            tile_description=tile_description, 
             element_accumulator=cutlass.float32,
             elements_per_access=Output.alignment,
             element_compute=cutlass.float32, element_output=Output.element
         )
 
         self.epilogue_functor.initialize(node)
+        self.epilogue_functor.optimize(tile_description)
 
         self.operation = SoftmaxBackwardOperation(
             input=Input, output=Output, threadblock_tile=tile_description.threadblock_shape,

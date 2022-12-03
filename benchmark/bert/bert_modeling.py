@@ -71,7 +71,7 @@ class BertPretrainingCriterion(torch.nn.Module):
 
     def __init__(self, vocab_size, sequence_output_is_dense=False):
         super(BertPretrainingCriterion, self).__init__()
-        self.loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-1)
+        self.loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-1, reduction='sum')
         self.vocab_size = vocab_size
         self.sequence_output_is_dense = sequence_output_is_dense
 
@@ -111,7 +111,9 @@ class Bert(torch.nn.Module):
     
     def forward(self, input_ids, token_type_ids, attention_mask, masked_lm_labels, labels, next_sentence_labels):
         embedding_output = self.embedding(input_ids, token_type_ids)
-        return self.encoder(input_ids, embedding_output, attention_mask, masked_lm_labels, labels, next_sentence_labels)
+        loss_sum = self.encoder(input_ids, embedding_output, attention_mask, masked_lm_labels, labels, next_sentence_labels)
+        valid_labels = torch.sum(torch.ne(labels, -1))
+        return loss_sum / valid_labels
     
     def aot_optimize(self, fw_compiler, bw_compiler, partition_fn):
         self.encoder = aot_module(
@@ -133,10 +135,12 @@ class Bert(torch.nn.Module):
         with torch.cuda.stream(s):
             for _ in range(warmup_iteration):
                 optimizer.zero_grad()
-                loss = self.encoder(
+                loss_sum = self.encoder(
                     self.static_input_ids, self.static_embedding_output, 
                     self.static_attention_mask, self.static_labels, 
                     self.static_labels, self.static_next_sentence_labels)
+                valid_labels = torch.sum(torch.ne(self.static_labels, -1))
+                loss = loss_sum / valid_labels
                 with scale_loss(loss, optimizer) as scaled_loss:
                     scaled_loss.backward()
         
@@ -152,10 +156,12 @@ class Bert(torch.nn.Module):
         self.encoder_graph = torch.cuda.CUDAGraph()
         optimizer.zero_grad()
         with torch.cuda.graph(self.encoder_graph):
-            loss = self.encoder(
+            loss_sum = self.encoder(
                 self.static_input_ids, self.static_embedding_output, 
                 self.static_attention_mask, self.static_labels, 
                 self.static_labels, self.static_next_sentence_labels)
+            valid_labels = torch.sum(torch.ne(self.static_labels, -1))
+            loss = loss_sum / valid_labels
             with scale_loss(loss, optimizer) as scaled_loss:
                 scaled_loss.backward()
     

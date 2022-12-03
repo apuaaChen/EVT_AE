@@ -1,6 +1,7 @@
 import cutlass
 from math import floor, log2
 import random
+import numpy as np
 
 
 v100_metafile = {
@@ -36,13 +37,15 @@ element_size = {
 # a workload with different input sizes.
 # We remind that, the same GEMM workload requires significantly different parameters under different 
 #   input shapes.  
-class Heuristics:
+class GemmHeuristics:
     # We only check a few heuristics such as tiling size should be power of 2.
     # We expect ML cost model to learn heuristics between parameters and GPU metafile.
     def __init__(
-        self, metafile, element_a, element_b, element_c, element_accumulator, layout_a, layout_b, alignment_a, alignment_b, alignment_c) -> None:
+        self, element_a, element_b, element_c, element_accumulator, 
+        layout_a, layout_b, alignment_a, alignment_b, alignment_c,
+        enable_split_k=False) -> None:
         #
-        self.metafile = metafile
+        self.metafile = a100_metafile
         self.element_a = element_a
         self.element_b = element_b
         self.element_c = element_c
@@ -52,6 +55,7 @@ class Heuristics:
         self.alignment_b = alignment_b
         self.alignment_c = alignment_c
         self.element_accumulator = element_accumulator
+        self.enable_split_k = enable_split_k
         self.set_parameter_range()
 
     def check_shared_memory_size(self, shared_memory_size):
@@ -76,18 +80,23 @@ class Heuristics:
         res.append(parameters["log_swizzle"])
         return res
 
+    def set_parameter_range(self):
+        if self.enable_split_k:
+            max_split_k_slices = 16
+        else:
+            max_split_k_slices = 1
+        self.parameter_range = {
+            "max_tiling_size" : 128,
+            "max_stages" : 5,
+            "max_log_swizzling": 3,
+            "max_split_k_slices": max_split_k_slices
+        }
+
     # A heuristic for proposing a tiling size within the max_size. Should be power of 2 for efficiency.
     def propose_tiling_size(self, max_size):
         max_log = floor(log2(max_size))
         exponent = random.randint(1, max_log+1)
         return 1<<exponent
-
-    def set_parameter_range(self):
-        self.parameter_range = {
-            "max_tiling_size" : 128,
-            "max_stages" : 5,
-            "max_log_swizzling": 3
-        }
 
     # propose the warp, threadblock tiling size, #stage, and swizzling stride
     def propose_parameters(self):
@@ -103,13 +112,39 @@ class Heuristics:
         
         num_stages = random.randint(2, self.parameter_range["max_stages"])
         log_swizzle = random.randint(0, self.parameter_range["max_log_swizzling"])
+        split_k_slices = random.randint(1, self.parameter_range["max_split_k_slices"])
         parameters = {
-            "warp_tiling_size" : warp_tiling_size,
-            "block_tiling_size" : block_tiling_size,
-            "num_stages" : num_stages,
-            "log_swizzle": log_swizzle
+            "block_x": block_tiling_size[0],
+            "block_y": block_tiling_size[1],
+            "block_z": block_tiling_size[2],
+            "warp_x": warp_tiling_size[0],
+            "warp_y": warp_tiling_size[1],
+            "warp_z": warp_tiling_size[2],
+            "stage": num_stages,
+            "log_swizzle": log_swizzle,
+            "split_k_slices": split_k_slices
         } 
         return parameters
+
+    # propose a valid parameter
+    def propose_valid_parameters(self):
+        parameters = self.propose_parameters()
+        while not self.is_valid(parameters):
+            parameters = self.propose_parameters()
+        return parameters
+    
+    # convert parameter as feature vector
+    def parameter_to_feature(self, parameter, problem_size):
+        feature = np.array(
+            [
+                parameter["block_x"], parameter["block_y"], parameter["block_z"],
+                parameter["warp_x"], parameter["warp_y"], parameter["warp_z"],
+                parameter["stage"], parameter["log_swizzle"], 
+                parameter["split_k_slices"], problem_size[0], 
+                problem_size[1], problem_size[2]
+            ]
+        )
+        return feature.reshape((1, 12))
 
     # A heuristic for gemm only. Block tiles need to fit in shared memory.
     # Assuming there are three tiling sizes [b_m, b_n, b_k]
@@ -158,38 +193,6 @@ class Heuristics:
         #         return False
         return True
 
-    @staticmethod
-    def check_too_many_predicate(num_iteration):
-        if num_iteration <= 0:
-            return False
-        predicate_count = num_iteration
-        predicate_byte_count = (predicate_count + 3) // 4
-        predicate_word_count = (predicate_byte_count + 3) // 4
-        return predicate_word_count <= 4
-
-    
-    def check_memory_load_iterations(self, warp_tiling_size, block_tiling_size):
-        # Cutlass assume all the threads participate in loading the lhs and rhs operands
-        # So at least one iteration is required for every thread
-        bm = block_tiling_size[0]
-        bn = block_tiling_size[1]
-        bk = block_tiling_size[2]
-
-        wm = warp_tiling_size[0]
-        wn = warp_tiling_size[1]
-
-        num_elements_per_access = (bm * bn / wm / wn) * 32 * (16 // self.element_a)
-        lhs_elements_per_access = bk * bm
-        rhs_elements_per_access = bk * bn
-
-        lhs_iteration = lhs_elements_per_access // num_elements_per_access
-        rhs_iteration = rhs_elements_per_access // num_elements_per_access
-
-        if (lhs_elements_per_access % num_elements_per_access == 0 and rhs_elements_per_access % num_elements_per_access == 0 and Heuristics.check_too_many_predicate(lhs_iteration) and Heuristics.check_too_many_predicate(rhs_iteration)):
-            return True
-        else:
-            return False
-
     def check_warp_count(self, warp_tiling_size, block_tiling_size):
         bm = block_tiling_size[0]
         bn = block_tiling_size[1]
@@ -200,91 +203,28 @@ class Heuristics:
         if (bm * bn / wm / wn >= 16):
             return False
         return True
-
-    def check_limited_tiling_size_difference(self, tiling_size):
-        m = tiling_size[0]
-        n = tiling_size[1]
-
-        return (m == n) or (m == 2*n)
     
-    def check_threadmap_load_iterations(self, block_tiling_size):
-        bm = block_tiling_size[0]
-        bn = block_tiling_size[1]
-        bk = block_tiling_size[2]
-
-        if self.layout_a == cutlass.RowMajor:
-            if bk % (4 * 16 // self.element_a) != 0:
-                return False
-            if bk >= 128:
-                return False
-        else:
-            if bm % (8 * 16 // self.element_a) != 0:
-                return False
-        
-        if self.layout_b == cutlass.RowMajor:
-            if bn % (8 * 16 // self.element_b) != 0:
-                return False
-        else:
-            if bk % (4 * 16 // self.element_b) != 0:
-                return False
-            if bk >= 128:
-                return False
-        
-        return True
-
-
     # More heuristics can be added...
     def is_valid(self, parameters):
-        # valid = self.check_warp_tiling_size_valid(parameters["warp_tiling_size"]) \
-        #         and self.check_block_tiling_size_valid(parameters["block_tiling_size"], parameters["num_stages"]) \
-        #          \
-        #         and self.check_memory_load_iterations(parameters["warp_tiling_size"], parameters["block_tiling_size"]) \
-        #          \
-        #         and self.check_limited_tiling_size_difference(parameters["warp_tiling_size"]) \
-        #         and self.check_limited_tiling_size_difference(parameters["block_tiling_size"]) \
-        #         and self.check_threadmap_load_iterations(parameters["block_tiling_size"])
+        block_tiling_size = [
+            parameters["block_x"], parameters["block_y"], parameters["block_z"]]
+        warp_tiling_size = [
+            parameters["warp_x"], parameters["warp_y"], parameters["warp_z"]
+        ]
         try:
             GemmUniversalRule(
                 self.element_a, self.layout_a, self.alignment_a,
                 self.element_b, self.layout_b, self.alignment_b,
                 self.element_c, self.alignment_c,
-                self.element_accumulator, parameters["block_tiling_size"],
-                parameters["warp_tiling_size"], [16, 8, 16], parameters["num_stages"])
-        except:
+                self.element_accumulator, block_tiling_size,
+                warp_tiling_size, [16, 8, 16], parameters["stage"])
+        except (AssertionError, ZeroDivisionError):
             return False
-        
-        valid = self.check_block_tiling_size_valid(parameters["block_tiling_size"], parameters["num_stages"]) \
-            and self.check_warp_tiling_size_valid(parameters["warp_tiling_size"]) \
-            and self.check_warp_count(parameters["warp_tiling_size"], parameters["block_tiling_size"]) \
-            and self.check_harmony_block_warp_tiling_size(parameters["warp_tiling_size"], parameters["block_tiling_size"])
+        valid = self.check_block_tiling_size_valid(block_tiling_size, parameters["stage"]) \
+            and self.check_warp_tiling_size_valid(warp_tiling_size) \
+            and self.check_warp_count(warp_tiling_size, block_tiling_size) \
+            and self.check_harmony_block_warp_tiling_size(warp_tiling_size, block_tiling_size)
         return valid
-
-# if __name__ == "__main__":
-#     heuristics = Heuristics(
-#         a100_metafile, element_a=cutlass.float16, element_b=cutlass.float16, 
-#         element_accumulator=cutlass.float32, layout_a=cutlass.RowMajor, 
-#         layout_b=cutlass.RowMajor)
-    
-#     parameters = {
-#         "warp_tiling_size" : [64, 64, 32],
-#         "block_tiling_size" : [128, 128, 32],
-#         "num_stages" : 5,
-#         "log_swizzle": 3
-#     }
-
-#     print(heuristics.is_valid(parameters))
-
-
-################################################################################
-# Default Mma Core:
-#
-#   A: column-major
-#   B: row-major
-#   Operator: tensor op class
-#
-#  static_assert(
-#       !(Shape::kM % WarpShape::kM) && !(Shape::kN % WarpShape::kN),
-#       "Threadblock-scoped GEMM should be divisible by warp-scoped GEMM size.");
 
 
 class PitchLinearShape:
@@ -931,7 +871,8 @@ if __name__ == "__main__":
         cutlass.float16, cutlass.RowMajor, 8,
         cutlass.float16, cutlass.ColumnMajor, 8,
         cutlass.float16, 8,
-        cutlass.float32, [128, 16, 64], [64, 16, 64],
+        cutlass.float32, [1, 128, 64], [64, 64, 64],
         [16, 8, 16], 2
     )
+    print(rule)
     

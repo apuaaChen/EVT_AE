@@ -108,12 +108,36 @@ class TensorOutputNodeDAG(TensorOutputNode):
         
 
 class RowReductionNodeDAG(RowReductionNode):
-    def __init__(self, element_accumulator, element_reduction, element_reduction_accumulator, id, factor) -> None:
-        super().__init__(element_accumulator, element_reduction, element_reduction_accumulator, id, factor)
+    def __init__(self, element_accumulator, element_reduction, element_reduction_accumulator, node, atomic=True) -> None:
+        super().__init__(element_accumulator, element_reduction, element_reduction_accumulator, "output_" + node.name, 1., atomic)
+        self.node = node
+        non_reduction_dims = [iter_var for iter_var in node.meta["tensor"].get_iter_vars() if iter_var.extent > 1]
+        if non_reduction_dims[0].name == "m":
+            self.factor, self.mod = node.meta["tensor"].get_iterator_factor_mod('b', 'b')
+        elif non_reduction_dims[0].name == "b.1+m":
+            self.factor, self.mod = node.meta["tensor"].get_iterator_factor_mod('b', 'b.1')
+        else:
+            raise NotImplementedError
+        print("factor: %d, mod: %d" % (self.factor, self.mod))
+    
+    def get_argument(self, visitor_args, kwargs):
+        self.argument = self.epilogue_node.argument_type(kwargs[self.id + "_ptr"], *visitor_args, self.get_batch_stride(kwargs["problem_size"]), self.factor, self.mod)
 
 class ColumnReductionNodeDAG(ColumnReductionNode):
-    def __init__(self, element_accumulator, element_reduction, element_reduction_accumulator, id, factor) -> None:
-        super().__init__(element_accumulator, element_reduction, element_reduction_accumulator, id, factor)
+    def __init__(self, element_accumulator, element_reduction, element_reduction_accumulator, node, atomic=True) -> None:
+        super().__init__(element_accumulator, element_reduction, element_reduction_accumulator, "output_" + node.name, 1., atomic)
+        self.node = node
+        non_reduction_dims = [iter_var for iter_var in node.meta["tensor"].get_iter_vars() if iter_var.extent > 1]
+        if non_reduction_dims[0].name == "n":
+            self.factor, self.mod = node.meta["tensor"].get_iterator_factor_mod('b', 'b')
+        elif non_reduction_dims[0].name == "b.1+n":
+            self.factor, self.mod = node.meta["tensor"].get_iterator_factor_mod('b', 'b.1')
+        else:
+            raise NotImplementedError
+        print("factor: %d, mod: %d" % (self.factor, self.mod))
+    
+    def get_argument(self, visitor_args, kwargs):
+        self.argument = self.epilogue_node.argument_type(kwargs[self.id + '_ptr'], *visitor_args, self.get_batch_stride(kwargs["problem_size"]), self.factor, self.mod)
 
 # operators
 operators = {
@@ -402,43 +426,43 @@ class EpilogueASTDAG:
                 self.pass_binary_2_unary(tree, child)
     
     # pass 2: inject reduction nodes
-    def pass_inject_reduction(self, tree, nid):
-        node = tree.get_node(nid)
-        if isinstance(node.data, TensorOutputNodeDAG):
-            if node.data.id in self.reduction_source.keys():
-                direction = self.reduction_source[node.data.id][0]
-                target = self.reduction_source[node.data.id][-1]
-                if direction == 'row':
-                    reduction_node = RowReductionNodeDAG(
-                        self.element_accumulator, self.element_output,
-                        self.element_accumulator, target, self.tile_description.threadblock_shape[1])
-                elif direction == "column":
-                    reduction_node = ColumnReductionNodeDAG(
-                        self.element_accumulator, self.element_output,
-                        self.element_accumulator, target, self.tile_description.threadblock_shape[0])
-                else:
-                    raise ValueError(direction)
-                child_nid = node.successors(tree.identifier)[0]
-                # if this output node is injected only for reduction
-                if node.data.id not in self.returns:
-                    # get reduction config from disc
-                    node.data = reduction_node
-                    node.tag = reduction_node.tag
-                    self.pass_inject_reduction(tree, child_nid)
-                # if this output node is also a tensor output, inject reduction as its children
-                else:
-                    # get child node
-                    tree.create_node(reduction_node.tag, reduction_node.id, data=reduction_node, parent=node.data.id)
-                    tree.move_node(child_nid, reduction_node.id)
-                    child = tree.get_node(child_nid)
-                    for grand_child in child.successors(tree.identifier):
-                        self.pass_inject_reduction(tree, grand_child)
-            else:
-                for child in node.successors(tree.identifier):
-                    self.pass_inject_reduction(tree, child)
-        else:
-            for child in node.successors(tree.identifier):
-                self.pass_inject_reduction(tree, child)
+    # def pass_inject_reduction(self, tree, nid):
+    #     node = tree.get_node(nid)
+    #     if isinstance(node.data, TensorOutputNodeDAG):
+    #         if node.data.id in self.reduction_source.keys():
+    #             direction = self.reduction_source[node.data.id][0]
+    #             target = self.reduction_source[node.data.id][-1]
+    #             if direction == 'row':
+    #                 reduction_node = RowReductionNodeDAG(
+    #                     self.element_accumulator, self.element_output,
+    #                     self.element_accumulator, target, self.tile_description.threadblock_shape[1])
+    #             elif direction == "column":
+    #                 reduction_node = ColumnReductionNodeDAG(
+    #                     self.element_accumulator, self.element_output,
+    #                     self.element_accumulator, target, self.tile_description.threadblock_shape[0])
+    #             else:
+    #                 raise ValueError(direction)
+    #             child_nid = node.successors(tree.identifier)[0]
+    #             # if this output node is injected only for reduction
+    #             if node.data.id not in self.returns:
+    #                 # get reduction config from disc
+    #                 node.data = reduction_node
+    #                 node.tag = reduction_node.tag
+    #                 self.pass_inject_reduction(tree, child_nid)
+    #             # if this output node is also a tensor output, inject reduction as its children
+    #             else:
+    #                 # get child node
+    #                 tree.create_node(reduction_node.tag, reduction_node.id, data=reduction_node, parent=node.data.id)
+    #                 tree.move_node(child_nid, reduction_node.id)
+    #                 child = tree.get_node(child_nid)
+    #                 for grand_child in child.successors(tree.identifier):
+    #                     self.pass_inject_reduction(tree, grand_child)
+    #         else:
+    #             for child in node.successors(tree.identifier):
+    #                 self.pass_inject_reduction(tree, child)
+    #     else:
+    #         for child in node.successors(tree.identifier):
+    #             self.pass_inject_reduction(tree, child)
 
     def pass_inject_epilogue_op(self, tree, nid):
         node = tree.get_node(nid)
@@ -465,15 +489,18 @@ class EpilogueASTDAG:
                 if node.target == torch.ops.aten.permute:
                     if "epilogue_permute" not in node.meta.keys():
                         self.root_candidates[node.args[0]] = []
-                        return
+                        continue
                 try:
                     node.meta['tensor'].get_node_tensor_bottom_up(usr)
                 except NotImplementedError:
                     self.root_candidates[node] = []
-                    return
+                    continue
                 except:
                     print(usr)
                     assert 0
+                if usr.target in [torch.ops.aten.sum]:
+                    self.root_candidates[node] = [usr]
+                    continue
                 self.get_candidate_root_bmm(usr)
 
     
@@ -481,7 +508,6 @@ class EpilogueASTDAG:
         """
         This function parses the ast from the root in the top-down manner
         """
-        print(node.target)
         # step 1: check if the node is a dependency of anchor
         if node.op == "call_function":
             if node != self.anchor and dfs(node, self.anchor):
@@ -605,13 +631,13 @@ class EpilogueASTDAG:
         print(self.root_candidates)
 
         # filter root candiates
-        for root in self.root_candidates.keys():
-            if root.target == torch.ops.aten.sum:
-                for others in self.root_candidates.keys():
-                    if others == root: continue
-                    if root.args[0] in others.args:
-                        self.root_candidates[others].append(root)
-                        self.root_candidates[root] = None
+        # for root in self.root_candidates.keys():
+        #     if root.target == torch.ops.aten.sum:
+        #         for others in self.root_candidates.keys():
+        #             if others == root: continue
+        #             if root.args[0] in others.args:
+        #                 self.root_candidates[others].append(root)
+        #                 self.root_candidates[root] = None
         
         if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data]:
             root_to_remove = []
@@ -643,6 +669,52 @@ class EpilogueASTDAG:
         # TODO: handle the case that cost of two graphs is the same
 
     def visit(self, node):
+        
+        reduction_node = None
+        ### inject reduction
+        for user_node in list(node.users.keys()):
+            # step 1: get the reduction user node
+            if user_node.target in [torch.ops.aten.sum]:
+                # step 2: get the non-reduction direction
+                assert "tensor" in list(user_node.meta.keys())
+                non_reduction_dims = [iter_var for iter_var in user_node.meta["tensor"].get_iter_vars() if iter_var.extent > 1]
+                print(non_reduction_dims[0].name)
+                reduction_type = None
+                # currently we only support row reduction and column reduction
+                if len(non_reduction_dims) == 1:
+                    if non_reduction_dims[0].name == "m":
+                        reduction_type = "row_reduction"
+                    elif non_reduction_dims[0].name == "n":
+                        reduction_type = "column_reduction"
+                    elif non_reduction_dims[0].name == "b.1+m":
+                        reduction_type = "row_reduction"
+                    elif non_reduction_dims[0].name == "b.1+n":
+                        reduction_type = "column_reduction"
+                
+                if reduction_type is not None:
+                    # case 1: for GEMM kernels
+                    if self.anchor.target in [torch.ops.aten.mm, torch.ops.aten.bmm]:
+                        # create reduction node
+                        if reduction_type == "row_reduction":
+                            reduction_node = RowReductionNodeDAG(
+                                self.element_accumulator, self.element_output,
+                                self.element_accumulator, user_node
+                            )
+                        elif reduction_type == "column_reduction":
+                            reduction_node = ColumnReductionNodeDAG(
+                                self.element_accumulator, self.element_output,
+                                self.element_accumulator, user_node
+                            )
+                        else:
+                            raise NotImplementedError()
+                        self.outputs.append(user_node)
+        
+        if reduction_node is not None:
+            if len(self.stack) == 0:
+                self.epilogue_tree.create_node(reduction_node.tag, reduction_node.id, data=reduction_node)
+            else:
+                self.epilogue_tree.create_node(reduction_node.tag, reduction_node.id, parent=self.stack[-1], data=reduction_node)
+            self.stack.append(reduction_node.id)
         
         is_input = False
         # TODO: the tensor input can be output of another node
@@ -913,7 +985,7 @@ using ${operation_name}_EpilogueVisitor = cutlass::epilogue::threadblock::Epilog
         function = self.function
 
         function.pass_binary_2_unary(self.tree, self.tree.root)
-        function.pass_inject_reduction(self.tree, self.tree.root)
+        # function.pass_inject_reduction(self.tree, self.tree.root)
         function.pass_inject_epilogue_op(self.tree, self.tree.root)
 
         visitor = self.tree.get_node(self.tree.root).data.epilogue_node

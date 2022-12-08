@@ -21,8 +21,8 @@ module_reference = WeightGradient()
 
 ## run the compiler pass
 symbolic_traced : torch.fx.GraphModule = symbolic_trace(module)
-gradient_input = torch.randn((16384, 4096), dtype=torch.float16, device="cuda")
-input = torch.randn((16384, 4096), dtype=torch.float16, device="cuda")
+gradient_input = torch.randn((16384, 1024), dtype=torch.float16, device="cuda")
+input = torch.randn((16384, 1024), dtype=torch.float16, device="cuda")
 
 ShapeProp(symbolic_traced).propagate(gradient_input, input)
 

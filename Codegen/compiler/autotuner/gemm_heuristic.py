@@ -227,6 +227,24 @@ class GemmHeuristics:
         return valid
 
 
+class BatchedGemmHeuristics(GemmHeuristics):
+    def __init__(
+        self, element_a, element_b, element_c, element_accumulator, 
+        layout_a, layout_b, alignment_a, alignment_b, alignment_c) -> None:
+        super().__init__(
+            element_a, element_b, element_c, element_accumulator, layout_a, 
+            layout_b, alignment_a, alignment_b, alignment_c, 
+            enable_split_k=False)
+    
+    def set_parameter_range(self):
+        self.parameter_range = {
+            "max_tiling_size" : 128,
+            "max_stages" : 5,
+            "max_log_swizzling": 0,
+            "max_split_k_slices": 1
+        }
+
+
 class PitchLinearShape:
     def __init__(self, contiguous, strided) -> None:
         self.contiguous_ = contiguous

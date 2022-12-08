@@ -228,7 +228,6 @@ class IterVarHyperGraph:
                     neg_idx = idx
             shape[neg_idx] = numel
             
-        self.print_iter_vars()
         iter_var_list = self.get_iter_vars()
         self.infer_split(shape, iter_var_list)
         self.pass_flat_order_edges()
@@ -280,6 +279,11 @@ class IterVarHyperGraph:
         for idx, var in enumerate(iter_var_list):
             if idx not in indices:
                 self.graph.nodes[var.name]["attr"]["data"].valid = False
+    
+    def reduce(self, indices):
+        iter_vars = self.get_iter_vars()
+        for idx in indices:
+            self._debroadcast(iter_vars[idx])
 
     
     ### Graph optimization passes
@@ -455,21 +459,59 @@ class IterVarHyperGraph:
         except NotImplementedError:
             # TODO: this is not always true
             return "tensor"
+    
+    def get_iterator_factor_mod(self, source_iter_name, target_iter_name):
+        try:
+            target_iter = self.get_node_data(target_iter_name)
+            # we need to first remove the order edges
+            self.remove_order_edges()
+            # get the path between 'b' and the itervar 'b*'
+            # we interpret the factor in this way
+            path = nx.shortest_path(self.graph, source_iter_name, target_iter_name)
+            factor = 1
+            for idx, node in enumerate(path):
+                node_data = self.get_node_data(node)
+                if isinstance(node_data, SplitNode):
+                    shape = node_data.shape
+                    # get the factor
+                    chosen = path[idx + 1]
+                    # get the successors of split node
+                    successors = list(self.graph.successors(node))
+                    successor_idx = successors.index(chosen)
+                    for i in range(successor_idx+1, len(shape), 1):
+                        factor *= shape[i]
+                elif isinstance(node_data, IterVar):
+                    continue
+                else:
+                    raise NotImplementedError()
+            
+            # get the modulo
+            mod = target_iter.extent
+        
+            return 1./factor, mod
+        except:
+            return 1, 1
+
 
     def get_batch_factor_mod(self):
         iter_vars = self.get_iter_vars()
         # get m & n
 
         valid_iters = {
-            "b": None,
-            "m": None,
-            "n": None
+            "b": [],
+            "m": [],
+            "n": []
         }
 
         for iter_var in iter_vars:
             if iter_var.extent > 1:
                 if "b" in iter_var.name:
-                    valid_iters['b'] = iter_var
+                    valid_iters['b'].append(iter_var)
+        # assert len(valid_iters['b']) <= 1
+        try:
+            valid_iters['b'] = valid_iters['b'][0]
+        except:
+            valid_iters['b'] = None
 
         # get batch factor and modulo
         if valid_iters['b'] is not None:
@@ -498,12 +540,13 @@ class IterVarHyperGraph:
             # get the modulo
             mod = valid_iters['b'].extent
         
-            return factor, mod
+            return 1./factor, mod
         else:
             return None, None
 
     ## parser functions
     def get_node_tensor_bottom_up(self, node):
+        print(node)
         shape = self.get_shape()
         new_graph = deepcopy(self)
         if node.target in [torch.ops.aten.view, torch.ops.aten._unsafe_view]:
@@ -528,6 +571,10 @@ class IterVarHyperGraph:
             node.meta["tensor"] = new_graph
         elif node.target in [torch.ops.aten.permute]:
             new_graph.permute(node.args[1])
+            node.meta["tensor"] = new_graph
+        elif node.target in [torch.ops.aten.sum]:
+            print("process sum node!!!!")
+            new_graph.reduce(node.args[1])
             node.meta["tensor"] = new_graph
         else:
             raise NotImplementedError("unsupported operator")

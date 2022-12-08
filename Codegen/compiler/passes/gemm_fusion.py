@@ -24,7 +24,7 @@ import nvtx
 import operator
 from .softmax_operation import SoftmaxArguments, SoftmaxOperation
 from .softmax_backward_operation import SoftmaxBackwardArguments, SoftmaxBackwardOperation
-from autotuner.design_space_descriptor import GemmConfigDescriptor
+from autotuner.design_space_descriptor import GemmConfigDescriptor, BatchedGemmConfigDescriptor
 
 
 def get_priority(node):
@@ -217,11 +217,18 @@ class FusedGEMM:
             problem_size = cutlass.gemm.GemmCoord(M, N, K)
             kwargs = {"problem_size": [M, N]}
             for output_node in self.outputs:
-                kwargs["output_" + output_node.name] = torch.empty(
-                    size=output_node.meta['tensor_meta'].shape,
-                    dtype=output_node.meta['tensor_meta'].dtype,
-                    device="cuda"
-                )
+                if output_node.target in [torch.ops.aten.sum]:
+                    kwargs["output_" + output_node.name] = torch.zeros(
+                        size=output_node.meta['tensor_meta'].shape,
+                        dtype=output_node.meta['tensor_meta'].dtype,
+                        device="cuda"
+                    )
+                else:
+                    kwargs["output_" + output_node.name] = torch.empty(
+                        size=output_node.meta['tensor_meta'].shape,
+                        dtype=output_node.meta['tensor_meta'].dtype,
+                        device="cuda"
+                    )
 
             for idx, epilogue_arg in enumerate(self.epilogue_functor.args):
                 kwargs[epilogue_arg.name] = args[idx]
@@ -250,7 +257,6 @@ class FusedGEMM:
             else:
                 self.stream.wait_stream(torch.cuda.current_stream())
                 self.operation.run(arguments, stream=self.stream.cuda_stream)
-                # torch.cuda.current_stream().wait_stream(self.stream)
             # if self.is_direct_output:
             #     print(output_tensor)
             results = []
@@ -258,6 +264,7 @@ class FusedGEMM:
                 results.append(kwargs["output_" + output_node.name])
             if hasattr(arguments, "workspace_buffer"):
                 self.workspace_buffer = arguments.workspace_buffer
+                pycutlass.memory_pool.reserved_buffers[self.node.name + "workspace_buffer"] = arguments.workspace_buffer
                 self.node.meta["workspace_buffer"] = arguments.workspace_buffer
         return results
 
@@ -317,23 +324,32 @@ class FusedBMM:
             opcode_class=cutlass.OpClass.TensorOp
         )
 
-        # launch autotuner
-        # TODO: implement the autotuner for batched case
-        tile_description = TileDescription(
-            threadblock_shape=[128, 128, 32], stages=5, warp_count=[2, 2, 1], math_instruction=math_inst
-        )
+        # get max alignment
+        if self.lhs_layout == cutlass.RowMajor:
+            align_a = get_alignment(K)
+        elif self.lhs_layout == cutlass.ColumnMajor:
+            align_a = get_alignment(M)
+        else:
+            raise NotImplementedError
+        
+        if self.rhs_layout == cutlass.RowMajor:
+            align_b = get_alignment(N)
+        elif self.rhs_layout == cutlass.ColumnMajor:
+            align_b = get_alignment(K)
+        else:
+            raise NotImplementedError
+        
+        align_c = get_alignment(N)
 
-        A = TensorDescription(cutlass.float16, self.lhs_layout, 8)
-        B = TensorDescription(cutlass.float16, self.rhs_layout, 8)
-        C = TensorDescription(cutlass.float16, cutlass.RowMajor, 8)
-
-        swizzling_functor = cutlass.BatchedIdentitySwizzle
+        A = TensorDescription(cutlass.float16, self.lhs_layout, align_a)
+        B = TensorDescription(cutlass.float16, self.rhs_layout, align_b)
+        C = TensorDescription(cutlass.float16, cutlass.RowMajor, align_c)
 
         epilogue_functor = LinearCombination(
             element_output=C.element, epilogue_vector_length=C.alignment,
             element_accumulator=math_inst.element_accumulator,
             element_epilogue=cutlass.float32)
-        
+
         # Creating the epilogue visitor tree
         self.epilogue_functor = EpilogueVisitTreeDAG(
             elementwise_functor=epilogue_functor, 
@@ -343,6 +359,35 @@ class FusedBMM:
         )
 
         self.epilogue_functor.initialize(node)
+
+        bmm_descriptor = BatchedGemmConfigDescriptor(
+            problem_size=[batch, M, N, K], element_a=cutlass.float16, layout_a=self.lhs_layout,
+            element_b=cutlass.float16, layout_b=self.rhs_layout,
+            element_c=cutlass.float16, layout_c=cutlass.RowMajor,
+            element_accumulator=cutlass.float32, alignment_a=align_a,
+            alignment_b=align_b, alignment_c=align_c, permute_a=lhs_permute,
+            permute_b=rhs_permute
+        )
+        best_config = autotuner(bmm_descriptor)
+
+        print(best_config)
+
+        threadblock_shape = [
+            best_config['block_x'], best_config['block_y'], best_config['block_z']]
+        warp_count = [
+            best_config['block_x'] // best_config['warp_x'],
+            best_config['block_y'] // best_config['warp_y'],
+            best_config['block_z'] // best_config['warp_z']
+        ]
+        
+        stages = best_config['stage']
+
+        swizzling_functor = cutlass.BatchedIdentitySwizzle
+
+        tile_description = TileDescription(
+            threadblock_shape, stages, warp_count, math_inst
+        )
+    
         self.epilogue_functor.optimize(tile_description)
 
         C = TensorDescription(cutlass.float16, self.epilogue_functor.output_layout, 8)
@@ -388,11 +433,18 @@ class FusedBMM:
             else:
                 kwargs = {"problem_size": [self.problem_size.n(), self.problem_size.m()], "batch_size": self.batch}
             for output_node in self.outputs:
-                kwargs["output_" + output_node.name] = torch.empty(
-                    size=output_node.meta['tensor_meta'].shape,
-                    dtype=output_node.meta['tensor_meta'].dtype,
-                    device="cuda"
-                )
+                if output_node.target in [torch.ops.aten.sum]:
+                    kwargs["output_" + output_node.name] = torch.zeros(
+                        size=output_node.meta['tensor_meta'].shape,
+                        dtype=output_node.meta['tensor_meta'].dtype,
+                        device="cuda"
+                    )
+                else:
+                    kwargs["output_" + output_node.name] = torch.empty(
+                        size=output_node.meta['tensor_meta'].shape,
+                        dtype=output_node.meta['tensor_meta'].dtype,
+                        device="cuda"
+                    )
 
             for idx, epilogue_arg in enumerate(self.epilogue_functor.args):
                 kwargs[epilogue_arg.name] = args[idx]

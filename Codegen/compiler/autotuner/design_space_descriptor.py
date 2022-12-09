@@ -24,6 +24,8 @@ class ConfigDescriptor:
                     key += "_%d" % arg
                 elif isinstance(arg, bool):
                     key += "_%d" % int(arg)
+                elif isinstance(arg, str):
+                    key += "_" + arg
                 else:
                     key += self.arg_key[arg]
             except:
@@ -40,7 +42,7 @@ class GemmConfigDescriptor(ConfigDescriptor):
     OP_NAME = "GEMM"
     def __init__(self, problem_size, element_a, layout_a, element_b, layout_b,
         element_c, layout_c, element_accumulator, alignment_a, alignment_b,
-        alignment_c, enable_split_k=False) -> None:
+        alignment_c, split_k_mode="None") -> None:
         #
         super().__init__()
 
@@ -55,7 +57,7 @@ class GemmConfigDescriptor(ConfigDescriptor):
             "alignment_a": alignment_a,
             "alignment_b": alignment_b,
             "alignment_c": alignment_c,
-            "enable_split_k": enable_split_k,
+            "split_k_mode": split_k_mode,
             "problem_size": problem_size
         }
 
@@ -66,7 +68,7 @@ class GemmConfigDescriptor(ConfigDescriptor):
         self.heuristic = GemmHeuristics(
             element_a, element_b, element_c, element_accumulator,
             layout_a, layout_b, alignment_a, alignment_b, alignment_c,
-            enable_split_k
+            split_k_mode
         )
     
     def cache_init(self):
@@ -185,12 +187,21 @@ class GemmConfigDescriptor(ConfigDescriptor):
 
         split_k_slices = config["split_k_slices"]
 
-        arguments = GemmArguments(
-            operation=operation, problem_size=cutlass.gemm.GemmCoord(M, N, K),
-            A=tensor_A, B=tensor_B, C=tensor_C, D=tensor_C, 
-            output_op = operation.epilogue_type(1.0, 0.0),
-            gemm_mode=cutlass.gemm.Mode.Gemm, split_k_slices=split_k_slices
-        )
+        if self.problem_description['split_k_mode'] in ["None", "Serial"]:
+            arguments = GemmArguments(
+                operation=operation, problem_size=cutlass.gemm.GemmCoord(M, N, K),
+                A=tensor_A, B=tensor_B, C=tensor_C, D=tensor_C, 
+                output_op = operation.epilogue_type(1.0, 0.0),
+                gemm_mode=cutlass.gemm.Mode.Gemm, split_k_slices=split_k_slices
+            )
+        else:
+            arguments = GemmArguments(
+                operation=operation, problem_size=cutlass.gemm.GemmCoord(M, N, K),
+                A=tensor_A, B=tensor_B, C=tensor_C, D=tensor_C,
+                output_op = operation.epilogue_type(1.0, 0.0),
+                gemm_mode=cutlass.gemm.Mode.GemmSplitKParallel,
+                split_k_slices=split_k_slices
+            )
 
         # warmup iterations
         for _ in range(200):

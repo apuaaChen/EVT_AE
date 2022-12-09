@@ -144,7 +144,10 @@ class FusedGEMM:
         )
 
         self.is_direct_output = self.epilogue_functor.initialize(node)
-        
+        if not self.is_direct_output:
+            self.split_k_mode = "None"
+        else:
+            self.split_k_mode = "Parallel"
         # launch autotuner
         gemm_descriptor = GemmConfigDescriptor(
             problem_size=[M, N, K], element_a=cutlass.float16, layout_a=lhs_layout,
@@ -152,7 +155,7 @@ class FusedGEMM:
             element_c=cutlass.float16, layout_c=cutlass.RowMajor, 
             element_accumulator=cutlass.float32, alignment_a=align_a,
             alignment_b=align_b, alignment_c=align_c,
-            enable_split_k = self.is_direct_output
+            split_k_mode=self.split_k_mode
         )
         best_config = autotuner(gemm_descriptor)
         
@@ -185,6 +188,14 @@ class FusedGEMM:
                 A=A, B=B, C=C, epilogue_functor=epilogue_functor,
                 swizzling_functor=swizzling_functor, visitor=False
             )
+            if self.split_k_mode == "Parallel":
+                self.reduction_operation = ReductionOperation(
+                    shape=cutlass.MatrixCoord(4, 32 * C.alignment),
+                    C=C, element_accumulator=cutlass.float32,
+                    element_compute=cutlass.float32,
+                    epilogue_functor=epilogue_functor,
+                    count=C.alignment
+                )
         else:
             self.epilogue_functor.optimize(tile_description)
             self.operation = GemmOperationUniversal(
@@ -193,7 +204,10 @@ class FusedGEMM:
                 swizzling_functor=swizzling_functor, visitor=True
             )
 
-        pycutlass.compiler.add_module([self.operation,])
+        if self.split_k_mode == "Parallel":
+            pycutlass.compiler.add_module([self.operation, self.reduction_operation])
+        else:
+            pycutlass.compiler.add_module([self.operation,])
 
         self.args = self.epilogue_functor.args + list(node.args)
         self.outputs = self.epilogue_functor.outputs
@@ -239,10 +253,17 @@ class FusedGEMM:
                     if "output" in key:
                         output_tensor = kwargs[key]
                 output_op = self.operation.epilogue_type(1.0, 0.0)
+                if self.split_k_mode == "Serial":
+                    gemm_mode=cutlass.gemm.Mode.Gemm
+                elif self.split_k_mode == "Parallel":
+                    gemm_mode= cutlass.gemm.Mode.GemmSplitKParallel
+                else:
+                    raise NotImplementedError
+                print(gemm_mode)
                 arguments = GemmArguments(
                     operation=self.operation, problem_size=problem_size,
                     A=lhs, B=rhs, C=output_tensor, D=output_tensor,
-                    output_op=output_op, gemm_mode=cutlass.gemm.Mode.Gemm,
+                    output_op=output_op, gemm_mode=gemm_mode,
                     split_k_slices=self.split_k_slices
                 )
                 if hasattr(arguments, "workspace_buffer"):
@@ -256,9 +277,20 @@ class FusedGEMM:
                 )
             if self.stream is None: 
                 self.operation.run(arguments, stream=torch.cuda.current_stream().cuda_stream)
+                stream = torch.cuda.current_stream().cuda_stream
             else:
                 self.stream.wait_stream(torch.cuda.current_stream())
                 self.operation.run(arguments, stream=self.stream.cuda_stream)
+                stream = self.stream.cuda_stream
+            
+            if self.split_k_mode == "Parallel":
+                reduction_arguments = ReductionArguments(
+                    operation=self.reduction_operation,
+                    problem_size=[M, N], partitions=self.split_k_slices,
+                    workspace=arguments.ptr_D, destination=output_tensor,
+                    source=output_tensor, output_op=output_op)
+                self.reduction_operation.run(reduction_arguments, stream=stream)
+
             # if self.is_direct_output:
             #     print(output_tensor)
             results = []

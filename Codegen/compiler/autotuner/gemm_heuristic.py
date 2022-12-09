@@ -43,7 +43,7 @@ class GemmHeuristics:
     def __init__(
         self, element_a, element_b, element_c, element_accumulator, 
         layout_a, layout_b, alignment_a, alignment_b, alignment_c,
-        enable_split_k=False) -> None:
+        split_k_mode="None") -> None:
         #
         self.metafile = a100_metafile
         self.element_a = element_a
@@ -55,7 +55,8 @@ class GemmHeuristics:
         self.alignment_b = alignment_b
         self.alignment_c = alignment_c
         self.element_accumulator = element_accumulator
-        self.enable_split_k = enable_split_k
+        self.split_k_mode = split_k_mode
+        self.enable_split_k = self.split_k_mode != "None"
         self.set_parameter_range()
 
     def check_shared_memory_size(self, shared_memory_size):
@@ -234,7 +235,7 @@ class BatchedGemmHeuristics(GemmHeuristics):
         super().__init__(
             element_a, element_b, element_c, element_accumulator, layout_a, 
             layout_b, alignment_a, alignment_b, alignment_c, 
-            enable_split_k=False)
+            split_k_mode="None")
     
     def set_parameter_range(self):
         self.parameter_range = {

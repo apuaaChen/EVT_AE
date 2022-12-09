@@ -33,19 +33,25 @@ def sample_parameters_with_ML(heuristics, num_samples, model, problem_size, chec
     CONFIG_THIS_ROUND = set({})
 
     sampled_parameters = []
+    timeout = 0
     # sample 10 times more samples
     while len(sampled_parameters) < num_samples*10:
+        if timeout >= 1000:
+            break
         parameter = heuristics.propose_valid_parameters()
         parameter_str = str(parameter)
         # print("parameter_str: ", parameter_str)
         if parameter_str in checked_configs or parameter_str in CONFIG_THIS_ROUND:
+            timeout += 1
+            if timeout % 100 == 0:
+                print("timeout: %d" % timeout)
             continue
         else:
             CONFIG_THIS_ROUND.add(parameter_str)
             sampled_parameters.append(parameter)
     # predict performance
     predicted_performance = []
-    for i in range(10*num_samples):
+    for i in range(len(sampled_parameters)):
         cur_parameter = sampled_parameters[i]
         feature = heuristics.parameter_to_feature(cur_parameter, problem_size)
         perf = model.predict(feature)[0]

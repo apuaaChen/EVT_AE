@@ -245,6 +245,8 @@ class FusedGEMM:
                     output_op=output_op, gemm_mode=cutlass.gemm.Mode.Gemm,
                     split_k_slices=self.split_k_slices
                 )
+                if hasattr(arguments, "workspace_buffer"):
+                    self.workspace_buffer = arguments.workspace_buffer
             else:
                 output_op = self.operation.epilogue_type(**kwargs)
                 arguments = GemmArguments(
@@ -262,10 +264,6 @@ class FusedGEMM:
             results = []
             for output_node in self.outputs:
                 results.append(kwargs["output_" + output_node.name])
-            if hasattr(arguments, "workspace_buffer"):
-                self.workspace_buffer = arguments.workspace_buffer
-                pycutlass.memory_pool.reserved_buffers[self.node.name + "workspace_buffer"] = arguments.workspace_buffer
-                self.node.meta["workspace_buffer"] = arguments.workspace_buffer
         return results
 
 

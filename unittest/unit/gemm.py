@@ -5,6 +5,7 @@ import sys
 sys.path.append("/workspace/sparseTraining/Codegen/compiler")
 from passes import pass_gemm_fusion, pass_print_graph
 import unittest
+import pycutlass
 
 class GemmTestSm80(unittest.TestCase):
     def test_weight_gradient(self):
@@ -42,4 +43,6 @@ class GemmTestSm80(unittest.TestCase):
         self.assertTrue(torch.allclose(out, ref, atol=1))
             
 if __name__ == '__main__':
+    pycutlass.get_memory_pool(manager="torch")
+    pycutlass.compiler.nvcc()
     unittest.main()

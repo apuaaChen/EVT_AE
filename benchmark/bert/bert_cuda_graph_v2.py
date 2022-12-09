@@ -10,7 +10,7 @@ from amp_helper import scale_loss
 from aot_helper import compiler_fn, partition_func
 import pycutlass
 from pycutlass import *
-pycutlass.get_memory_pool(init_pool_size=2**20, max_pool_size=2**30)
+pycutlass.get_memory_pool(manager="torch")
 pycutlass.compiler.nvcc()
 import nvtx
 
@@ -111,24 +111,24 @@ optimizer_fused.zero_grad()
 #     scaled_loss.backward()
 model_fused.training_with_graph(input_ids, token_type_ids, attention_mask, labels, labels, next_sentence_labels)
 
-# for param1, param2 in zip(list(model.named_parameters()), list(model_fused.named_parameters())):
-#     print(torch.sum(torch.isclose(param1[1].grad, param2[1].grad, rtol=1e-1)) / param2[1].grad.numel())
-#     try:
-#         assert torch.sum(torch.isclose(param1[1].grad, param2[1].grad, rtol=1e-1)) / param2[1].grad.numel() > 0.95
-#     except:
-#         print(param1[1].grad)
-#         print(param2[1].grad)
+for param1, param2 in zip(list(model.named_parameters()), list(model_fused.named_parameters())):
+    print(torch.sum(torch.isclose(param1[1].grad, param2[1].grad, rtol=1e-1)) / param2[1].grad.numel())
+    try:
+        assert torch.sum(torch.isclose(param1[1].grad, param2[1].grad, rtol=1e-1)) / param2[1].grad.numel() > 0.95
+    except:
+        print(param1[1].grad)
+        print(param2[1].grad)
 
 
-for i in range(40):
-    with nvtx.annotate("torch"):
-        loss = model(input_ids, token_type_ids, attention_mask, labels, labels, next_sentence_labels)
-        with scale_loss(loss, optimizer) as scaled_loss:
-            scaled_loss.backward()
+# for i in range(40):
+#     with nvtx.annotate("torch"):
+#         loss = model(input_ids, token_type_ids, attention_mask, labels, labels, next_sentence_labels)
+#         with scale_loss(loss, optimizer) as scaled_loss:
+#             scaled_loss.backward()
 
 # s = torch.cuda.Stream(priority=-1)
 # s.wait_stream(torch.cuda.current_stream())
 # with torch.cuda.stream(s):
-for i in range(40):
-    with nvtx.annotate("fused"):
-        model_fused.training_with_graph(input_ids, token_type_ids, attention_mask, labels, labels, next_sentence_labels)
+#     for i in range(40):
+#         with nvtx.annotate("fused"):
+#             model_fused.training_with_graph(input_ids, token_type_ids, attention_mask, labels, labels, next_sentence_labels)

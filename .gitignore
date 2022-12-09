@@ -15,3 +15,5 @@ thirdparty/*
 *.txt
 *.onnx
 scratch_space/*
+src/sptrain.egg-info/PKG-INFO
+benchmark/bert/delete_id.py

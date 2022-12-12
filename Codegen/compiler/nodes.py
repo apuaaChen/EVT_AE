@@ -199,17 +199,55 @@ def inject_sum(inject_point, graph, parent_node, dim, tmp_node=None):
     if tmp_node is None: tmp_node = parent_node
 
     graph.inserting_after(inject_point)
-    sum_node = graph.call_function(torch.ops.aten.sum, args=(tmp_node, [dim,]))
+    if isinstance(dim, int):
+        dim = [dim,]
+    sum_node = graph.call_function(torch.ops.aten.sum, args=(tmp_node, dim))
     sum_node.meta = {}
     shape = list(parent_node.meta['tensor_meta'].shape)
-    if dim < 0:
-        dim = dim + len(shape) + 1
-    shape.pop(dim)
+    for d in dim:
+        if d < 0:
+            shape.pop(d + len(shape) + 1)
+        else:
+            shape.pop(d)
     sum_node.meta['tensor_meta'] = parent_node.meta['tensor_meta']._replace(
         shape=tuple(shape)
     )
     
     return sum_node
+
+def inject_mean(inject_point, graph, parent_node, dim, tmp_node=None):
+    if tmp_node is None: tmp_node = parent_node
+
+    graph.inserting_after(inject_point)
+    mean_node = graph.call_function(torch.ops.aten.mean, args=(tmp_node, [dim,], True))
+    mean_node.meta = {}
+    shape = list(parent_node.meta['tensor_meta'].shape)
+    if dim < 0:
+        dim = dim + len(shape)
+    print(dim)
+    print(shape)
+    shape.pop(dim)
+    mean_node.meta['tensor_meta'] = parent_node.meta['tensor_meta']._replace(
+        shape=tuple(shape)
+    )
+    
+    return mean_node
+
+def inject_std(inject_point, graph, parent_node, dim, tmp_node=None):
+    if tmp_node is None: tmp_node = parent_node
+
+    graph.inserting_after(inject_point)
+    std_node = graph.call_function(torch.ops.aten.std, args=(tmp_node, [dim,], True))
+    std_node.meta = {}
+    shape = list(parent_node.meta['tensor_meta'].shape)
+    if dim < 0:
+        dim = dim + len(shape)
+    shape.pop(dim)
+    std_node.meta['tensor_meta'] = parent_node.meta['tensor_meta']._replace(
+        shape=tuple(shape)
+    )
+    
+    return std_node
 
 def inject_sub(inject_point, graph, lhs, rhs, tmp_lhs=None, tmp_rhs=None):
     if tmp_lhs is None: tmp_lhs = lhs

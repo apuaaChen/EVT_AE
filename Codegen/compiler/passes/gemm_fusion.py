@@ -23,8 +23,10 @@ from passes import autotuner
 import nvtx
 import operator
 from .softmax_operation import SoftmaxArguments, SoftmaxOperation
+from .layernorm_operation import LayerNormArguments, LayerNormOperation
 from .softmax_backward_operation import SoftmaxBackwardArguments, SoftmaxBackwardOperation
 from autotuner.design_space_descriptor import GemmConfigDescriptor, BatchedGemmConfigDescriptor
+from nodes import *
 
 
 def get_priority(node):
@@ -147,7 +149,7 @@ class FusedGEMM:
         if not self.is_direct_output:
             self.split_k_mode = "None"
         else:
-            self.split_k_mode = "Parallel"
+            self.split_k_mode = "Serial"
         # launch autotuner
         gemm_descriptor = GemmConfigDescriptor(
             problem_size=[M, N, K], element_a=cutlass.float16, layout_a=lhs_layout,
@@ -253,13 +255,12 @@ class FusedGEMM:
                     if "output" in key:
                         output_tensor = kwargs[key]
                 output_op = self.operation.epilogue_type(1.0, 0.0)
-                if self.split_k_mode == "Serial":
+                if self.split_k_mode in ["None", "Serial"]:
                     gemm_mode=cutlass.gemm.Mode.Gemm
                 elif self.split_k_mode == "Parallel":
                     gemm_mode= cutlass.gemm.Mode.GemmSplitKParallel
                 else:
                     raise NotImplementedError
-                print(gemm_mode)
                 arguments = GemmArguments(
                     operation=self.operation, problem_size=problem_size,
                     A=lhs, B=rhs, C=output_tensor, D=output_tensor,
@@ -399,8 +400,6 @@ class FusedBMM:
             permute_b=rhs_permute
         )
         best_config = autotuner(bmm_descriptor)
-
-        print(best_config)
 
         threadblock_shape = [
             best_config['block_x'], best_config['block_y'], best_config['block_z']]
@@ -743,6 +742,125 @@ class FusedSoftmaxBackward:
         return results
         # return [grad_input]
 
+
+################################################################################
+# Graph-level pass to fuse LayerNorm kernels
+################################################################################
+
+class FusedLayerNormForward:
+    __name__ = "cutlass_layernorm_with_visitor"
+    def __init__(self, node) -> None:
+        assert node.target == torch.ops.aten.native_layer_norm
+
+        # update the layernorm shape
+        shape = node.meta["tensor_meta"].shape
+        reduction_dim = len(shape) - 1
+        ###############
+        independent_size = 1
+        for idx, dim in enumerate(shape):
+            if idx == reduction_dim: continue
+            independent_size *= dim
+        self.shape = (independent_size, shape[reduction_dim])
+        reduction_dim = 1
+
+        # get alignment
+        if self.shape[1] % 8 == 0:
+            alignment = 8
+        elif self.shape[1] % 4 == 0:
+            alignment = 4
+        elif self.shape[1] % 2 == 0:
+            alignment = 2
+        else:
+            alignment = 1
+
+        Input = TensorDescription(cutlass.float16, cutlass.RowMajor, alignment)
+        Output = TensorDescription(cutlass.float16, cutlass.RowMajor, alignment)
+
+        warp_count = 1  # currently we only support one warp per row in layer norm
+
+        tile_description = TileDescription(
+            threadblock_shape=[1, self.shape[reduction_dim], 1], stages=1,
+            warp_count=[1, warp_count, 1], math_instruction=None
+        )
+
+        epilogue_functor = LinearCombination(
+            element_output=Output.element, 
+            epilogue_vector_length=Output.alignment,
+            element_accumulator=cutlass.float32,
+            element_epilogue=cutlass.float32)
+        
+        self.epilogue_functor = EpilogueVisitTreeDAG(
+            elementwise_functor=epilogue_functor, 
+            element_accumulator=cutlass.float32,
+            elements_per_access=Output.alignment,
+            element_compute=cutlass.float32, element_output=Output.element
+        )
+
+        self.epilogue_functor.initialize(node)
+        self.epilogue_functor.optimize(tile_description)
+
+        self.operation = LayerNormOperation(
+            input=Input, output=Output, threadblock_tile=tile_description.threadblock_shape,
+            warp_count=tile_description.warp_count, element_accumulator=cutlass.float32, epilogue_functor=self.epilogue_functor
+        )
+        cutlass_path = os.getenv('CUTLASS_PATH')
+        assert cutlass_path is not None, "Environment variable 'CUTLASS_PATH' is not defined."
+        cuda_install_path = os.getenv('CUDA_INSTALL_PATH')
+        assert cuda_install_path is not None, "Environment variable 'CUDA_INSTALL_PATH' is not defined."
+        include_paths = [
+            cuda_install_path + '/include',
+            cutlass_path + '/include',
+            cutlass_path + '/tools/util/include',
+            cutlass_path + '/tools/library/scripts/pycutlass/src/cpp/include',
+            '/opt/conda/lib/python3.8/site-packages/torch/include/',
+            '/workspace/sparseTraining/src/cuda/'
+        ]
+        compile_options = CompilationOptions(
+            ['-std=c++14'], [80, ], include_paths=include_paths
+        )
+
+        pycutlass.compiler.add_module([self.operation,], compile_options)
+
+        self.args = self.epilogue_functor.args + list(node.args)
+        self.outputs = self.epilogue_functor.outputs
+
+        self.stream = None
+    
+    def __call__(self, *args):
+        kwargs = {"problem_size": [self.shape[0], self.shape[1]]}
+        with nvtx.annotate("cutlass_layernorm"):
+            for output_node in self.outputs:
+                kwargs["output_" + output_node.name] = torch.empty(
+                    size=output_node.meta['tensor_meta'].shape,
+                    dtype=output_node.meta['tensor_meta'].dtype,
+                    device="cuda"
+                )
+            for idx, epilogue_arg in enumerate(self.epilogue_functor.args):
+                kwargs[epilogue_arg.name] = args[idx]
+            
+            # output_op = self.operation.epilogue_type(**kwargs)
+            # TODO: to deprecate
+            # softmax_output = torch.empty_like(args[-3])
+
+            output_op = self.operation.epilogue_type(**kwargs)            
+
+            arguments = LayerNormArguments(
+                operation=self.operation, problem_size=kwargs["problem_size"],
+                input=args[-3], output_op=output_op
+            )
+            if self.stream is None: 
+                self.operation.run(arguments, stream=torch.cuda.current_stream().cuda_stream)
+            else:
+                self.stream.wait_stream(torch.cuda.current_stream())
+                self.operation.run(arguments, stream=self.stream.cuda_stream)
+
+            results = []
+            for output_node in self.outputs:
+                results.append(kwargs["output_" + output_node.name])
+
+            # results_origin = [view_4, view_2]
+        return results
+
 def get_topological_index(graph, node):
     """
     Get the node index in topological order
@@ -765,6 +883,26 @@ def update_topological_index(graph):
     """
     for idx, node in enumerate(graph.nodes):
         node.meta["topo_idx"] = idx
+
+
+def get_valid_inserting_range(graph, args, outputs):
+    # TODO: this can potentially be optimized
+    min_idx = 0
+    min_node = None
+    max_idx = 1e+16
+    for arg in args:
+        if isinstance(arg, fx.Node):
+            idx = get_topological_index(graph, arg)
+            if idx > min_idx:
+                min_idx = idx
+                min_node = arg
+    
+    for output in outputs:
+        if isinstance(output, fx.Node):
+            idx = get_topological_index(graph, output)
+            if idx < max_idx:
+                max_idx = idx
+    return min_idx, max_idx
     
 
 def pass_gemm_fusion(module, graph):
@@ -870,6 +1008,34 @@ def pass_gemm_fusion(module, graph):
                     graph.inserting_after(get_item_node)
                     output_node.replace_all_uses_with(get_item_node)
                     erase_node_recursive(graph, output_node)
+            
+            # elif node.target == torch.ops.aten.native_layer_norm:
+            #     update_topological_index(graph)
+
+            #     fused_layernorm = FusedLayerNormForward(node)
+            #     inserting_point = fused_layernorm.epilogue_functor.root
+            #     inserting_idx = get_topological_index(graph, inserting_point)
+
+            #     for output in fused_layernorm.outputs:
+            #         idx = get_topological_index(graph, output)
+            #         if idx < inserting_idx:
+            #             inserting_idx = idx
+            #             inserting_point = output
+                
+            #     graph.inserting_after(inserting_point)
+            #     fused_node = graph.call_function(fused_layernorm, args=tuple(fused_layernorm.args))
+            #     fused_node.meta = {}
+            #     fused_node.meta['tensor_meta'] = fused_layernorm.epilogue_functor.root.meta['tensor_meta']._replace()
+            #     graph.inserting_after(fused_node)
+
+            #     for idx, output_node in enumerate(fused_layernorm.outputs):
+            #         get_item_node = graph.call_function(operator.getitem, args=(fused_node, idx))
+            #         get_item_node.meta["tensor_meta"] = output_node.meta["tensor_meta"]._replace()
+            #         get_item_node.meta["unfusible"] = True
+            #         graph.inserting_after(get_item_node)
+            #         output_node.replace_all_uses_with(get_item_node)
+            #         erase_node_recursive(graph, output_node)
+
 
 
     try:

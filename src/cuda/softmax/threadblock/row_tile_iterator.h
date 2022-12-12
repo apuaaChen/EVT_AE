@@ -43,6 +43,11 @@ public:
         (ThreadblockShape::kColumn + Shape::kColumn - 1) / Shape::kColumn
     >;
 
+    using Delta = cutlass::MatrixShape<
+        1,
+        ThreadblockShape::kColumn
+    >;
+
     static_assert(WarpCount::kRow == 1, "Currently all the warps should be in the same row");
     static_assert(ThreadblockShape::kRow == 1, "Currently on threadblock only handles a single row");
         

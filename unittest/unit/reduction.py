@@ -3,7 +3,7 @@ from torch.fx import symbolic_trace
 from torch.fx.passes.shape_prop import ShapeProp
 import sys
 sys.path.append("/workspace/sparseTraining/Codegen/compiler")
-from passes import pass_gemm_fusion, pass_print_graph
+from passes import pass_gemm_fusion, pass_print_graph, pass_mark_epilogue_permutations
 import unittest
 
 
@@ -113,7 +113,8 @@ class ReductionTestSm80(unittest.TestCase):
         ShapeProp(symbolic_traced).propagate(gradient_input, weight)
 
         pass_print_graph(symbolic_traced, "./gemm.svg")
-
+        
+        pass_mark_epilogue_permutations(symbolic_traced, symbolic_traced.graph)
         pass_gemm_fusion(symbolic_traced, symbolic_traced.graph)
 
         symbolic_traced.recompile()
@@ -126,7 +127,7 @@ class ReductionTestSm80(unittest.TestCase):
         self.assertTrue(torch.allclose(outs[0], refs[0], atol=1))
         self.assertTrue(torch.allclose(outs[1], refs[1], atol=50))
     
-    def test_bmm_default_6(self):
+    def bmm_default_6(self):
         ## Define model to trace
         class GemmReduction(torch.nn.Module):
             def __init__(self) -> None:
@@ -154,6 +155,7 @@ class ReductionTestSm80(unittest.TestCase):
 
         pass_print_graph(symbolic_traced, "./gemm.svg")
 
+        pass_mark_epilogue_permutations(symbolic_traced, symbolic_traced.graph)
         pass_gemm_fusion(symbolic_traced, symbolic_traced.graph)
 
         symbolic_traced.recompile()

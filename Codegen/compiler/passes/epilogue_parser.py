@@ -366,10 +366,11 @@ class EpilogueASTDAG:
 
 
         self.outputs = []
-        if anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data]:
-            self.ast_top_down_parsing_bmm(self.root, parse_output=True)
+        # TODO: do we really need this?
+        self.ast_top_down_parsing_bmm(self.root, parse_output=True)
 
-        self.stack = []
+        print(self.outputs)
+        self.stack = [None, ]
         self.get_item_stack = []
         self.reduction_source = {}
 
@@ -424,45 +425,6 @@ class EpilogueASTDAG:
         else:
             for child in node.successors(tree.identifier):
                 self.pass_binary_2_unary(tree, child)
-    
-    # pass 2: inject reduction nodes
-    # def pass_inject_reduction(self, tree, nid):
-    #     node = tree.get_node(nid)
-    #     if isinstance(node.data, TensorOutputNodeDAG):
-    #         if node.data.id in self.reduction_source.keys():
-    #             direction = self.reduction_source[node.data.id][0]
-    #             target = self.reduction_source[node.data.id][-1]
-    #             if direction == 'row':
-    #                 reduction_node = RowReductionNodeDAG(
-    #                     self.element_accumulator, self.element_output,
-    #                     self.element_accumulator, target, self.tile_description.threadblock_shape[1])
-    #             elif direction == "column":
-    #                 reduction_node = ColumnReductionNodeDAG(
-    #                     self.element_accumulator, self.element_output,
-    #                     self.element_accumulator, target, self.tile_description.threadblock_shape[0])
-    #             else:
-    #                 raise ValueError(direction)
-    #             child_nid = node.successors(tree.identifier)[0]
-    #             # if this output node is injected only for reduction
-    #             if node.data.id not in self.returns:
-    #                 # get reduction config from disc
-    #                 node.data = reduction_node
-    #                 node.tag = reduction_node.tag
-    #                 self.pass_inject_reduction(tree, child_nid)
-    #             # if this output node is also a tensor output, inject reduction as its children
-    #             else:
-    #                 # get child node
-    #                 tree.create_node(reduction_node.tag, reduction_node.id, data=reduction_node, parent=node.data.id)
-    #                 tree.move_node(child_nid, reduction_node.id)
-    #                 child = tree.get_node(child_nid)
-    #                 for grand_child in child.successors(tree.identifier):
-    #                     self.pass_inject_reduction(tree, grand_child)
-    #         else:
-    #             for child in node.successors(tree.identifier):
-    #                 self.pass_inject_reduction(tree, child)
-    #     else:
-    #         for child in node.successors(tree.identifier):
-    #             self.pass_inject_reduction(tree, child)
 
     def pass_inject_epilogue_op(self, tree, nid):
         node = tree.get_node(nid)
@@ -606,11 +568,13 @@ class EpilogueASTDAG:
             iter_names = ['m', 'n']
             shape = list(self.anchor.meta["tensor_meta"].shape)
             self.anchor.meta["tensor"] = IterVarHyperGraph(shape, iter_names)
-        elif self.anchor.target in [torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data]:
+        elif self.anchor.target in [torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data, torch.ops.aten.native_layer_norm]:
             # The softmax can take an arbitrary dim 
             shape = self.anchor.meta["tensor_meta"].shape
             if self.anchor.target == torch.ops.aten._softmax:
                 reduction_dim = self.anchor.args[1]
+            elif self.anchor.target == torch.ops.aten.native_layer_norm:
+                reduction_dim = -1
             else:
                 reduction_dim = self.anchor.args[2]
             if reduction_dim < 0:
@@ -639,7 +603,7 @@ class EpilogueASTDAG:
         #                 self.root_candidates[others].append(root)
         #                 self.root_candidates[root] = None
         
-        if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data]:
+        if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data, torch.ops.aten.native_layer_norm]:
             root_to_remove = []
             for root in self.root_candidates.keys():
                 if self.root_candidates[root] is not None:
@@ -710,10 +674,7 @@ class EpilogueASTDAG:
                         self.outputs.append(user_node)
         
         if reduction_node is not None:
-            if len(self.stack) == 0:
-                self.epilogue_tree.create_node(reduction_node.tag, reduction_node.id, data=reduction_node)
-            else:
-                self.epilogue_tree.create_node(reduction_node.tag, reduction_node.id, parent=self.stack[-1], data=reduction_node)
+            self.epilogue_tree.create_node(reduction_node.tag, reduction_node.id, parent=self.stack[-1], data=reduction_node)
             self.stack.append(reduction_node.id)
         
         is_input = False
@@ -722,23 +683,31 @@ class EpilogueASTDAG:
             if node != self.anchor and dfs(node, self.anchor):
                 # the node will be treated as a tensor input node
                 is_input = True
+            elif node.target in [operator.getitem]:
+                if "unfusible" in node.meta.keys():
+                    is_input = True
         else:
             is_input = True
         if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data]:
             if 'tensor' not in node.meta.keys():
                 print(node)
                 raise RuntimeError("The node to fuse doesn't have tensor attribute")
+        is_output = False
+
         if node in self.outputs:
-            assert not is_input
-            # visit the output node
-            name_node = TensorOutputNodeDAG(self.element_accumulator, node)
-            if name_node.layout not in self.output_layouts:
-                self.output_layouts.append(name_node.layout)
-            if len(self.stack) == 0:
-                self.epilogue_tree.create_node(name_node.tag, name_node.id, data=name_node)
-            else:
-                self.epilogue_tree.create_node(name_node.tag, name_node.id, parent=self.stack[-1], data=name_node)
-            self.stack.append(name_node.id)
+            if not is_input:
+            # assert not is_input
+                if reduction_node is None or len(node.users.keys()) != 1:
+                    # visit the output node
+                    name_node = TensorOutputNodeDAG(self.element_accumulator, node)
+                    if name_node.layout not in self.output_layouts:
+                        self.output_layouts.append(name_node.layout)
+                    self.epilogue_tree.create_node(name_node.tag, name_node.id, parent=self.stack[-1], data=name_node)
+                    self.stack.append(name_node.id)
+                    is_output = True
+            if not is_output:
+                self.outputs.remove(node)
+
         if node.op == "call_function" and not is_input:
             if node.target in [torch.ops.aten.view, torch.ops.aten._unsafe_view, torch.ops.aten.unsqueeze, torch.ops.aten._to_copy, torch.ops.aten.clone, torch.ops.aten.permute]:
                 self.visit(node.args[0])
@@ -843,7 +812,10 @@ class EpilogueASTDAG:
                 is_input = True
 
         if node.op in ["placeholder", "get_attr"] or is_input:
-            if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data]:
+            if self.anchor.target in [
+                torch.ops.aten.bmm, torch.ops.aten.mm, 
+                torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data,
+                torch.ops.aten.native_layer_norm]:
                 if node.target in [torch.ops.aten.native_dropout]:
                     node = self.get_item_stack[-1]
                 source_type = torch_2_cutlass_type[node.meta['tensor_meta'].dtype]
@@ -871,36 +843,8 @@ class EpilogueASTDAG:
                     raise NotImplementedError()
                 
                 print(tensor_type)
-
-                # valid_iters = {
-                #     'b': None, 
-                #     'm': None,
-                #     'n': None
-                # }
-                # # get valid iterators
-                # for dim in node_tensor.dims:
-                #     if len(dim) > 1:
-                #         raise NotImplementedError()
-                #     if dim[0].mod > 1:
-                #         valid_iters[dim[0].iter_var.name] = dim[0]
-                
-                # # case 1: scalar
-                # if valid_iters['b'] is None and valid_iters['m'] is None and valid_iters['n'] is None:
-                #     name_node = ScalarInputNodeDAG(node)
-                # # case 2: row broadcast
-                # elif valid_iters['m'] is None and valid_iters['n'] is not None:
-                #     name_node = RowBroadcastNodeDAG(
-                #         self.element_accumulator, self.element_compute, node, source_type, valid_iters
-                #     )
-                # # case 3: column broadcast
-                # elif valid_iters['n'] is None and valid_iters['m'] is not None:
-                #     name_node = ColumnBroadcastNodeDAG(
-                #         self.element_accumulator, source_type, node, source_type, valid_iters
-                #     )
-                # elif valid_iters['m'] is not None and valid_iters['n'] is not None:
-                #     name_node = TensorInputNodeDAG(self.element_accumulator, node, valid_iters)
-                # else:
-                #     raise NotImplementedError()
+            else:
+                raise NotImplementedError("Anchor type %s is not supported" % str(self.anchor.target))
                 
             if isinstance(name_node, TensorInputNodeDAG):
                 self.input_args[name_node.id] = ["tensor",]
@@ -923,8 +867,12 @@ class EpilogueASTDAG:
                     data=name_node, parent=self.stack[-1])
             self.args.append(node)
 
-        if node in self.outputs:
+        if is_output:
             self.stack.pop()
+        
+        if reduction_node is not None:
+            self.stack.pop()
+        
 
 
     def get_arguments(self, tree, nid, kwargs):
@@ -967,7 +915,11 @@ using ${operation_name}_EpilogueVisitor = cutlass::epilogue::threadblock::Epilog
         self.root = function.root
         self.function = function
         self.outputs = function.outputs
-        assert len(function.output_layouts) == 1
+        try:
+            assert len(function.output_layouts) == 1
+        except AssertionError:
+            print("Outputs can only have one kind of layers, get %d" % len(function.output_layouts))
+            exit()
         self.output_layout = function.output_layouts[0]
 
         # check whether output is simple TensorOutput
@@ -983,6 +935,8 @@ using ${operation_name}_EpilogueVisitor = cutlass::epilogue::threadblock::Epilog
         self.function.tile_description = tile_description
         tree = self.tree
         function = self.function
+
+        self.tree.show()
 
         function.pass_binary_2_unary(self.tree, self.tree.root)
         # function.pass_inject_reduction(self.tree, self.tree.root)

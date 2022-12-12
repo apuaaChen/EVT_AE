@@ -37,8 +37,8 @@ class GemmTestSm80(unittest.TestCase):
 
         pass_print_graph(symbolic_traced, "./gemm_optimized.svg")
 
-        out = symbolic_traced(gradient_input, input)
         ref = module_reference(gradient_input, input)
+        out = symbolic_traced(gradient_input, input)
         
         self.assertTrue(torch.allclose(out, ref, atol=1))
             

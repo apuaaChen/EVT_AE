@@ -822,7 +822,12 @@ class FusedLayerNormForward:
         pycutlass.compiler.add_module([self.operation,], compile_options)
 
         self.args = self.epilogue_functor.args + list(node.args)
+        _, mean, std = list(node.users.keys())
+
         self.outputs = self.epilogue_functor.outputs
+        self.outputs.remove(mean)
+        self.outputs.remove(std)
+        self.outputs += [mean, std]
 
         self.stream = None
     
@@ -842,11 +847,13 @@ class FusedLayerNormForward:
             # TODO: to deprecate
             # softmax_output = torch.empty_like(args[-3])
 
-            output_op = self.operation.epilogue_type(**kwargs)            
+            output_op = self.operation.epilogue_type(**kwargs)    
 
             arguments = LayerNormArguments(
                 operation=self.operation, problem_size=kwargs["problem_size"],
-                input=args[-3], output_op=output_op
+                input=args[-5], mean=kwargs["output_" + self.outputs[-2].name],
+                std=kwargs["output_" + self.outputs[-1].name],
+                output_op=output_op
             )
             if self.stream is None: 
                 self.operation.run(arguments, stream=torch.cuda.current_stream().cuda_stream)
@@ -858,6 +865,8 @@ class FusedLayerNormForward:
             for output_node in self.outputs:
                 results.append(kwargs["output_" + output_node.name])
 
+            print(results[-2].view(-1))
+            print(results[-1].view(-1))
             # results_origin = [view_4, view_2]
         return results
 
@@ -1009,32 +1018,31 @@ def pass_gemm_fusion(module, graph):
                     output_node.replace_all_uses_with(get_item_node)
                     erase_node_recursive(graph, output_node)
             
-            # elif node.target == torch.ops.aten.native_layer_norm:
-            #     update_topological_index(graph)
+            elif node.target == torch.ops.aten.native_layer_norm:
+                update_topological_index(graph)
 
-            #     fused_layernorm = FusedLayerNormForward(node)
-            #     inserting_point = fused_layernorm.epilogue_functor.root
-            #     inserting_idx = get_topological_index(graph, inserting_point)
+                fused_layernorm = FusedLayerNormForward(node)
+                inserting_point = fused_layernorm.epilogue_functor.root
+                inserting_idx = get_topological_index(graph, inserting_point)
 
-            #     for output in fused_layernorm.outputs:
-            #         idx = get_topological_index(graph, output)
-            #         if idx < inserting_idx:
-            #             inserting_idx = idx
-            #             inserting_point = output
+                for output in fused_layernorm.outputs:
+                    idx = get_topological_index(graph, output)
+                    if idx < inserting_idx:
+                        inserting_idx = idx
+                        inserting_point = output
                 
-            #     graph.inserting_after(inserting_point)
-            #     fused_node = graph.call_function(fused_layernorm, args=tuple(fused_layernorm.args))
-            #     fused_node.meta = {}
-            #     fused_node.meta['tensor_meta'] = fused_layernorm.epilogue_functor.root.meta['tensor_meta']._replace()
-            #     graph.inserting_after(fused_node)
-
-            #     for idx, output_node in enumerate(fused_layernorm.outputs):
-            #         get_item_node = graph.call_function(operator.getitem, args=(fused_node, idx))
-            #         get_item_node.meta["tensor_meta"] = output_node.meta["tensor_meta"]._replace()
-            #         get_item_node.meta["unfusible"] = True
-            #         graph.inserting_after(get_item_node)
-            #         output_node.replace_all_uses_with(get_item_node)
-            #         erase_node_recursive(graph, output_node)
+                graph.inserting_after(inserting_point)
+                fused_node = graph.call_function(fused_layernorm, args=tuple(fused_layernorm.args))
+                fused_node.meta = {}
+                fused_node.meta['tensor_meta'] = fused_layernorm.epilogue_functor.root.meta['tensor_meta']._replace()
+                graph.inserting_after(fused_node)
+                for idx, output_node in enumerate(fused_layernorm.outputs):
+                    get_item_node = graph.call_function(operator.getitem, args=(fused_node, idx))
+                    get_item_node.meta["tensor_meta"] = output_node.meta["tensor_meta"]._replace()
+                    get_item_node.meta["unfusible"] = True
+                    graph.inserting_after(get_item_node)
+                    output_node.replace_all_uses_with(get_item_node)
+                    erase_node_recursive(graph, output_node)
 
 
 

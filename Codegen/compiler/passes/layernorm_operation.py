@@ -35,6 +35,8 @@ def get_layernorm_arguments(epilogue_functor):
             ("ptr_input_2", ctypes.c_void_p),
             ("eps", ctypes.c_float),
             ("problem_size_2", MatrixCoord_),
+            ("ptr_mean", ctypes.c_void_p),
+            ("ptr_std", ctypes.c_void_p),
             ("epilogue_args", _EpilogueOutputOpParams)
         ]
     
@@ -43,10 +45,15 @@ def get_layernorm_arguments(epilogue_functor):
 class LayerNormArguments:
     def __init__(
         self, operation: 'LayerNormOperation', problem_size: 'list[int]', 
-        input: 'Tensor', output_op: 'Tensor', eps=1e-12, **kwargs) -> None:
+        input: 'Tensor', mean: 'Tensor', std: 'Tensor', 
+        output_op: 'Tensor', eps=1e-12, **kwargs) -> None:
         # get pointers
         assert isinstance(input, torch.Tensor)
+        assert isinstance(mean, torch.Tensor)
+        assert isinstance(std, torch.Tensor)
         self.ptr_input = TorchFrontend.argument(input)
+        self.ptr_mean = TorchFrontend.argument(mean)
+        self.ptr_std = TorchFrontend.argument(std)
         self.output_op = output_op
         self.eps = eps
         # assert isinstance(output, torch.Tensor)
@@ -65,6 +72,8 @@ class LayerNormArguments:
             int(self.ptr_input), 
             float(self.eps),
             MatrixCoord_(self.problem_size[0], self.problem_size[1]),
+            int(self.ptr_mean),
+            int(self.ptr_std),
             self.output_op
         )
 
@@ -256,7 +265,7 @@ using ${operation_name}_Epilogue = typename cutlass::softmax::threadblock::Layer
     ${operation_name}_EpilogueVisitor,
     typename ${operation_name}_default::Epilogue>::Epilogue;
 
-// Debug4
+// Debug58
 
 /// using ${operation_name}_base = ${operation_name}_default;
 using ${operation_name}_base = 

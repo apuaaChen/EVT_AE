@@ -28,7 +28,7 @@ class LayerNormTestSm80(unittest.TestCase):
         ## run the compiler pass
         symbolic_traced : torch.fx.GraphModule = symbolic_trace(module)
 
-        x = torch.randn(size=(32, 1024), dtype=torch.float16, device="cuda")
+        x = torch.randn(size=(32, 1024), dtype=torch.float16, device="cuda") * 2 + 1
         normalized_shape = [1024,]
         gamma = torch.randn(size=(1024,), dtype=torch.float16, device="cuda")
         beta = torch.randn(size=(1024,), dtype=torch.float16, device="cuda")
@@ -42,12 +42,15 @@ class LayerNormTestSm80(unittest.TestCase):
 
         pass_gemm_fusion(symbolic_traced, symbolic_traced.graph)
 
-        # symbolic_traced.recompile()
+        symbolic_traced.recompile()
 
         pass_print_graph(symbolic_traced, "./layernorm_fp_optimized.svg")
 
         grad_input, grad_gamma, grad_beta = symbolic_traced(x, normalized_shape, gamma, beta, weight)
         grad_input_ref, grad_gamma_ref, grad_beta_ref = module_reference(x, normalized_shape, gamma, beta, weight)
+
+        print(torch.mean(x, dim=1))
+        print(1./torch.std(x, dim=1))
 
         print(grad_gamma)
         print(grad_gamma_ref)

@@ -45,7 +45,7 @@ public:
 
     using Delta = cutlass::MatrixShape<
         1,
-        ThreadblockShape::kColumn
+        Shape::kColumn
     >;
 
     static_assert(WarpCount::kRow == 1, "Currently all the warps should be in the same row");

@@ -211,7 +211,7 @@ public:
     using AccumulatorFragment = Array<ElementAccumulator, kElementsPerAccess>;
 
     using Minus = cutlass::minus<AccumulatorFragment>;
-    using Div = cutlass::divides<AccumulatorFragment>;
+    using Mult = cutlass::multiplies<AccumulatorFragment>;
 
     //
     // Structures
@@ -224,6 +224,8 @@ public:
         Element* input;
         float eps;
         MatrixCoord problem_size;
+        ElementAccumulator* mean;
+        ElementAccumulator* std_factor;
     };
 
     struct Params {
@@ -233,6 +235,8 @@ public:
         Element* input;
         float eps;
         MatrixCoord problem_size;
+        ElementAccumulator* mean;
+        ElementAccumulator* std_factor;
 
         //
         // Members
@@ -241,19 +245,24 @@ public:
         Params(Arguments const &args):
             input(args.input),
             eps(args.eps),
-            problem_size(args.problem_size)
+            problem_size(args.problem_size),
+            mean(args.mean),
+            std_factor(args.std_factor)
         { }
     };
 
 private:
     InputTileIterator input_iterator_;
+    ElementAccumulator* mean_ptr;
+    ElementAccumulator* std_factor_ptr;
 
     Minus minus_op;
-    Div div_op;
+    Mult mult_op;
     float eps;
 
     int row_idx;
     int column_idx;
+    int thread_idx_;
 
 public:
     /// Constructor
@@ -272,7 +281,9 @@ public:
         ),
         row_idx(threadblock_offset.row()),
         eps(params.eps),
-        column_idx((InputTileIterator::ThreadMap::initial_offset(thread_idx) + threadblock_offset).column())
+        column_idx((InputTileIterator::ThreadMap::initial_offset(thread_idx) + threadblock_offset).column()),
+        thread_idx_(thread_idx),
+        mean_ptr(params.mean), std_factor_ptr(params.std_factor)
     { }
 
     CUTLASS_DEVICE
@@ -282,7 +293,15 @@ public:
         ElementAccumulator const row_m1,
         ElementAccumulator const row_m2
     ) {
-        ElementAccumulator row_std = cutlass::sqrt(row_m2 - row_m1 * row_m1 + eps);
+        cutlass::divides<ElementAccumulator> scalar_divide;
+        ElementAccumulator row_std = scalar_divide(ElementAccumulator(1), cutlass::sqrt(row_m2 - row_m1 * row_m1 + eps));
+
+        // write mean and std_factor
+        if (thread_idx_ == 0){
+            *(mean_ptr + row_idx) = row_m1;
+            *(std_factor_ptr + row_idx) = row_std;
+        }
+
         const AccumulatorFragment* input_frag = reinterpret_cast<const AccumulatorFragment*>(&input_buffer);
         
         AccumulatorFragment compute_frag;
@@ -293,7 +312,7 @@ public:
 
         #pragma unroll
         for (int i = 0; i < InputTileIterator::Iterations::kColumn; i ++) {
-            compute_frag = div_op(minus_op(*input_frag, row_m1), row_std);
+            compute_frag = mult_op(minus_op(*input_frag, row_m1), row_std);
             visitor.visit(
                 row_idx,
                 column_idx,

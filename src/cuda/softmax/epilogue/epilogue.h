@@ -159,7 +159,7 @@ public:
 
     using Minus = cutlass::minus<AccumulatorFragment>;
     using Exp = cutlass::fast_exp_op<AccumulatorFragment>;
-    using Div = cutlass::divides<AccumulatorFragment>;
+    using Mult = cutlass::multiplies<AccumulatorFragment>;
 
     //
     // Structures
@@ -173,6 +173,8 @@ public:
         Element* output;
         float eps;
         MatrixCoord problem_size;
+        ElementAccumulator* mean;
+        ElementAccumulator* std_factor;
     };
 
     struct Params {
@@ -183,6 +185,8 @@ public:
         Element* output;
         float eps;
         MatrixCoord problem_size;
+        ElementAccumulator* mean;
+        ElementAccumulator* std_factor;
 
         //
         // Members
@@ -192,7 +196,9 @@ public:
             input(args.input),
             output(args.output),
             eps(args.eps),
-            problem_size(args.problem_size)
+            problem_size(args.problem_size),
+            mean(args.mean),
+            std_factor(args.std_factor)
         { }
     };
 
@@ -200,9 +206,13 @@ private:
 
     OutputTileIterator iterator_;
     InputTileIterator input_iterator_;
+    ElementAccumulator* mean_ptr;
+    ElementAccumulator* std_factor_ptr;
     float eps;
     Minus minus_op;
-    Div div_op;
+    Mult mult_op;
+
+    int thread_idx_;
 
 public:
     /// Constructor
@@ -225,7 +235,9 @@ public:
             params.problem_size,
             thread_idx,
             threadblock_offset
-        ), eps(params.eps)
+        ), eps(params.eps),
+        thread_idx_(thread_idx),
+        mean_ptr(params.mean), std_factor_ptr(params.std_factor)
     { }
 
     CUTLASS_DEVICE
@@ -233,7 +245,14 @@ public:
         ElementAccumulator row_m1,
         ElementAccumulator row_m2
     ) {
-        ElementAccumulator row_std = cutlass::sqrt(row_m2 - row_m1 * row_m1 + eps);
+        cutlass::divides<ElementAccumulator> scalar_divide;
+        ElementAccumulator row_std = scalar_divide(ElementAccumulator(1), cutlass::sqrt(row_m2 - row_m1 * row_m1 + eps));
+
+        // write mean and std_factor
+        if (thread_idx_ == 0){
+            *(mean_ptr) = row_m1;
+            *(std_factor_ptr ) = row_std;
+        }
 
         typename InputTileIterator::Fragment input_frag;
         AccumulatorFragment compute_frag;
@@ -245,7 +264,7 @@ public:
             input_iterator_.load(input_frag);
             compute_frag = input_converter(input_frag);
             compute_frag = minus_op(compute_frag, row_m1);
-            compute_frag = div_op(compute_frag, row_std);
+            compute_frag = mult_op(compute_frag, row_std);
             iterator_.store(output_converter(compute_frag));
         }
     }

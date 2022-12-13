@@ -484,9 +484,11 @@ class EpilogueASTDAG:
                         assert user.target == operator.getitem
                         if "in_ast" in user.meta.keys():
                             if len(user.users) > 1:
-                                self.outputs.append(user)
+                                if user not in self.outputs:
+                                    self.outputs.append(user)
                         else:
-                            self.outputs.append(user)
+                            if user not in self.outputs:
+                                self.outputs.append(user)
                 elif reduce(lambda x, y: x * y, self.shape) == reduce(lambda x, y: x * y, node.meta["tensor_meta"].shape):
                     if node not in self.outputs:
                         self.outputs.append(node)

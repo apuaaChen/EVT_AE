@@ -89,6 +89,8 @@ private:
 
     int thread_idx_;
 
+    ElementAccumulator numel_;
+
 public:
     /// Constructor
     CUTLASS_DEVICE
@@ -102,7 +104,8 @@ public:
             params.input, params.problem_size, thread_idx, threadblock_offset
         ),
         warp_reduce_(shared_storage.temp_storage),
-        thread_idx_(thread_idx)
+        thread_idx_(thread_idx),
+        numel_(ElementAccumulator(params.problem_size.column()))
         { }
     
     /// Execute one softmax
@@ -149,6 +152,9 @@ public:
 
         row_m1 = __shfl_sync(0xffffffff, row_m1, 0);
         row_m2 = __shfl_sync(0xffffffff, row_m2, 0);
+
+        row_m1 = row_m1 / numel_;
+        row_m2 = row_m2 / numel_;
     }
 };
 

@@ -44,7 +44,7 @@ def pass_layernorm_preprocessing(module, graph):
                 mul_node.replace_input_with(beta, output)
 
                 # step 2: replacing x in backward with x_hat
-                backward_node.replace_input_with(input, output)
+                # backward_node.replace_input_with(input, output)
 
                 # step 4: get gammar & beta grad with reduction
                 grad_input, grad_gamma, grad_beta = list(backward_node.users.keys())
@@ -53,7 +53,10 @@ def pass_layernorm_preprocessing(module, graph):
                 grad_output_dim = len(grad_output.meta["tensor_meta"].shape)
                 reduction_dims = [i for i in range(grad_output_dim - 1)]
                 sum_beta_node = inject_sum(grad_output, graph, grad_output, reduction_dims)
-                mul_gamma_node = inject_mul(grad_output, graph, grad_output, output)
+
+                sub_mean_node = inject_sub(grad_output, graph, input, mean)
+                mul_node = inject_mul(sub_mean_node, graph, sub_mean_node, std)
+                mul_gamma_node = inject_mul(mul_node, graph, grad_output, mul_node)
                 sum_gamm_node = inject_sum(mul_gamma_node, graph, mul_gamma_node, reduction_dims)
 
                 grad_beta.replace_all_uses_with(sum_beta_node)

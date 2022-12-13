@@ -865,8 +865,6 @@ class FusedLayerNormForward:
             for output_node in self.outputs:
                 results.append(kwargs["output_" + output_node.name])
 
-            print(results[-2].view(-1))
-            print(results[-1].view(-1))
             # results_origin = [view_4, view_2]
         return results
 

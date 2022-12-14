@@ -190,6 +190,151 @@ struct EpilogueBackwardWithVisitorFromExistingEpilogue {
 };
 
 
+
+template<
+    typename Visitor_,
+    typename ElementAccumulator_,
+    typename ElementOutput_,
+    int AlignmentOutput_,
+    typename ThreadblockShape_,
+    typename WarpCount_
+>
+class LayerNormEpilogueBackwardWithVisitor {
+
+public:
+    using Visitor = Visitor_;
+
+    using Element = ElementOutput_;
+    static const int kElementsPerAccess = AlignmentOutput_;
+    using ElementAccumulator = ElementAccumulator_;
+    using ThreadblockShape = ThreadblockShape_;
+    using WarpCount = WarpCount_;
+
+    using ThreadMap = cutlass::softmax::threadblock::RowThreadMap<
+        ThreadblockShape_, WarpCount_, Element, kElementsPerAccess>;
+    
+    using InputTileIterator = cutlass::softmax::threadblock::RowTileIterator<ThreadMap, Element>;
+
+    using InputFragment = Array<Element, InputTileIterator::Iterations::kColumn * kElementsPerAccess>;
+
+    using Fragment = typename InputTileIterator::Fragment;
+
+    using AccumulatorFragment = Array<ElementAccumulator, kElementsPerAccess>;
+
+    using Mult = cutlass::multiplies<AccumulatorFragment>;
+    using Sub = cutlass::minus<AccumulatorFragment>;
+    using Div = cutlass::divides<AccumulatorFragment>;
+    using Add = cutlass::plus<AccumulatorFragment>;
+
+    //
+    // Structures
+    //
+    struct Arguments {
+        //
+        // Data members
+        //
+        MatrixCoord problem_size;
+    };
+
+    struct Params {
+        //
+        // Data members
+        //
+        MatrixCoord problem_size;
+
+        //
+        // Members
+        //
+        CUTLASS_HOST_DEVICE
+        Params(Arguments const &args):
+            problem_size(args.problem_size)
+        { }
+    };
+
+private:
+    Mult mult_op;
+    Sub sub_op;
+    Div div_op;
+    Add add_op;
+    ElementAccumulator numel_factor;
+
+    int row_idx;
+    int column_idx;
+
+public:
+    /// Constructor
+    CUTLASS_DEVICE
+    LayerNormEpilogueBackwardWithVisitor(
+        Params const & params,
+        int thread_idx,
+        MatrixCoord threadblock_offset = MatrixCoord()
+    ):
+        row_idx(threadblock_offset.row()),
+        column_idx((InputTileIterator::ThreadMap::initial_offset(thread_idx) + threadblock_offset).column()),
+        numel_factor(ElementAccumulator(1) / ElementAccumulator(params.problem_size.column()))
+    { }
+
+    CUTLASS_DEVICE
+    void operator()(
+        Visitor & visitor,
+        InputFragment& gamma_grad_y_buffer,
+        InputFragment& x_hat_buffer,
+        ElementAccumulator const row_sum_t1,
+        ElementAccumulator const row_sum_t2
+    ){
+        const typename InputTileIterator::Fragment* gamma_grad_y_frag = reinterpret_cast<const typename InputTileIterator::Fragment*>(&gamma_grad_y_buffer);
+        const typename InputTileIterator::Fragment* x_hat_frag = reinterpret_cast<const typename InputTileIterator::Fragment*>(&x_hat_buffer);
+
+        AccumulatorFragment compute_frag;
+        NumericArrayConverter<ElementAccumulator, Element, kElementsPerAccess> input_converter;
+        NumericArrayConverter<Element, ElementAccumulator, kElementsPerAccess> output_converter;
+
+        visitor.begin_epilogue();
+
+        for (int i = 0; i < InputTileIterator::Iterations::kColumn; i ++) {
+            compute_frag = sub_op(
+                input_converter(*gamma_grad_y_frag), 
+                mult_op(
+                    add_op(
+                        row_sum_t1,
+                        mult_op(
+                            input_converter(*x_hat_frag),
+                            row_sum_t2
+                        )
+                    ),
+                    numel_factor
+                ));
+            visitor.visit(
+                row_idx,
+                column_idx,
+                compute_frag
+            );
+            column_idx += InputTileIterator::Shape::kColumn;
+            gamma_grad_y_frag ++;
+            x_hat_frag ++;
+        }
+
+        visitor.end_epilogue();
+    }
+};
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Helper to create an EpilogueWithVisitor from an existing epilogue
+template <typename Visitor_, typename Existing_>
+struct LayerNormEpilogueBackwardWithVisitorFromExistingEpilogue {
+
+    using Epilogue = LayerNormEpilogueBackwardWithVisitor<
+        Visitor_,
+        typename Existing_::ElementAccumulator,
+        typename Existing_::Element,
+        Existing_::kElementsPerAccess,
+        typename Existing_::ThreadblockShape,
+        typename Existing_::WarpCount
+    >;
+};
+
+
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 } // namespace threadblock

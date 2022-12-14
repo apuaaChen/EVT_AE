@@ -235,7 +235,7 @@ class DropoutForwardNodeDAG(DropoutForwardNode):
         self.p = 1. - node.args[1]
         if anchor.target in [torch.ops.aten.mm, torch.ops.aten.bmm]:
             self.iterator_type = "cutlass::epilogue::threadblock::PredicatedTileIterator"
-        elif anchor.target in [torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data]:
+        elif anchor.target in [torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data, torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward]:
             self.iterator_type = "cutlass::softmax::threadblock::RowTileIterator"
         
         # get mask ptr
@@ -521,7 +521,7 @@ class EpilogueASTDAG:
                     return lhs_nodes + rhs_nodes + [node, ]
                 elif node.target in [torch.ops.aten.neg, torch.ops.aten.sum, torch.ops.aten.native_dropout, torch.ops.aten.permute, torch.ops.aten.gelu, torch.ops.aten.tanh, torch.ops.aten.one_hot, torch.ops.aten.ne]:
                     return self.ast_top_down_parsing_bmm(node.args[0], parse_output) + [node,]
-                elif node.target in [torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten.bmm, torch.ops.aten._softmax_backward_data]:
+                elif node.target in [torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten.bmm, torch.ops.aten._softmax_backward_data, torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward]:
                     return [node,]
                 else:
                     return []
@@ -570,12 +570,14 @@ class EpilogueASTDAG:
             iter_names = ['m', 'n']
             shape = list(self.anchor.meta["tensor_meta"].shape)
             self.anchor.meta["tensor"] = IterVarHyperGraph(shape, iter_names)
-        elif self.anchor.target in [torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data, torch.ops.aten.native_layer_norm]:
+        elif self.anchor.target in [
+            torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data, 
+            torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward]:
             # The softmax can take an arbitrary dim 
             shape = self.anchor.meta["tensor_meta"].shape
             if self.anchor.target == torch.ops.aten._softmax:
                 reduction_dim = self.anchor.args[1]
-            elif self.anchor.target == torch.ops.aten.native_layer_norm:
+            elif self.anchor.target in [torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward]:
                 reduction_dim = -1
             else:
                 reduction_dim = self.anchor.args[2]
@@ -605,7 +607,7 @@ class EpilogueASTDAG:
         #                 self.root_candidates[others].append(root)
         #                 self.root_candidates[root] = None
         
-        if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data, torch.ops.aten.native_layer_norm]:
+        if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data, torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward]:
             root_to_remove = []
             for root in self.root_candidates.keys():
                 if self.root_candidates[root] is not None:
@@ -817,7 +819,7 @@ class EpilogueASTDAG:
             if self.anchor.target in [
                 torch.ops.aten.bmm, torch.ops.aten.mm, 
                 torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data,
-                torch.ops.aten.native_layer_norm]:
+                torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward]:
                 if node.target in [torch.ops.aten.native_dropout]:
                     node = self.get_item_stack[-1]
                 source_type = torch_2_cutlass_type[node.meta['tensor_meta'].dtype]

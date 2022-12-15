@@ -19,7 +19,8 @@ class LayerNormTestSm80(unittest.TestCase):
                 grad_input, grad_gamma, grad_beta = torch.ops.aten.native_layer_norm_backward(
                     grad_out, input, normalized_shape, mean, std, gamma, beta, [True, True, True]
                 )
-                return grad_input, grad_gamma, grad_beta
+                half_grad_input = torch.ops.aten.div(grad_input, 0.5)
+                return half_grad_input, grad_gamma, grad_beta
         
         ## module instance
         module = LayerNormForwardBackward()
@@ -49,16 +50,9 @@ class LayerNormTestSm80(unittest.TestCase):
         grad_input, grad_gamma, grad_beta = symbolic_traced(x, normalized_shape, gamma, beta, weight)
         grad_input_ref, grad_gamma_ref, grad_beta_ref = module_reference(x, normalized_shape, gamma, beta, weight)
 
-        print(torch.mean(x, dim=1))
-        print(1./torch.std(x, dim=1))
-
-        print(grad_gamma)
-        print(grad_gamma_ref)
-
-        print(grad_beta)
-        print(grad_beta_ref)
-
-        # self.assertTrue(torch.allclose(out, ref, rtol=5e-2))
+        self.assertTrue(torch.allclose(grad_gamma, grad_gamma_ref, atol=2))
+        self.assertTrue(torch.allclose(grad_beta, grad_beta_ref, atol=2))
+        self.assertTrue(torch.allclose(grad_input, grad_input_ref, atol=2))
 
 if __name__ == '__main__':
     unittest.main()

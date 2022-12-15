@@ -62,7 +62,6 @@ class TensorOutputNodeDAG(TensorOutputNode):
         self.element_accumulator = element_accumulator
         # get the permutation of output
         self.permute = node.meta['tensor'].get_permutation()
-        print(self.permute)
         # an attribute to track the layout of 
         if self.permute in [[0, 1, 2], [1, 0, 2], [0, 1]]:
             self.layout = cutlass.RowMajor
@@ -369,7 +368,6 @@ class EpilogueASTDAG:
         # TODO: do we really need this?
         self.ast_top_down_parsing_bmm(self.root, parse_output=True)
 
-        print(self.outputs)
         self.stack = [None, ]
         self.get_item_stack = []
         self.reduction_source = {}
@@ -463,6 +461,7 @@ class EpilogueASTDAG:
                 if usr.target in [torch.ops.aten.sum]:
                     self.root_candidates[node] = [usr]
                     continue
+                self.root_candidates[node] = []
                 self.get_candidate_root_bmm(usr)
 
     
@@ -506,7 +505,8 @@ class EpilogueASTDAG:
                             node.meta["in_ast"] = True
                         return self.ast_top_down_parsing_bmm(node.args[0], parse_output)
                     else:
-                        return []
+                        return self.ast_top_down_parsing_bmm(node.args[0], parse_output)
+                        # return []
                 elif node.target in [torch.ops.aten.add, torch.ops.aten.sub,
                     torch.ops.aten.mul, torch.ops.aten.div, torch.ops.aten.tanh_backward, torch.ops.aten.gelu_backward]:
                     #
@@ -596,8 +596,6 @@ class EpilogueASTDAG:
             raise NotImplementedError()
         self.get_candidate_root_bmm(self.anchor)
 
-        print(self.root_candidates)
-
         # filter root candiates
         # for root in self.root_candidates.keys():
         #     if root.target == torch.ops.aten.sum:
@@ -616,12 +614,23 @@ class EpilogueASTDAG:
                     if self.anchor not in self.root_candidates[root]:
                         self.root_candidates[root] = None
                         root_to_remove.append(root)
+                    for n in node_list:
+                        if n.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data, torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward]:
+                            if n.meta['topo_idx'] > self.anchor.meta['topo_idx']:
+                                if root not in root_to_remove:
+                                    root_to_remove.append(root)
+                        elif n.target == torch.ops.aten.permute and self.anchor.target in [torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data, torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward]:
+                            if root not in root_to_remove:
+                                root_to_remove.append(root)
                 else:
                     root_to_remove.append(root)
             for root in root_to_remove:
                 self.root_candidates.pop(root)
         else:
             raise NotImplementedError
+        
+        print("Root Candidates:")
+        print(self.root_candidates)## A new filter node to ensure fusion is in topological order
         
         # get the root with lowest cost
         max_cost = -1
@@ -634,6 +643,11 @@ class EpilogueASTDAG:
             if cost > max_cost:
                 max_cost = cost
                 self.root = root
+            elif cost == max_cost and root.meta['topo_idx'] > self.root.meta['topo_idx']:
+                max_cost = cost
+                self.root = root
+        print("Root:")
+        print(self.root)
         # TODO: handle the case that cost of two graphs is the same
 
     def visit(self, node):
@@ -646,7 +660,6 @@ class EpilogueASTDAG:
                 # step 2: get the non-reduction direction
                 assert "tensor" in list(user_node.meta.keys())
                 non_reduction_dims = [iter_var for iter_var in user_node.meta["tensor"].get_iter_vars() if iter_var.extent > 1]
-                print(non_reduction_dims[0].name)
                 reduction_type = None
                 # currently we only support row reduction and column reduction
                 if len(non_reduction_dims) == 1:
@@ -719,6 +732,7 @@ class EpilogueASTDAG:
                 if "unfusible" in node.meta.keys():
                     is_input = True
                 else:
+                    # if there is multiple output
                     self.get_item_stack.append(node)
                     self.visit(node.args[0])
                     self.get_item_stack.pop(-1)
@@ -967,6 +981,9 @@ using ${operation_name}_EpilogueVisitor = cutlass::epilogue::threadblock::Epilog
                         continue
                     # tensor input
                     else:
+                        if isinstance(kwargs[input_key], tuple):
+                            print(input_key)
+                            tree.show()
                         setattr(self, input_key + "_ptr", int(TorchFrontend.argument(kwargs[input_key])))
                         _kwargs[input_key + "_ptr"] = getattr(self, input_key + "_ptr")
 

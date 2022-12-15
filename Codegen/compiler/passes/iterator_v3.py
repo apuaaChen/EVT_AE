@@ -435,8 +435,10 @@ class IterVarHyperGraph:
         try:
             for iter_var in iter_vars:
                 if iter_var.extent > 1:
-                    if iter_var.name in ["m", "n"]:
-                        valid_iters[iter_var.name] = iter_var
+                    if "m" in iter_var.name:
+                        valid_iters['m'] = iter_var
+                    elif "n" in iter_var.name:
+                        valid_iters['n'] = iter_var
                     elif "b" in iter_var.name:
                         valid_iters['b'] = iter_var
                     else:
@@ -546,7 +548,6 @@ class IterVarHyperGraph:
 
     ## parser functions
     def get_node_tensor_bottom_up(self, node):
-        print(node)
         shape = self.get_shape()
         new_graph = deepcopy(self)
         if node.target in [torch.ops.aten.view, torch.ops.aten._unsafe_view]:
@@ -613,7 +614,7 @@ class IterVarHyperGraph:
             if 'tensor' in input.meta.keys(): return
             new_graph.get_index(0)
             input.meta['tensor'] = new_graph
-        elif node.target in [torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data]:
+        elif node.target in [torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data, torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward]:
             raise NotImplementedError()
         else:
             raise NotImplementedError()

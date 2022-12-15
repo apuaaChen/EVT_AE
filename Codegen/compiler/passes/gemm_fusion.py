@@ -754,6 +754,7 @@ class FusedLayerNormForward:
         assert node.target == torch.ops.aten.native_layer_norm
 
         # update the layernorm shape
+        print(node.meta)
         shape = node.meta["tensor_meta"].shape
         reduction_dim = len(shape) - 1
         ###############
@@ -1035,20 +1036,35 @@ def get_valid_inserting_range(graph, args, outputs):
     return min_idx, max_idx
     
 
-def pass_gemm_fusion(module, graph):
+def pass_gemm_fusion(module, graph, verbose=True):
     """
     Fuse GEMM kernel with its epilogues
     """
     gemm_idx = 0
     bmm_idx = 0
     softmax_idx = 0
+
+    layer_norm_idx = 0
     for node in graph.nodes:
         if node.op == "call_function":
             if node.target == torch.ops.aten.mm:
+                if verbose:
+                    print("=============================================")
+                    print(node)
                 update_topological_index(graph)
-                # if gemm_idx <= 43:
+                # if gemm_idx > 19:
+                #     continue
                 fused_gemm = FusedGEMM(node)
-                graph.inserting_after(fused_gemm.epilogue_functor.root)
+                inserting_point = fused_gemm.epilogue_functor.root
+                inserting_idx = get_topological_index(graph, inserting_point)
+
+                for output in fused_gemm.outputs:
+                    idx = get_topological_index(graph, output)
+                    if idx < inserting_idx:
+                        inserting_idx = idx
+                        inserting_point = output
+
+                graph.inserting_after(inserting_point)
                 fused_node = graph.call_function(fused_gemm, args=tuple(fused_gemm.args))
                 fused_node.meta = {}
                 fused_node.meta['tensor_meta'] = fused_gemm.epilogue_functor.root.meta['tensor_meta']._replace()
@@ -1065,11 +1081,24 @@ def pass_gemm_fusion(module, graph):
                 
                 gemm_idx += 1
 
-            elif node.target == torch.ops.aten.bmm:
+            if node.target == torch.ops.aten.bmm:
+                if verbose:
+                    print("=============================================")
+                    print(node)
                 update_topological_index(graph)
                 # if bmm_idx <= 11: 
                 fused_bmm = FusedBMM(node)
-                graph.inserting_after(fused_bmm.epilogue_functor.root)
+
+                inserting_point = fused_bmm.epilogue_functor.root
+                inserting_idx = get_topological_index(graph, inserting_point)
+
+                for output in fused_bmm.outputs:
+                    idx = get_topological_index(graph, output)
+                    if idx < inserting_idx:
+                        inserting_idx = idx
+                        inserting_point = output
+
+                graph.inserting_after(inserting_point)
                 fused_node = graph.call_function(fused_bmm, args=tuple(fused_bmm.args))
                 fused_node.meta = {}
                 fused_node.meta['tensor_meta'] = fused_bmm.epilogue_functor.root.meta['tensor_meta']._replace()
@@ -1085,6 +1114,9 @@ def pass_gemm_fusion(module, graph):
                 bmm_idx += 1
 
             elif node.target == torch.ops.aten._softmax:
+                if verbose:
+                    print("=============================================")
+                    print(node)
                 update_topological_index(graph)
                 # if softmax_idx <= 3:
                 fused_softmax = FusedSoftmax(node)
@@ -1113,6 +1145,9 @@ def pass_gemm_fusion(module, graph):
                 softmax_idx += 1
             
             elif node.target == torch.ops.aten._softmax_backward_data:
+                if verbose:
+                    print("=============================================")
+                    print(node)
                 update_topological_index(graph)
                 # if softmax_idx <= 3:
                 fused_softmax = FusedSoftmaxBackward(node)
@@ -1140,8 +1175,10 @@ def pass_gemm_fusion(module, graph):
                     erase_node_recursive(graph, output_node)
             
             elif node.target == torch.ops.aten.native_layer_norm:
+                if verbose:
+                    print("=============================================")
+                    print(node)
                 update_topological_index(graph)
-
                 fused_layernorm = FusedLayerNormForward(node)
                 inserting_point = fused_layernorm.epilogue_functor.root
                 inserting_idx = get_topological_index(graph, inserting_point)
@@ -1164,8 +1201,12 @@ def pass_gemm_fusion(module, graph):
                     graph.inserting_after(get_item_node)
                     output_node.replace_all_uses_with(get_item_node)
                     erase_node_recursive(graph, output_node)
+                layer_norm_idx += 1
             
             elif node.target == torch.ops.aten.native_layer_norm_backward:
+                if verbose:
+                    print("=============================================")
+                    print(node)
                 update_topological_index(graph)
 
                 fused_layernorm = FusedLayerNormBackward(node)

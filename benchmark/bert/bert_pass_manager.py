@@ -51,15 +51,18 @@ def pre_partition_optimization(joint_module):
     # pass: mark permutation in epilogue
     pass_mark_epilogue_permutations(joint_module, graph)
 
+    # pass: preprocess layernorm
+    pass_layernorm_preprocessing(joint_module, graph)
+
     # # pass: gemm fusion
     pass_gemm_fusion(joint_module, graph)
 
 
     # pass: assign stream
-    pass_assign_stream(joint_module, graph)
+    # pass_assign_stream(joint_module, graph)
 
     # recompile graph
     joint_module.recompile()
 
     # visualize graph
-    # pass_print_graph(joint_module, "./joint_graph.svg")
+    pass_print_graph(joint_module, "./joint_graph.svg")

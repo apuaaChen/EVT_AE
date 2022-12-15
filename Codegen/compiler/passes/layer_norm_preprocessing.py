@@ -27,6 +27,8 @@ def pass_layernorm_preprocessing(module, graph):
                 # step 1: identify the backward kernel
                 # the heuristic is that the output mean and std has only one user
                 output, mean, std = list(node.users.keys())
+                mean.meta["unfusible"] = True
+                std.meta["unfusible"] = True
                 if len(mean.users.keys()) != 1:
                     raise NotImplementedError("mean node has %d users" % len(mean.users.keys()))
                 backward_node = list(mean.users.keys())[0]
@@ -65,8 +67,14 @@ def pass_layernorm_preprocessing(module, graph):
                 graph.erase_node(grad_gamma)
 
                 # step 6: update meta
-                node.meta["tensor_meta"] = node.meta["tensor_meta"][0]
-                backward_node.meta["tensor_meta"] = backward_node.meta["tensor_meta"][0]
+                if "tensor_meta" in node.meta.keys():
+                    node.meta["tensor_meta"] = node.meta["tensor_meta"][0]
+                else:
+                    node.meta["tensor_meta"] = output.meta["tensor_meta"]._replace()
+                if "tensor_meta" in backward_node.meta.keys():
+                    backward_node.meta["tensor_meta"] = backward_node.meta["tensor_meta"][0]
+                else:
+                    backward_node.meta["tensor_meta"] = grad_input.meta["tensor_meta"]._replace()
 
 
 

@@ -182,7 +182,7 @@ class GemmHeuristics:
         if not self.check_register_size(expected_register_size):
             return False
         # wm & wn % 16 = 0 to match the requirement of ldmatrix
-        if not(wm % 16 == 0 and wn % 8 == 0 and wk % 16 == 0):
+        if not(wm % 32 == 0 and wn % 8 == 0 and wk % 16 == 0):
             return False
         return True
 

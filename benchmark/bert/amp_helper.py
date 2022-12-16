@@ -14,7 +14,7 @@ def scale_loss(loss,
     if not optimizer._amp_stash.params_have_scaled_gradients:
         optimizer._prepare_amp_backward()
 
-    yield loss.float() * 2
+    yield loss.float() * 4096
 
     loss_scaler.clear_overflow_state()
 

@@ -19,10 +19,6 @@ def pre_partition_optimization(joint_module):
     # pass: loss elimination
     pass_loss_elimination(joint_module, graph)
 
-    # # pass: graph substitution
-    # # pass_graph_substitution(joint_module, graph)
-    # # pass_shape_prop(joint_module, graph)
-
     # # pass: composed op breakdown
     pass_composed_op_breakdown(joint_module, graph)
  
@@ -59,10 +55,10 @@ def pre_partition_optimization(joint_module):
 
 
     # pass: assign stream
-    # pass_assign_stream(joint_module, graph)
+    pass_assign_stream(joint_module, graph)
 
     # recompile graph
     joint_module.recompile()
 
     # visualize graph
-    pass_print_graph(joint_module, "./joint_graph.svg")
+    # pass_print_graph(joint_module, "./joint_graph.svg")

@@ -754,7 +754,6 @@ class FusedLayerNormForward:
         assert node.target == torch.ops.aten.native_layer_norm
 
         # update the layernorm shape
-        print(node.meta)
         shape = node.meta["tensor_meta"].shape
         reduction_dim = len(shape) - 1
         ###############
@@ -1040,9 +1039,6 @@ def pass_gemm_fusion(module, graph, verbose=True):
     """
     Fuse GEMM kernel with its epilogues
     """
-    gemm_idx = 0
-    bmm_idx = 0
-    softmax_idx = 0
 
     layer_norm_idx = 0
     for node in graph.nodes:
@@ -1052,8 +1048,6 @@ def pass_gemm_fusion(module, graph, verbose=True):
                     print("=============================================")
                     print(node)
                 update_topological_index(graph)
-                # if gemm_idx > 19:
-                #     continue
                 fused_gemm = FusedGEMM(node)
                 inserting_point = fused_gemm.epilogue_functor.root
                 inserting_idx = get_topological_index(graph, inserting_point)
@@ -1078,15 +1072,11 @@ def pass_gemm_fusion(module, graph, verbose=True):
                     output_node.replace_all_uses_with(get_item_node)
                     erase_node_recursive(graph, output_node)
 
-                
-                gemm_idx += 1
-
             if node.target == torch.ops.aten.bmm:
                 if verbose:
                     print("=============================================")
                     print(node)
                 update_topological_index(graph)
-                # if bmm_idx <= 11: 
                 fused_bmm = FusedBMM(node)
 
                 inserting_point = fused_bmm.epilogue_functor.root
@@ -1111,14 +1101,12 @@ def pass_gemm_fusion(module, graph, verbose=True):
                     graph.inserting_after(get_item_node)
                     output_node.replace_all_uses_with(get_item_node)
                     erase_node_recursive(graph, output_node)
-                bmm_idx += 1
 
             elif node.target == torch.ops.aten._softmax:
                 if verbose:
                     print("=============================================")
                     print(node)
                 update_topological_index(graph)
-                # if softmax_idx <= 3:
                 fused_softmax = FusedSoftmax(node)
                 inserting_point = fused_softmax.epilogue_functor.root
                 inserting_idx = get_topological_index(graph, inserting_point)
@@ -1142,14 +1130,12 @@ def pass_gemm_fusion(module, graph, verbose=True):
                     graph.inserting_after(get_item_node)
                     output_node.replace_all_uses_with(get_item_node)
                     erase_node_recursive(graph, output_node)
-                softmax_idx += 1
             
             elif node.target == torch.ops.aten._softmax_backward_data:
                 if verbose:
                     print("=============================================")
                     print(node)
                 update_topological_index(graph)
-                # if softmax_idx <= 3:
                 fused_softmax = FusedSoftmaxBackward(node)
                 inserting_point = fused_softmax.epilogue_functor.root
                 inserting_idx = get_topological_index(graph, inserting_point)
@@ -1201,9 +1187,10 @@ def pass_gemm_fusion(module, graph, verbose=True):
                     graph.inserting_after(get_item_node)
                     output_node.replace_all_uses_with(get_item_node)
                     erase_node_recursive(graph, output_node)
-                layer_norm_idx += 1
             
             elif node.target == torch.ops.aten.native_layer_norm_backward:
+                if "unfusible" in node.meta.keys():
+                    continue
                 if verbose:
                     print("=============================================")
                     print(node)

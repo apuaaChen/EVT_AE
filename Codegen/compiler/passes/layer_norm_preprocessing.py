@@ -24,6 +24,7 @@ def pass_layernorm_preprocessing(module, graph):
     for node in graph.nodes:
         if node.op == "call_function":
             if node.target == torch.ops.aten.native_layer_norm:
+                # check if the input is permute node
                 # step 1: identify the backward kernel
                 # the heuristic is that the output mean and std has only one user
                 output, mean, std = list(node.users.keys())
@@ -33,7 +34,7 @@ def pass_layernorm_preprocessing(module, graph):
                     raise NotImplementedError("mean node has %d users" % len(mean.users.keys()))
                 backward_node = list(mean.users.keys())[0]
                 assert backward_node.target == torch.ops.aten.native_layer_norm_backward
-                
+
                 # step 1: inject the gammar and beta nodes
                 input = node.args[0]
                 gamma = node.args[2]
@@ -45,6 +46,16 @@ def pass_layernorm_preprocessing(module, graph):
                 output.replace_all_uses_with(add_node)
                 mul_node.replace_input_with(beta, output)
 
+                if "tensor_meta" in node.meta.keys():
+                    node.meta["tensor_meta"] = node.meta["tensor_meta"][0]
+                else:
+                    node.meta["tensor_meta"] = output.meta["tensor_meta"]._replace()
+
+                if backward_node.args[0].target == torch.ops.aten.permute:
+                    # step 6: update meta
+                    backward_node.meta["unfusible"] = True
+                    continue
+                
                 # step 2: replacing x in backward with x_hat
                 # backward_node.replace_input_with(input, output)
 
@@ -67,10 +78,6 @@ def pass_layernorm_preprocessing(module, graph):
                 graph.erase_node(grad_gamma)
 
                 # step 6: update meta
-                if "tensor_meta" in node.meta.keys():
-                    node.meta["tensor_meta"] = node.meta["tensor_meta"][0]
-                else:
-                    node.meta["tensor_meta"] = output.meta["tensor_meta"]._replace()
                 if "tensor_meta" in backward_node.meta.keys():
                     backward_node.meta["tensor_meta"] = backward_node.meta["tensor_meta"][0]
                 else:

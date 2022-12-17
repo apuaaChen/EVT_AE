@@ -137,6 +137,7 @@ public:
             visitor.visit(
                 row_idx,
                 column_idx,
+                i,
                 compute_frag);
             
             column_idx += InputTileIterator::Shape::kColumn;

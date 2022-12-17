@@ -53,66 +53,6 @@ public:
         ThreadblockShape,
         WarpCount
     >;
-
-
-    //
-    // Structures
-    //
-
-    struct Arguments {
-        //
-        // Data members
-        //
-        typename Reduction::Arguments reduction_args;
-        typename Epilogue::Arguments epilogue_args;
-    };
-
-    struct Params {
-        //
-        // Data members
-        //
-        typename Reduction::Params reduction_params;
-        typename Epilogue::Params epilogue_params;
-
-        //
-        // Memebrs
-        //
-        CUTLASS_HOST_DEVICE
-        Params(Arguments const &args):
-            reduction_params(args.reduction_args),
-            epilogue_params(args.epilogue_args)
-        { }
-
-    };
-
-    union SharedStorage {
-        typename Reduction::SharedStorage reduction_storage;
-    };
-
-
-public:
-
-    /// Execute one softmax
-    CUTLASS_DEVICE
-    void operator()(Params const &params, SharedStorage &shared_storage) {
-
-        int thread_idx = threadIdx.x;
-        cutlass::MatrixCoord threadblock_offset{
-            int(blockIdx.x), int(blockIdx.y)
-        };
-
-        Reduction layernorm_reduction(params.reduction_params, shared_storage.reduction_storage, thread_idx, threadblock_offset);
-
-        ElementAccumulator row_sum_t1;
-        ElementAccumulator row_sum_t2;
-
-        softmax_reduction(row_sum_t1, row_sum_t2);
-        
-        /// Epilogue
-        Epilogue epilogue(params.epilogue_params, thread_idx, threadblock_offset);
-
-        epilogue(row_sum_t1, row_sum_t2);
-    }
 };
 
 /////////////////////////////////////////////////////////////////////////////////////////////////

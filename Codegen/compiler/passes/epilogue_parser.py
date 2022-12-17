@@ -391,6 +391,8 @@ class EpilogueASTDAG:
 
         for output, k_output in zip(self.outputs, self.kernel_outputs):
             self.output_2_kernel_output[output] = k_output
+        
+        self.current_tensor_output = None
 
         
     #
@@ -441,28 +443,35 @@ class EpilogueASTDAG:
         return node.data.epilogue_node
     
     def get_fx_node_with_tree_node(self, node):
-        name = node.data.id.strip("output_")
+        name = node.data.id[7:]
         for fx_node in self.kernel_outputs:
             if fx_node.name == name:
                 return fx_node
-        raise ValueError()
+        raise ValueError(node.data.id)
     
     def pass_output_node_fusion(self, tree, nid):
         node = tree.get_node(nid)
         if isinstance(node.data, TensorOutputNodeDAG):
-            input_node = tree.get_node(node.successors(tree.identifier)[0])
-            if isinstance(input_node.data, TensorOutputNodeDAG):
-                tree.move_node(
-                    input_node.successors(tree.identifier)[0],
-                    nid
-                )
-                tree.remove_node(input_node.data.id)
-
-                # remove the node from kernel outputs
-                fx_output_node = self.get_fx_node_with_tree_node(input_node)
-                fx_kernel_output_node = self.get_fx_node_with_tree_node(node)
+            if self.current_tensor_output is None:
+                # update the current tensor output node
+                self.current_tensor_output = node
+                self.pass_output_node_fusion(tree, node.successors(tree.identifier)[0])
+            else:
+                fx_output_node = self.get_fx_node_with_tree_node(node)
+                fx_kernel_output_node = self.get_fx_node_with_tree_node(self.current_tensor_output)
+                successor = node.successors(tree.identifier)[0]
+                tree.move_node(successor, node.predecessor(tree.identifier))
+                tree.remove_node(node.data.id)
                 self.kernel_outputs.remove(fx_output_node)
                 self.output_2_kernel_output[fx_output_node] = fx_kernel_output_node
+                self.pass_output_node_fusion(tree, successor)
+        elif isinstance(node.data, RowReductionNodeDAG) or isinstance(node.data, ColumnReductionNodeDAG):
+            self.pass_output_node_fusion(tree, node.successors(tree.identifier)[0])
+        else:
+            self.current_tensor_output = None
+        
+        for child in node.successors(tree.identifier):
+            self.pass_output_node_fusion(tree, child)
     
     def get_candidate_root_bmm(self, node):
         """

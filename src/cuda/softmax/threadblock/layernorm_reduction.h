@@ -42,7 +42,7 @@ struct LayerNormWarpReduction {
 
     using WarpReduce = cub::WarpReduce<ElementAccumulator>;
 
-    using InputFragment = Array<ElementAccumulator, kInputBufferSize>;
+    using InputFragment = Array<ElementInput, kInputBufferSize>;
     using AccumulatorFragment = Array<ElementAccumulator, kElementsPerAccess>;
 
     using SumFragment = Array<ElementAccumulator, kElementsPerAccess>;
@@ -124,15 +124,16 @@ public:
         cutlass::plus<SumFragment> plus_op;
         cutlass::multiplies<SumFragment> mul_op;
 
-        AccumulatorFragment* input_buffer_ptr = reinterpret_cast<AccumulatorFragment*>(&input_buffer);
+        Array<ElementInput, kElementsPerAccess>* input_buffer_ptr = reinterpret_cast<Array<ElementInput, kElementsPerAccess>*>(&input_buffer);
+        AccumulatorFragment tmp_input;
 
+        #pragma unroll
         for (int i = 0; i < InputIterator::Iterations::kColumn; i ++) {
-            typename InputIterator::Fragment tmp_input;
-            input_iterator_.load(tmp_input);
-            *input_buffer_ptr = converter(tmp_input);
-            x_accumulator = plus_op(*input_buffer_ptr, x_accumulator);
+            input_iterator_.load(*input_buffer_ptr);
+            tmp_input = converter(*input_buffer_ptr);
+            x_accumulator = plus_op(tmp_input, x_accumulator);
             x2_accumulator = plus_op(
-                mul_op(*input_buffer_ptr, *input_buffer_ptr),
+                mul_op(tmp_input, tmp_input),
                 x2_accumulator
             );
             input_buffer_ptr ++;

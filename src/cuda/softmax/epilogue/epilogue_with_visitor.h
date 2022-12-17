@@ -169,6 +169,7 @@ public:
             visitor.visit(
                 row_idx,
                 column_idx,
+                i,
                 compute_frag);
             
             column_idx += InputTileIterator::Shape::kColumn;
@@ -204,11 +205,12 @@ public:
     
     using InputTileIterator = cutlass::softmax::threadblock::RowTileIterator<ThreadMap, Element>;
 
-    using InputFragment = Array<ElementAccumulator, InputTileIterator::Iterations::kColumn * kElementsPerAccess>;
+    using InputFragment = Array<Element, InputTileIterator::Iterations::kColumn * kElementsPerAccess>;
 
     using Fragment = typename InputTileIterator::Fragment;
 
     using AccumulatorFragment = Array<ElementAccumulator, kElementsPerAccess>;
+    using InputBuffer = Array<Element, kElementsPerAccess>;
 
     using Minus = cutlass::minus<AccumulatorFragment>;
     using Mult = cutlass::multiplies<AccumulatorFragment>;
@@ -302,7 +304,7 @@ public:
             *(std_factor_ptr + row_idx) = row_std;
         }
 
-        const AccumulatorFragment* input_frag = reinterpret_cast<const AccumulatorFragment*>(&input_buffer);
+        Array<Element, kElementsPerAccess>* input_frag = reinterpret_cast<Array<Element, kElementsPerAccess>*>(&input_buffer);
         
         AccumulatorFragment compute_frag;
         NumericArrayConverter<ElementAccumulator, Element, kElementsPerAccess> input_converter;
@@ -312,10 +314,11 @@ public:
 
         #pragma unroll
         for (int i = 0; i < InputTileIterator::Iterations::kColumn; i ++) {
-            compute_frag = mult_op(minus_op(*input_frag, row_m1), row_std);
+            compute_frag = mult_op(minus_op(input_converter(*input_frag), row_m1), row_std);
             visitor.visit(
                 row_idx,
                 column_idx,
+                i,
                 compute_frag);
             
             column_idx += InputTileIterator::Shape::kColumn;

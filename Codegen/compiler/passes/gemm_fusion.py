@@ -214,6 +214,8 @@ class FusedGEMM:
 
         self.args = self.epilogue_functor.args + list(node.args)
         self.outputs = self.epilogue_functor.outputs
+        self.kernel_outputs = self.epilogue_functor.kernel_outputs
+        self.output_2_kernel_output = self.epilogue_functor.output_2_kernel_output
 
         self.stream = None
 
@@ -233,7 +235,7 @@ class FusedGEMM:
             rhs = rhs.contiguous()
             problem_size = cutlass.gemm.GemmCoord(M, N, K)
             kwargs = {"problem_size": [M, N]}
-            for output_node in self.outputs:
+            for output_node in self.kernel_outputs:
                 if output_node.target in [torch.ops.aten.sum]:
                     kwargs["output_" + output_node.name] = torch.zeros(
                         size=output_node.meta['tensor_meta'].shape,
@@ -297,7 +299,7 @@ class FusedGEMM:
             #     print(output_tensor)
             results = []
             for output_node in self.outputs:
-                results.append(kwargs["output_" + output_node.name])
+                results.append(kwargs["output_" + self.output_2_kernel_output[output_node].name].view(output_node.meta["tensor_meta"].shape))
         return results
 
 
@@ -435,6 +437,8 @@ class FusedBMM:
 
         self.args = self.epilogue_functor.args + list(node.args)
         self.outputs = self.epilogue_functor.outputs
+        self.kernel_outputs = self.epilogue_functor.kernel_outputs
+        self.output_2_kernel_output = self.epilogue_functor.output_2_kernel_output
 
         self.stream = None
     
@@ -462,7 +466,7 @@ class FusedBMM:
                 kwargs = {"problem_size": [self.problem_size.m(), self.problem_size.n()], "batch_size": self.batch}
             else:
                 kwargs = {"problem_size": [self.problem_size.n(), self.problem_size.m()], "batch_size": self.batch}
-            for output_node in self.outputs:
+            for output_node in self.kernel_outputs:
                 if output_node.target in [torch.ops.aten.sum]:
                     kwargs["output_" + output_node.name] = torch.zeros(
                         size=output_node.meta['tensor_meta'].shape,
@@ -494,7 +498,7 @@ class FusedBMM:
 
             results = []
             for output_node in self.outputs:
-                results.append(kwargs["output_" + output_node.name])
+                results.append(kwargs["output_" + self.output_2_kernel_output[output_node].name].view(output_node.meta["tensor_meta"].shape))
         return results
 
 
@@ -579,13 +583,15 @@ class FusedSoftmax:
 
         self.args = self.epilogue_functor.args + list(node.args)
         self.outputs = self.epilogue_functor.outputs
+        self.kernel_outputs = self.epilogue_functor.kernel_outputs
+        self.output_2_kernel_output = self.epilogue_functor.output_2_kernel_output
 
         self.stream = None
     
     def __call__(self, *args):
         kwargs = {"problem_size": [self.shape[0], self.shape[1]]}
         with nvtx.annotate("cutlass_softmax"):
-            for output_node in self.outputs:
+            for output_node in self.kernel_outputs:
                 kwargs["output_" + output_node.name] = torch.empty(
                     size=output_node.meta['tensor_meta'].shape,
                     dtype=output_node.meta['tensor_meta'].dtype,
@@ -612,7 +618,7 @@ class FusedSoftmax:
 
             results = []
             for output_node in self.outputs:
-                results.append(kwargs["output_" + output_node.name])
+                results.append(kwargs["output_" + self.output_2_kernel_output[output_node].name].view(output_node.meta["tensor_meta"].shape))
 
             # results_origin = [view_4, view_2]
         return results
@@ -699,12 +705,14 @@ class FusedSoftmaxBackward:
 
         self.args = self.epilogue_functor.args + list(node.args)
         self.outputs = self.epilogue_functor.outputs
+        self.kernel_outputs = self.epilogue_functor.kernel_outputs
+        self.output_2_kernel_output = self.epilogue_functor.output_2_kernel_output
         self.stream = None
     
     def __call__(self, *args):
         kwargs = {"problem_size": [self.shape[0], self.shape[1]]}
         with nvtx.annotate("cutlass_softmax_backward"):
-            for output_node in self.outputs:
+            for output_node in self.kernel_outputs:
                 kwargs["output_" + output_node.name] = torch.empty(
                     size=output_node.meta['tensor_meta'].shape,
                     dtype=output_node.meta['tensor_meta'].dtype,
@@ -731,7 +739,7 @@ class FusedSoftmaxBackward:
 
             results = []
             for output_node in self.outputs:
-                results.append(kwargs["output_" + output_node.name])
+                results.append(kwargs["output_" + self.output_2_kernel_output[output_node].name].view(output_node.meta["tensor_meta"].shape))
 
             # o_softmax = args[-3]
             # grad_softmax = args[-4]
@@ -830,12 +838,21 @@ class FusedLayerNormForward:
         self.outputs.remove(std)
         self.outputs += [mean, std]
 
+        self.kernel_outputs = self.epilogue_functor.kernel_outputs
+        self.kernel_outputs.remove(mean)
+        self.kernel_outputs.remove(std)
+        self.kernel_outputs += [mean, std]
+
+        self.output_2_kernel_output = self.epilogue_functor.output_2_kernel_output
+        self.output_2_kernel_output[mean] = mean
+        self.output_2_kernel_output[std] = std
+
         self.stream = None
     
     def __call__(self, *args):
         kwargs = {"problem_size": [self.shape[0], self.shape[1]]}
         with nvtx.annotate("cutlass_layernorm"):
-            for output_node in self.outputs:
+            for output_node in self.kernel_outputs:
                 kwargs["output_" + output_node.name] = torch.empty(
                     size=output_node.meta['tensor_meta'].shape,
                     dtype=output_node.meta['tensor_meta'].dtype,
@@ -852,8 +869,8 @@ class FusedLayerNormForward:
 
             arguments = LayerNormArguments(
                 operation=self.operation, problem_size=kwargs["problem_size"],
-                input=args[-5], mean=kwargs["output_" + self.outputs[-2].name],
-                std=kwargs["output_" + self.outputs[-1].name],
+                input=args[-5], mean=kwargs["output_" + self.kernel_outputs[-2].name],
+                std=kwargs["output_" + self.kernel_outputs[-1].name],
                 output_op=output_op
             )
             if self.stream is None: 
@@ -864,7 +881,7 @@ class FusedLayerNormForward:
 
             results = []
             for output_node in self.outputs:
-                results.append(kwargs["output_" + output_node.name])
+                results.append(kwargs["output_" + self.output_2_kernel_output[output_node].name].view(output_node.meta["tensor_meta"].shape))
 
             # results_origin = [view_4, view_2]
         return results
@@ -952,13 +969,15 @@ class FusedLayerNormBackward:
         self.args = self.epilogue_functor.args + list(node.args)
 
         self.outputs = self.epilogue_functor.outputs
+        self.kernel_outputs = self.epilogue_functor.kernel_outputs
+        self.output_2_kernel_output = self.epilogue_functor.output_2_kernel_output
 
         self.stream = None
     
     def __call__(self, *args):
         kwargs = {"problem_size": [self.shape[0], self.shape[1]]}
         with nvtx.annotate("cutlass_layernorm_backward"):
-            for output_node in self.outputs:
+            for output_node in self.kernel_outputs:
                 kwargs["output_" + output_node.name] = torch.empty(
                     size=output_node.meta['tensor_meta'].shape,
                     dtype=output_node.meta['tensor_meta'].dtype,
@@ -986,7 +1005,7 @@ class FusedLayerNormBackward:
 
             results = []
             for output_node in self.outputs:
-                results.append(kwargs["output_" + output_node.name])
+                results.append(kwargs["output_" + self.output_2_kernel_output[output_node].name].view(output_node.meta["tensor_meta"].shape))
 
             # results_origin = [view_4, view_2]
         return results

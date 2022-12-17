@@ -384,7 +384,14 @@ class EpilogueASTDAG:
 
         self.visit(self.root)
 
-        self.returns = [node.name for node in self.outputs]
+        # build relationship between output and kernel output
+        self.kernel_outputs = [output for output in self.outputs]
+
+        self.output_2_kernel_output = {}
+
+        for output, k_output in zip(self.outputs, self.kernel_outputs):
+            self.output_2_kernel_output[output] = k_output
+
         
     #
     # Tree optimization pass
@@ -432,6 +439,30 @@ class EpilogueASTDAG:
         
         node.data.get_epilogue_node(visitors)
         return node.data.epilogue_node
+    
+    def get_fx_node_with_tree_node(self, node):
+        name = node.data.id.strip("output_")
+        for fx_node in self.kernel_outputs:
+            if fx_node.name == name:
+                return fx_node
+        raise ValueError()
+    
+    def pass_output_node_fusion(self, tree, nid):
+        node = tree.get_node(nid)
+        if isinstance(node.data, TensorOutputNodeDAG):
+            input_node = tree.get_node(node.successors(tree.identifier)[0])
+            if isinstance(input_node.data, TensorOutputNodeDAG):
+                tree.move_node(
+                    input_node.successors(tree.identifier)[0],
+                    nid
+                )
+                tree.remove_node(input_node.data.id)
+
+                # remove the node from kernel outputs
+                fx_output_node = self.get_fx_node_with_tree_node(input_node)
+                fx_kernel_output_node = self.get_fx_node_with_tree_node(node)
+                self.kernel_outputs.remove(fx_output_node)
+                self.output_2_kernel_output[fx_output_node] = fx_kernel_output_node
     
     def get_candidate_root_bmm(self, node):
         """
@@ -933,6 +964,8 @@ using ${operation_name}_EpilogueVisitor = cutlass::epilogue::threadblock::Epilog
         self.root = function.root
         self.function = function
         self.outputs = function.outputs
+        self.kernel_outputs = function.kernel_outputs
+        self.output_2_kernel_output = function.output_2_kernel_output
         try:
             assert len(function.output_layouts) == 1
         except AssertionError:
@@ -951,20 +984,23 @@ using ${operation_name}_EpilogueVisitor = cutlass::epilogue::threadblock::Epilog
     
     def optimize(self, tile_description):
         self.function.tile_description = tile_description
-        tree = self.tree
+        # tree = self.tree
         function = self.function
 
         self.tree.show()
 
         function.pass_binary_2_unary(self.tree, self.tree.root)
         # function.pass_inject_reduction(self.tree, self.tree.root)
+        function.pass_output_node_fusion(self.tree, self.tree.root)
         function.pass_inject_epilogue_op(self.tree, self.tree.root)
 
         visitor = self.tree.get_node(self.tree.root).data.epilogue_node
         self.visitor = visitor
-
+        self.kernel_outputs = function.kernel_outputs
+        self.output_2_kernel_output = function.output_2_kernel_output
         # if function.anchor.target == torch.ops.aten._softmax:
         self.tree.show()
+        tree = self.tree
         
         # create argument data type
         class _Argument(ctypes.Structure):
@@ -984,13 +1020,14 @@ using ${operation_name}_EpilogueVisitor = cutlass::epilogue::threadblock::Epilog
                         if isinstance(kwargs[input_key], tuple):
                             print(input_key)
                             tree.show()
+
                         setattr(self, input_key + "_ptr", int(TorchFrontend.argument(kwargs[input_key])))
                         _kwargs[input_key + "_ptr"] = getattr(self, input_key + "_ptr")
 
                 # processing the return args
-                for ret in function.returns:
-                    setattr(self, "output_" + ret + "_ptr", int(TorchFrontend.argument(kwargs["output_" + ret])))
-                    _kwargs["output_" + ret + "_ptr"] = getattr(self, "output_" + ret + "_ptr")
+                for ret in function.kernel_outputs:
+                    setattr(self, "output_" + ret.name + "_ptr", int(TorchFrontend.argument(kwargs["output_" + ret.name])))
+                    _kwargs["output_" + ret.name + "_ptr"] = getattr(self, "output_" + ret.name + "_ptr")
 
                 _kwargs.update(kwargs)
                 function.get_arguments(tree, tree.root, _kwargs)

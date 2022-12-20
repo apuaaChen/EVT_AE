@@ -29,7 +29,9 @@ template<
     typename ElementOutput_,
     int AlignmentOutput_,
     typename ThreadblockShape_,
-    typename WarpCount_
+    typename WarpCount_,
+    typename ReductionResult_,
+    typename InputCache_
 >
 class EpilogueWithVisitor {
 
@@ -46,8 +48,6 @@ public:
         ThreadblockShape_, WarpCount_, Element, kElementsPerAccess>;
     
     using InputTileIterator = cutlass::softmax::threadblock::RowTileIterator<ThreadMap, Element>;
-
-    using InputFragment = Array<ElementAccumulator, InputTileIterator::Iterations::kColumn * kElementsPerAccess>;
 
     using Fragment = typename InputTileIterator::Fragment;
 
@@ -86,6 +86,9 @@ public:
         { }
     };
 
+    using ReductionResult = ReductionResult_;
+    using InputCache = InputCache_;
+
 private:
     InputTileIterator input_iterator_;
 
@@ -118,12 +121,11 @@ public:
     CUTLASS_DEVICE
     void operator()(
         Visitor & visitor,
-        InputFragment& input_buffer,
-        ElementAccumulator const row_max,
-        ElementAccumulator const row_sum
+        InputCache& input_cache,
+        ReductionResult const & reduction_result
     ) {
 
-        const AccumulatorFragment* input_frag = reinterpret_cast<const AccumulatorFragment*>(&input_buffer);
+        const AccumulatorFragment* input_frag = reinterpret_cast<const AccumulatorFragment*>(&input_cache.input_buffer);
         
         AccumulatorFragment compute_frag;
         NumericArrayConverter<ElementAccumulator, Element, kElementsPerAccess> input_converter;
@@ -133,7 +135,7 @@ public:
 
         #pragma unroll
         for (int i = 0; i < InputTileIterator::Iterations::kColumn; i ++) {
-            compute_frag = div_op(*input_frag, row_sum);
+            compute_frag = div_op(*input_frag, reduction_result.row_sum);
             visitor.visit(
                 row_idx,
                 column_idx,
@@ -150,8 +152,7 @@ public:
     CUTLASS_DEVICE
     void operator()(
         Visitor & visitor,
-        ElementAccumulator const row_max,
-        ElementAccumulator const row_sum
+        ReductionResult const & reduction_result
     ) {
 
         typename InputTileIterator::Fragment input_frag;
@@ -164,9 +165,9 @@ public:
         for (int i = 0; i < InputTileIterator::Iterations::kColumn; i ++) {
             input_iterator_.load(input_frag);
             compute_frag = input_converter(input_frag);
-            compute_frag = minus_op(compute_frag, row_max);
+            compute_frag = minus_op(compute_frag, reduction_result.row_max);
             compute_frag = exp_op(compute_frag);
-            compute_frag = div_op(compute_frag, row_sum);
+            compute_frag = div_op(compute_frag, reduction_result.row_sum);
             visitor.visit(
                 row_idx,
                 column_idx,
@@ -188,7 +189,9 @@ template<
     typename ElementOutput_,
     int AlignmentOutput_,
     typename ThreadblockShape_,
-    typename WarpCount_
+    typename WarpCount_,
+    typename ReductionResult_,
+    typename InputCache_
 >
 class EpilogueWithVisitorLayerNorm {
 
@@ -254,6 +257,9 @@ public:
         { }
     };
 
+    using ReductionResult = ReductionResult_;
+    using InputCache = InputCache_;
+
 private:
     InputTileIterator input_iterator_;
     ElementAccumulator* mean_ptr;
@@ -292,20 +298,19 @@ public:
     CUTLASS_DEVICE
     void operator()(
         Visitor & visitor,
-        InputFragment& input_buffer,
-        ElementAccumulator const row_m1,
-        ElementAccumulator const row_m2
+        InputCache& input_cache,
+        ReductionResult const & reduction_result
     ) {
         cutlass::divides<ElementAccumulator> scalar_divide;
-        ElementAccumulator row_std = scalar_divide(ElementAccumulator(1), cutlass::sqrt(row_m2 - row_m1 * row_m1 + eps));
+        ElementAccumulator row_std = scalar_divide(ElementAccumulator(1), cutlass::sqrt(reduction_result.row_m2 - reduction_result.row_m1 * reduction_result.row_m1 + eps));
 
         // write mean and std_factor
         if (thread_idx_ == 0){
-            *(mean_ptr + row_idx) = row_m1;
+            *(mean_ptr + row_idx) = reduction_result.row_m1;
             *(std_factor_ptr + row_idx) = row_std;
         }
 
-        Array<Element, kElementsPerAccess>* input_frag = reinterpret_cast<Array<Element, kElementsPerAccess>*>(&input_buffer);
+        Array<Element, kElementsPerAccess>* input_frag = reinterpret_cast<Array<Element, kElementsPerAccess>*>(&input_cache.input_buffer);
         
         AccumulatorFragment compute_frag;
         NumericArrayConverter<ElementAccumulator, Element, kElementsPerAccess> input_converter;
@@ -315,7 +320,7 @@ public:
 
         #pragma unroll
         for (int i = 0; i < InputTileIterator::Iterations::kColumn; i ++) {
-            compute_frag = mult_op(minus_op(input_converter(*input_frag), row_m1), row_std);
+            compute_frag = mult_op(minus_op(input_converter(*input_frag), reduction_result.row_m1), row_std);
             visitor.visit(
                 row_idx,
                 column_idx,
@@ -343,7 +348,9 @@ struct EpilogueWithVisitorFromExistingEpilogue {
         typename Existing_::Element,
         Existing_::kElementsPerAccess,
         typename Existing_::ThreadblockShape,
-        typename Existing_::WarpCount
+        typename Existing_::WarpCount,
+        typename Existing_::ReductionResult,
+        typename Existing_::InputCache
     >;
 };
 
@@ -358,7 +365,9 @@ struct LayerNormEpilogueWithVisitorFromExistingEpilogue {
         typename Existing_::Element,
         Existing_::kElementsPerAccess,
         typename Existing_::ThreadblockShape,
-        typename Existing_::WarpCount
+        typename Existing_::WarpCount,
+        typename Existing_::ReductionResult,
+        typename Existing_::InputCache
     >;
 };
 

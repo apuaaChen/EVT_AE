@@ -21,6 +21,8 @@ struct SoftmaxUniversalwithEpilogueVisitorBlock :
 public:
     using Base = cutlass::reduce_apply::kernel::ReductionApplywithEpilogueVisitor<Reduction_, Epilogue_>;
 
+    using ReductionResult = typename Base::Reduction::ReductionResult;
+
     /// Execute one softmax
     CUTLASS_DEVICE
     void operator()(typename Base::Params const &params, typename Base::SharedStorage &shared_storage) {
@@ -37,10 +39,9 @@ public:
             threadblock_offset
         );
 
-        typename Base::ElementAccumulator row_max;
-        typename Base::ElementAccumulator row_sum;
+        ReductionResult reduction_result;
 
-        softmax_reduction(row_max, row_sum);
+        softmax_reduction(reduction_result);
 
         gemm::GemmCoord threadblock_tile_offset(
             int(blockIdx.x), int(blockIdx.y), int(blockIdx.z)
@@ -64,7 +65,7 @@ public:
         );
 
         // Execute the epilogue operator to update the destination tensor
-        epilogue(epilogue_visitor, row_max, row_sum);
+        epilogue(epilogue_visitor, reduction_result);
 
     }
 };
@@ -77,6 +78,8 @@ struct SoftmaxUniversalwithEpilogueVisitorWarp :
     cutlass::reduce_apply::kernel::ReductionApplywithEpilogueVisitor<Reduction_, Epilogue_>{
 public:
     using Base = cutlass::reduce_apply::kernel::ReductionApplywithEpilogueVisitor<Reduction_, Epilogue_>;
+    using ReductionResult = typename Base::Reduction::ReductionResult;
+    using InputCache = typename Base::Reduction::InputCache;
 
     /// Execute one softmax
     CUTLASS_DEVICE
@@ -87,18 +90,17 @@ public:
             int(blockIdx.x), int(blockIdx.y)
         };
 
-        typename Base::Reduction softmax_reduction(
+        typename Base::Reduction reduction(
             params.reduction_params, 
             shared_storage.reduction_storage, 
             thread_idx,
             threadblock_offset
         );
 
-        typename Base::ElementAccumulator row_max;
-        typename Base::ElementAccumulator row_sum;
-        typename Base::Reduction::InputFragment input_buffer;
+        ReductionResult reduction_result;
+        InputCache input_cache;
 
-        softmax_reduction(input_buffer, row_max, row_sum);
+        reduction(input_cache, reduction_result);
 
         gemm::GemmCoord threadblock_tile_offset(
             int(blockIdx.x), int(blockIdx.y), int(blockIdx.z)
@@ -124,11 +126,10 @@ public:
         );
 
         // Execute the epilogue operator to update the destination tensor
-        epilogue(epilogue_visitor, input_buffer, row_max, row_sum);
+        epilogue(epilogue_visitor, input_cache, reduction_result);
 
     }
 };
-
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 

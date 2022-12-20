@@ -159,6 +159,13 @@ public:
         column_ += Shape::kColumn;
     }
 
+    CUTLASS_DEVICE
+    Fragment load() {
+        Fragment frag;
+        load(frag);
+        return frag;
+    }
+
     /// Store a fragment to memory
     CUTLASS_DEVICE
     void store(Fragment const &frag) {

@@ -63,7 +63,9 @@ public:
         ElementOutput,
         kElementsPerAccess,
         ThreadblockShape,
-        WarpCount
+        WarpCount,
+        typename Reduction::ReductionResult,
+        typename Reduction::InputCache
     >;
 };
 

@@ -33,7 +33,7 @@ class SoftmaxTestSm80(unittest.TestCase):
 
         ## run the compiler pass
         symbolic_traced : torch.fx.GraphModule = symbolic_trace(module)
-        x = torch.randn((32, 16, 512, 512), dtype=torch.float16, device="cuda")
+        x = torch.randn((32, 16384), dtype=torch.float16, device="cuda")
 
         ShapeProp(symbolic_traced).propagate(x)
 

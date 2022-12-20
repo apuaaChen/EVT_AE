@@ -1,5 +1,6 @@
 #pragma once
 #include "softmax/threadblock/row_tile_iterator.h"
+#include "softmax/threadblock/reduction_base.h"
 #include <cub/block/block_reduce.cuh>
 #include <cub/warp/warp_reduce.cuh>
 
@@ -20,55 +21,31 @@ template<
     typename ElementInput_,
     int AlignmentInput_,
     typename ElementAccumulator_>
-struct LayerNormWarpReduction {
-    using ThreadblockShape = ThreadblockShape_;
-    using WarpCount = WarpCount_;
-    using ElementInput = ElementInput_;
-    using ElementAccumulator = ElementAccumulator_;
-    static const int kElementsPerAccess = AlignmentInput_;
+struct LayerNormWarpReduction :
+    cutlass::reduce_apply::threadblock::WarpReductionBase <
+        ThreadblockShape_, WarpCount_, ElementInput_,
+        AlignmentInput_, ElementAccumulator_> {
 
-    //
-    // Iterators
-    //
-
-    using ThreadMapInput = cutlass::softmax::threadblock::RowThreadMap<
-        ThreadblockShape, WarpCount, ElementInput, AlignmentInput_>;
-    
-    using InputIterator = cutlass::softmax::threadblock::RowTileIterator<ThreadMapInput, ElementInput>;
-
-    static const int kNumThreads = 32;
-
-    static const int kInputBufferSize = InputIterator::Iterations::kColumn * kElementsPerAccess;
-
-    using WarpReduce = cub::WarpReduce<ElementAccumulator>;
-
-    using InputFragment = Array<ElementInput, kInputBufferSize>;
-    using AccumulatorFragment = Array<ElementAccumulator, kElementsPerAccess>;
-
-    using SumFragment = Array<ElementAccumulator, kElementsPerAccess>;
+    using Base = cutlass::reduce_apply::threadblock::WarpReductionBase <
+        ThreadblockShape_,
+        WarpCount_,
+        ElementInput_,
+        AlignmentInput_,
+        ElementAccumulator_>;
 
     //
     // Structures
     //
 
     struct Arguments {
-        //
-        // Data members
-        //
-        ElementInput* input;
+        typename Base::ElementInput* input;
         MatrixCoord problem_size;
     };
 
     struct Params {
-        //
-        // Data members
-        //
-        ElementInput* input;
+        typename Base::ElementInput* input;
         MatrixCoord problem_size;
 
-        //
-        // Members
-        //
         CUTLASS_HOST_DEVICE
         Params(Arguments const &args):
             input(args.input),
@@ -77,19 +54,26 @@ struct LayerNormWarpReduction {
 
     };
 
+    struct InputCache {
+        static const int kInputBufferSize = 
+            Base::InputIterator::Iterations::kColumn * Base::kElementsPerAccess;
+        Array<typename Base::ElementInput, kInputBufferSize> input_buffer;
+    };
+
+    struct ReductionResult {
+        typename Base::ElementAccumulator row_m1;
+        typename Base::ElementAccumulator row_m2;
+    };
+
     union SharedStorage {
-        typename WarpReduce::TempStorage temp_storage;
+        typename Base::SharedStorage shared_storage;
     };    
 
 private:
 
-    InputIterator input_iterator_;
+    typename Base::InputIterator input_iterator_;
 
-    WarpReduce warp_reduce_;
-
-    int thread_idx_;
-
-    ElementAccumulator numel_;
+    typename Base::ElementAccumulator numel_;
 
 public:
     /// Constructor
@@ -103,59 +87,38 @@ public:
         input_iterator_(
             params.input, params.problem_size, thread_idx, threadblock_offset
         ),
-        warp_reduce_(shared_storage.temp_storage),
-        thread_idx_(thread_idx),
+        Base(thread_idx, shared_storage.shared_storage),
         numel_(ElementAccumulator(params.problem_size.column()))
         { }
     
     /// Execute one softmax
     CUTLASS_DEVICE
-    void operator()(InputFragment & input_buffer, ElementAccumulator &row_m1, ElementAccumulator &row_m2) {
+    void operator()(InputCache & input_cache, ReductionResult & reduction_result) {
 
         /// Get the sum(x) and sum(x^2) of each row
-        SumFragment x_accumulator;
-        SumFragment x2_accumulator;
+        typename Base::AccumulatorFragment x_accumulator;
+        typename Base::AccumulatorFragment x2_accumulator;
         
         x_accumulator.clear();
         x2_accumulator.clear();
 
-        NumericArrayConverter<ElementAccumulator, ElementInput, kElementsPerAccess> converter;
-
-        cutlass::plus<SumFragment> plus_op;
-        cutlass::multiplies<SumFragment> mul_op;
-
-        Array<ElementInput, kElementsPerAccess>* input_buffer_ptr = reinterpret_cast<Array<ElementInput, kElementsPerAccess>*>(&input_buffer);
-        AccumulatorFragment tmp_input;
+        typename Base::InputFragment* input_buffer_ptr = reinterpret_cast<typename Base::InputFragment*>(&input_cache.input_buffer);
+        typename Base::AccumulatorFragment tmp_input;
 
         #pragma unroll
-        for (int i = 0; i < InputIterator::Iterations::kColumn; i ++) {
+        for (int i = 0; i < Base::InputIterator::Iterations::kColumn; i ++) {
             input_iterator_.load(*input_buffer_ptr);
-            tmp_input = converter(*input_buffer_ptr);
-            x_accumulator = plus_op(tmp_input, x_accumulator);
-            x2_accumulator = plus_op(
-                mul_op(tmp_input, tmp_input),
-                x2_accumulator
-            );
+            tmp_input = input2acc(*input_buffer_ptr);
+            x_accumulator = tmp_input + x_accumulator;
+            x2_accumulator = tmp_input * tmp_input + x2_accumulator;
             input_buffer_ptr ++;
         }
 
         /// Get the maximum entry in the array of each thread
-        ElementAccumulator row_x = ElementAccumulator(0);
-        ElementAccumulator row_x2 = ElementAccumulator(0);
-        #pragma unroll
-        for (int i = 0; i < kElementsPerAccess; i ++) {
-            row_x += *(x_accumulator.data() + i);
-            row_x2 += *(x2_accumulator.data() + i);
-        }
-
-        row_m1 = warp_reduce_.Sum(row_x);
-        row_m2 = warp_reduce_.Sum(row_x2);
-
-        row_m1 = __shfl_sync(0xffffffff, row_m1, 0);
-        row_m2 = __shfl_sync(0xffffffff, row_m2, 0);
-
-        row_m1 = row_m1 / numel_;
-        row_m2 = row_m2 / numel_;
+        this->sum(x_accumulator, reduction_result.row_m1);
+        this->sum(x2_accumulator, reduction_result.row_m2);
+        reduction_result.row_m1 /= numel_;
+        reduction_result.row_m2 /= numel_;
     }
 };
 

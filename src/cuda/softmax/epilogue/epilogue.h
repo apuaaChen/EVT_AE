@@ -17,7 +17,9 @@ template<
     typename ElementOutput_,
     int AlignmentOutput_,
     typename ThreadblockShape_,
-    typename WarpCount_
+    typename WarpCount_,
+    typename ReductionResult_,
+    typename InputCache_
 >
 class DefaultEpilogueSoftmax {
 
@@ -37,6 +39,8 @@ public:
     using Fragment = typename OutputTileIterator::Fragment;
 
     using AccumulatorFragment = Array<ElementAccumulator, kElementsPerAccess>;
+    using ReductionResult = ReductionResult_;
+    using InputCache = InputCache_;
 
     using Minus = cutlass::minus<AccumulatorFragment>;
     using Div = cutlass::divides<AccumulatorFragment>;
@@ -136,7 +140,9 @@ template<
     typename ElementOutput_,
     int AlignmentOutput_,
     typename ThreadblockShape_,
-    typename WarpCount_
+    typename WarpCount_,
+    typename ReductionResult_,
+    typename InputCache_
 >
 class DefaultEpilogueLayerNorm {
 
@@ -156,6 +162,8 @@ public:
     using Fragment = typename OutputTileIterator::Fragment;
 
     using AccumulatorFragment = Array<ElementAccumulator, kElementsPerAccess>;
+    using ReductionResult = ReductionResult_;
+    using InputCache = InputCache_;
 
     using Minus = cutlass::minus<AccumulatorFragment>;
     using Exp = cutlass::fast_exp_op<AccumulatorFragment>;

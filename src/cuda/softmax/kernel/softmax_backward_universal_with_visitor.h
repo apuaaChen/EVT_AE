@@ -20,6 +20,8 @@ struct SoftmaxBackwardUniversalwithEpilogueVisitorBlock :
 public:
     using Base = cutlass::reduce_apply::kernel::ReductionApplywithEpilogueVisitor<Reduction_, Epilogue_>;
 
+    using ReductionResult = typename Base::Reduction::ReductionResult;
+
 public:
 
     /// Execute one softmax backward
@@ -37,9 +39,10 @@ public:
             threadblock_offset
         );
 
-        typename Base::ElementAccumulator row_sum;
 
-        softmax_backward_reduction(row_sum);
+        ReductionResult reduction_result;
+
+        softmax_backward_reduction(reduction_result);
 
         gemm::GemmCoord threadblock_tile_offset(
             int(blockIdx.x), int(blockIdx.y), int(blockIdx.z)
@@ -63,7 +66,7 @@ public:
         );
 
         // Execute the epilogue operator to update the destination tensor
-        epilogue(epilogue_visitor, row_sum);
+        epilogue(epilogue_visitor, reduction_result);
     }
 };
 
@@ -76,7 +79,8 @@ struct SoftmaxBackwardUniversalwithEpilogueVisitorWarp :
     cutlass::reduce_apply::kernel::ReductionApplywithEpilogueVisitor<Reduction_, Epilogue_> {
 public:
     using Base = cutlass::reduce_apply::kernel::ReductionApplywithEpilogueVisitor<Reduction_, Epilogue_>;
-    
+    using ReductionResult = typename Base::Reduction::ReductionResult;
+    using InputCache = typename Base::Reduction::InputCache;
 public:
 
     /// Execute one softmax backward
@@ -94,11 +98,10 @@ public:
             threadblock_offset
         );
 
-        typename Base::ElementAccumulator row_sum;
-        typename Base::Reduction::InputFragment o_softmax_buffer;
-        typename Base::Reduction::InputFragment grad_softmax_buffer;
+        ReductionResult reduction_result;
+        InputCache input_cache;
 
-        softmax_backward_reduction(o_softmax_buffer, grad_softmax_buffer, row_sum);
+        softmax_backward_reduction(input_cache, reduction_result);
 
         gemm::GemmCoord threadblock_tile_offset(
             int(blockIdx.x), int(blockIdx.y), int(blockIdx.z)
@@ -122,7 +125,7 @@ public:
         );
 
         // Execute the epilogue operator to update the destination tensor
-        epilogue(epilogue_visitor, o_softmax_buffer, grad_softmax_buffer, row_sum);
+        epilogue(epilogue_visitor, input_cache, reduction_result);
     }
 };
 

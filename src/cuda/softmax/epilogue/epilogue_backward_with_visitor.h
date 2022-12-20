@@ -18,7 +18,9 @@ template<
     typename ElementOutput_,
     int AlignmentOutput_,
     typename ThreadblockShape_,
-    typename WarpCount_
+    typename WarpCount_,
+    typename ReductionResult_,
+    typename InputCache_
 >
 class EpilogueBackwardWithVisitor {
 
@@ -75,6 +77,8 @@ public:
             problem_size(args.problem_size)
         { }
     };
+    using ReductionResult = ReductionResult_;
+    using InputCache = InputCache_;
 
 private:
     InputTileIterator o_softmax_iterator_;
@@ -115,7 +119,7 @@ public:
     CUTLASS_DEVICE
     void operator()(
         Visitor & visitor,
-        ElementAccumulator const row_sum
+        ReductionResult const &reduction_result
      ) {
         typename InputTileIterator::Fragment o_softmax_frag;
         typename InputTileIterator::Fragment grad_softmax_frag;
@@ -129,10 +133,11 @@ public:
         for (int i = 0; i < InputTileIterator::Iterations::kColumn; i ++) {
             o_softmax_iterator_.load(o_softmax_frag);
             grad_softmax_iterator_.load(grad_softmax_frag);
-            compute_frag = mult_op(input_converter(o_softmax_frag), sub_op(input_converter(grad_softmax_frag), row_sum));
+            compute_frag = mult_op(input_converter(o_softmax_frag), sub_op(input_converter(grad_softmax_frag), reduction_result.row_sum));
             visitor.visit(
                 row_idx,
                 column_idx,
+                i,
                 compute_frag
             );
             column_idx += InputTileIterator::Shape::kColumn;
@@ -144,12 +149,11 @@ public:
     CUTLASS_DEVICE
     void operator()(
         Visitor & visitor,
-        InputFragment& o_softmax_buffer,
-        InputFragment& grad_softmax_buffer,
-        ElementAccumulator const row_sum
+        InputCache& input_cache,
+        ReductionResult const & reduction_result
     ){
-        const typename InputTileIterator::Fragment* o_softmax_frag = reinterpret_cast<const typename InputTileIterator::Fragment*>(&o_softmax_buffer);
-        const typename InputTileIterator::Fragment* grad_softmax_frag = reinterpret_cast<const typename InputTileIterator::Fragment*>(&grad_softmax_buffer);
+        const typename InputTileIterator::Fragment* o_softmax_frag = reinterpret_cast<const typename InputTileIterator::Fragment*>(&input_cache.o_softmax_buffer);
+        const typename InputTileIterator::Fragment* grad_softmax_frag = reinterpret_cast<const typename InputTileIterator::Fragment*>(&input_cache.grad_softmax_buffer);
 
         AccumulatorFragment compute_frag;
         NumericArrayConverter<ElementAccumulator, Element, kElementsPerAccess> input_converter;
@@ -158,7 +162,7 @@ public:
         visitor.begin_epilogue();
 
         for (int i = 0; i < InputTileIterator::Iterations::kColumn; i ++) {
-            compute_frag = mult_op(input_converter(*o_softmax_frag), sub_op(input_converter(*grad_softmax_frag), row_sum));
+            compute_frag = mult_op(input_converter(*o_softmax_frag), sub_op(input_converter(*grad_softmax_frag), reduction_result.row_sum));
             visitor.visit(
                 row_idx,
                 column_idx,
@@ -186,7 +190,9 @@ struct EpilogueBackwardWithVisitorFromExistingEpilogue {
         typename Existing_::Element,
         Existing_::kElementsPerAccess,
         typename Existing_::ThreadblockShape,
-        typename Existing_::WarpCount
+        typename Existing_::WarpCount,
+        typename Existing_::ReductionResult,
+        typename Existing_::InputCache
     >;
 };
 

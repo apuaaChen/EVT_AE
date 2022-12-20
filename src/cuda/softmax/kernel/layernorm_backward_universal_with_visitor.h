@@ -19,7 +19,8 @@ struct LayerNormBackwardUniversalwithEpilogueVisitorWarp :
     cutlass::reduce_apply::kernel::ReductionApplywithEpilogueVisitor<Reduction_, Epilogue_> {
 public:
     using Base = cutlass::reduce_apply::kernel::ReductionApplywithEpilogueVisitor<Reduction_, Epilogue_>;
-
+    using ReductionResult = typename Base::Reduction::ReductionResult;
+    using InputCache = typename Base::Reduction::InputCache;
 public:
 
     /// Execute one softmax backward
@@ -37,15 +38,11 @@ public:
             threadblock_offset
         );
 
-        // t1 = sum(gamma_grad_y, dim=1)
-        // t2 = sum(gamma_grad_y * x_hat, dim=1)
-        typename Base::ElementAccumulator row_sum_t1;
-        typename Base::ElementAccumulator row_sum_t2;
 
-        typename Base::Reduction::InputFragment gamma_grad_y_buffer;
-        typename Base::Reduction::InputFragment x_hat_buffer;
+        ReductionResult reduction_result;
+        InputCache input_cache;
 
-        layernorm_backward_reduction(gamma_grad_y_buffer, x_hat_buffer, row_sum_t1, row_sum_t2);
+        layernorm_backward_reduction(input_cache, reduction_result);
 
         gemm::GemmCoord threadblock_tile_offset(
             int(blockIdx.x), int(blockIdx.y), int(blockIdx.z)
@@ -69,7 +66,7 @@ public:
         );
 
         // Execute the epilogue operator to update the destination tensor
-        epilogue(epilogue_visitor, gamma_grad_y_buffer, x_hat_buffer, row_sum_t1, row_sum_t2);
+        epilogue(epilogue_visitor, input_cache, reduction_result);
     }
 };
 

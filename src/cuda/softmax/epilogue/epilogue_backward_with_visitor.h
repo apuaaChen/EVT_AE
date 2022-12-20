@@ -198,7 +198,9 @@ template<
     typename ElementOutput_,
     int AlignmentOutput_,
     typename ThreadblockShape_,
-    typename WarpCount_
+    typename WarpCount_,
+    typename ReductionResult_,
+    typename InputCache_
 >
 class LayerNormEpilogueBackwardWithVisitor {
 
@@ -252,6 +254,9 @@ public:
         { }
     };
 
+    using ReductionResult = ReductionResult_;
+    using InputCache = InputCache_;
+
 private:
     Mult mult_op;
     Sub sub_op;
@@ -278,13 +283,11 @@ public:
     CUTLASS_DEVICE
     void operator()(
         Visitor & visitor,
-        InputFragment& gamma_grad_y_buffer,
-        InputFragment& x_hat_buffer,
-        ElementAccumulator const row_sum_t1,
-        ElementAccumulator const row_sum_t2
+        InputCache& input_cache,
+        ReductionResult const & reduction_result
     ){
-        const typename InputTileIterator::Fragment* gamma_grad_y_frag = reinterpret_cast<const typename InputTileIterator::Fragment*>(&gamma_grad_y_buffer);
-        const typename InputTileIterator::Fragment* x_hat_frag = reinterpret_cast<const typename InputTileIterator::Fragment*>(&x_hat_buffer);
+        const typename InputTileIterator::Fragment* gamma_grad_y_frag = reinterpret_cast<const typename InputTileIterator::Fragment*>(&input_cache.gamma_grad_y_buffer);
+        const typename InputTileIterator::Fragment* x_hat_frag = reinterpret_cast<const typename InputTileIterator::Fragment*>(&input_cache.x_hat_buffer);
 
         AccumulatorFragment compute_frag;
         NumericArrayConverter<ElementAccumulator, Element, kElementsPerAccess> input_converter;
@@ -297,10 +300,10 @@ public:
                 input_converter(*gamma_grad_y_frag), 
                 mult_op(
                     add_op(
-                        row_sum_t1,
+                        reduction_result.row_sum_t1,
                         mult_op(
                             input_converter(*x_hat_frag),
-                            row_sum_t2
+                            reduction_result.row_sum_t2
                         )
                     ),
                     numel_factor
@@ -332,7 +335,9 @@ struct LayerNormEpilogueBackwardWithVisitorFromExistingEpilogue {
         typename Existing_::Element,
         Existing_::kElementsPerAccess,
         typename Existing_::ThreadblockShape,
-        typename Existing_::WarpCount
+        typename Existing_::WarpCount,
+        typename Existing_::ReductionResult,
+        typename Existing_::InputCache
     >;
 };
 

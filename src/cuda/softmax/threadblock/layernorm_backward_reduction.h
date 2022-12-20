@@ -1,5 +1,6 @@
 #pragma once
 #include "softmax/threadblock/row_tile_iterator.h"
+#include "softmax/threadblock/reduction_base.h"
 #include <cub/block/block_reduce.cuh>
 #include <cub/warp/warp_reduce.cuh>
 
@@ -17,57 +18,37 @@ template<
     typename ElementInput_,
     int AlignmentInput_,
     typename ElementAccumulator_>
-struct LayerNormBackwardWarpReduction {
-    using ThreadblockShape = ThreadblockShape_;
-    using WarpCount = WarpCount_;
-    using ElementInput = ElementInput_;
-    using ElementAccumulator = ElementAccumulator_;
-    static const int kElementsPerAccess = AlignmentInput_;
-
-    //
-    // Iterators
-    //
-
-    using ThreadMapInput = cutlass::softmax::threadblock::RowThreadMap<
-        ThreadblockShape, WarpCount, ElementInput, AlignmentInput_>;
+struct LayerNormBackwardWarpReduction :
+    cutlass::reduce_apply::threadblock::WarpReductionBase <
+        ThreadblockShape_, WarpCount_, ElementInput_,
+        AlignmentInput_, ElementAccumulator_>  {
     
-    using InputIterator = cutlass::softmax::threadblock::RowTileIterator<ThreadMapInput, ElementInput>;
-
-    static const int kNumThreads = 32;
-
-    static const int kInputBufferSize = InputIterator::Iterations::kColumn * kElementsPerAccess;
-
-    using WarpReduce = cub::WarpReduce<ElementAccumulator>;
-
-    using InputFragment = Array<ElementInput, kInputBufferSize>;
-
-    using AccumulatorFragment = Array<ElementAccumulator, kElementsPerAccess>;
+    using Base = cutlass::reduce_apply::threadblock::WarpReductionBase <
+        ThreadblockShape_,
+        WarpCount_,
+        ElementInput_,
+        AlignmentInput_,
+        ElementAccumulator_>;
 
     //
     // Structure
     //
 
     struct Arguments {
-        //
-        // Data members
-        //
-        ElementInput* gamma;
-        ElementInput* grad_layernorm;
-        ElementInput* x;
-        ElementAccumulator* mean;
-        ElementAccumulator* std;
+        typename Base::ElementInput* gamma;
+        typename Base::ElementInput* grad_layernorm;
+        typename Base::ElementInput* x;
+        typename Base::ElementAccumulator* mean;
+        typename Base::ElementAccumulator* std;
         MatrixCoord problem_size;
     };
 
     struct Params {
-        //
-        // Data members
-        //
-        ElementInput* gamma;
-        ElementInput* grad_layernorm;
-        ElementInput* x;
-        ElementAccumulator* mean;
-        ElementAccumulator* std;
+        typename Base::ElementInput* gamma;
+        typename Base::ElementInput* grad_layernorm;
+        typename Base::ElementInput* x;
+        typename Base::ElementAccumulator* mean;
+        typename Base::ElementAccumulator* std;
         MatrixCoord problem_size;
 
         //
@@ -84,21 +65,29 @@ struct LayerNormBackwardWarpReduction {
         { }
     };
 
+    struct InputCache {
+        static const int kInputBufferSize = 
+            Base::InputIterator::Iterations::kColumn * Base::kElementsPerAccess;
+        Array<typename Base::ElementInput, kInputBufferSize> gamma_grad_y_buffer;
+        Array<typename Base::ElementInput, kInputBufferSize> x_hat_buffer;
+    };
+
+    struct ReductionResult {
+        typename Base::ElementAccumulator row_sum_t1;
+        typename Base::ElementAccumulator row_sum_t2;
+    };
+
     union SharedStorage {
-        typename WarpReduce::TempStorage temp_storage;
+        typename Base::SharedStorage shared_storage;
     };
 
 private:
     
-    InputIterator gamma_iterator_;
-    InputIterator grad_layernorm_iterator_;
-    InputIterator x_iterator_;
-    ElementInput mean_;
-    ElementInput std_;
-    
-    WarpReduce warp_reduce_;
-
-    int thread_idx_;
+    typename Base::InputIterator gamma_iterator_;
+    typename Base::InputIterator grad_layernorm_iterator_;
+    typename Base::InputIterator x_iterator_;
+    typename Base::ElementInput mean_;
+    typename Base::ElementInput std_;
 
 public:
     /// Constructor
@@ -112,8 +101,7 @@ public:
         gamma_iterator_(params.gamma, params.problem_size, thread_idx, MatrixCoord(0, threadblock_offset.column())),
         grad_layernorm_iterator_(params.grad_layernorm, params.problem_size, thread_idx, threadblock_offset),
         x_iterator_(params.x, params.problem_size, thread_idx, threadblock_offset),
-        warp_reduce_(shared_storage.temp_storage),
-        thread_idx_(thread_idx)
+        Base(thread_idx, shared_storage.shared_storage)
     {
         int row_idx = threadblock_offset.row();
         mean_ = ElementInput(*(params.mean + row_idx));
@@ -122,52 +110,36 @@ public:
 
     /// Execute one softmax backward
     CUTLASS_DEVICE
-    void operator()(
-        InputFragment & gamma_grad_y_buffer, InputFragment & x_hat_buffer, 
-        ElementAccumulator &row_sum_t1, ElementAccumulator &row_sum_t2) {
+    void operator()(InputCache & input_cache, ReductionResult & reduction_result) {
         //
-        AccumulatorFragment sum_t1_accumulator;
-        AccumulatorFragment sum_t2_accumulator;
+        typename Base::AccumulatorFragment sum_t1_accumulator;
+        typename Base::AccumulatorFragment sum_t2_accumulator;
         sum_t1_accumulator.fill(0);
         sum_t2_accumulator.fill(0);
 
-        NumericArrayConverter<ElementAccumulator, ElementInput, kElementsPerAccess> converter;
-        cutlass::multiplies<Array<ElementInput, kElementsPerAccess>> mult_op;
-        cutlass::plus<AccumulatorFragment> plus_op;
-        cutlass::minus<Array<ElementInput, kElementsPerAccess>> sub_op;
+        typename Base::InputFragment* tmp_gamma_grad_y = reinterpret_cast<typename Base::InputFragment*>(&input_cache.gamma_grad_y_buffer);
+        typename Base::InputFragment* tmp_x_hat = reinterpret_cast<typename Base::InputFragment*>(&input_cache.x_hat_buffer);
 
-        typename InputIterator::Fragment* tmp_gamma_grad_y = reinterpret_cast<typename InputIterator::Fragment*>(&gamma_grad_y_buffer);
-        typename InputIterator::Fragment* tmp_x_hat = reinterpret_cast<typename InputIterator::Fragment*>(&x_hat_buffer);
+        typename Base::InputFragment tmp_gamma;
 
-        typename InputIterator::Fragment tmp_gamma;
-
-        for (int i = 0; i < InputIterator::Iterations::kColumn; i ++) {
+        for (int i = 0; i < Base::InputIterator::Iterations::kColumn; i ++) {
             gamma_iterator_.load(tmp_gamma);
             grad_layernorm_iterator_.load(*tmp_gamma_grad_y);
             x_iterator_.load(*tmp_x_hat);
-            *tmp_gamma_grad_y = mult_op(mult_op(tmp_gamma, *tmp_gamma_grad_y), std_);
-            *tmp_x_hat = mult_op(sub_op(*tmp_x_hat, mean_), std_);
+            *tmp_gamma_grad_y = tmp_gamma * (*tmp_gamma_grad_y) * std_;
+            *tmp_x_hat = ((*tmp_x_hat) - mean_) * std_;
 
-            sum_t1_accumulator = plus_op(converter(*tmp_gamma_grad_y), sum_t1_accumulator);
-            sum_t2_accumulator = plus_op(converter(mult_op(*tmp_gamma_grad_y, *tmp_x_hat)), sum_t2_accumulator);
+            sum_t1_accumulator = input2acc(*tmp_gamma_grad_y) + sum_t1_accumulator;
+            typename Base::InputFragment tmp_mult = (*tmp_gamma_grad_y) * (*tmp_x_hat);
+            sum_t2_accumulator = input2acc(tmp_mult) + sum_t2_accumulator;
 
             tmp_gamma_grad_y ++;
             tmp_x_hat ++;
         }
 
         /// Get the sum of entries in the array of each thread
-        row_sum_t1 = 0;
-        row_sum_t2 = 0;
-        #pragma unroll
-        for (int i = 0; i < kElementsPerAccess; i ++) {
-            row_sum_t1 += *(sum_t1_accumulator.data() + i);
-            row_sum_t2 += *(sum_t2_accumulator.data() + i);
-        }
-
-        row_sum_t1 = warp_reduce_.Sum(row_sum_t1);
-        row_sum_t2 = warp_reduce_.Sum(row_sum_t2);
-        row_sum_t1 = __shfl_sync(0xffffffff, row_sum_t1, 0);
-        row_sum_t2 = __shfl_sync(0xffffffff, row_sum_t2, 0);
+        this->sum(sum_t1_accumulator, reduction_result.row_sum_t1);
+        this->sum(sum_t2_accumulator, reduction_result.row_sum_t2);
     }
 };
 

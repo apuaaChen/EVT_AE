@@ -96,21 +96,21 @@ class EmitLayerNormBackwardUniversalInstance:
             "cutlass/arch/mma.h",
             "cutlass/layout/matrix.h",
             "epilogue/epilogue_visitor_generic.h",
-            "softmax/kernel/default_layernorm_backward_universal.h",
+            "softmax/kernel/layernorm_backward_universal.h",
             "softmax/kernel/reduce_apply_universal_with_visitor.h",
             "softmax/epilogue/epilogue_backward_with_visitor.h"
         ]
 
         self.cutlass_template_visitor = """
 using ${operation_name}_default =
-    typename cutlass::softmax::kernel::DefaultLayerNormBackwardUniversal<
+    cutlass::softmax::kernel::LayerNormBackwardUniversal<
         cutlass::MatrixShape<${threadblock_row}, ${threadblock_column}>,
         cutlass::MatrixShape<${warp_count_row}, ${warp_count_column}>,
         ${element_input}, 
         ${alignment_input},
         ${element_output}, 
         ${alignment_output},
-        ${element_accumulator}>::LayerNormKernel;
+        ${element_accumulator}>;
 
 ${epilogue_visitor}
 

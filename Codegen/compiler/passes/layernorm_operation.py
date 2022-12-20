@@ -2,6 +2,7 @@ import pycutlass
 from pycutlass import *
 import os
 import nvtx
+from passes.reduce_apply_operation import ReduceApplyArguments, ReduceApplyRT, ReduceApplyOperation
 
 
 ################################################################################
@@ -10,60 +11,21 @@ import nvtx
 #
 ################################################################################
 
-def get_layernorm_arguments(epilogue_functor):
-
-    _EpilogueOutputOpParams = epilogue_functor.epilogue_type
-
-    # class _EpilogueArguments(ctypes.Structure):
-    #     _fields_ = [
-    #         ("ptr_input", ctypes.c_void_p),
-    #         ("ptr_output", ctypes.c_void_p),
-    #         ("problem_size", MatrixCoord_),
-    #     ]
-    #     def __init__(self, input, output, problem_size) -> None:
-    #         assert isinstance(input, torch.Tensor)
-    #         self.ptr_input = int(TorchFrontend.argument(input))
-    #         assert isinstance(output, torch.Tensor)
-    #         self.ptr_output = int(TorchFrontend.argument(output))
-    #         self.problem_size = MatrixCoord_(problem_size[0], problem_size[1])
-
-
-    class _LayerNormArguments(ctypes.Structure):
-        _fields_ = [
-            ("ptr_input", ctypes.c_void_p),
-            ("problem_size", MatrixCoord_),
-            ("ptr_input_2", ctypes.c_void_p),
-            ("eps", ctypes.c_float),
-            ("problem_size_2", MatrixCoord_),
-            ("ptr_mean", ctypes.c_void_p),
-            ("ptr_std", ctypes.c_void_p),
-            ("epilogue_args", _EpilogueOutputOpParams)
-        ]
-    
-    return _LayerNormArguments, _EpilogueOutputOpParams
-
-class LayerNormArguments:
+class LayerNormArguments(ReduceApplyArguments):
     def __init__(
         self, operation: 'LayerNormOperation', problem_size: 'list[int]', 
         input: 'Tensor', mean: 'Tensor', std: 'Tensor', 
         output_op: 'Tensor', eps=1e-12, **kwargs) -> None:
-        # get pointers
-        assert isinstance(input, torch.Tensor)
-        assert isinstance(mean, torch.Tensor)
-        assert isinstance(std, torch.Tensor)
-        self.ptr_input = TorchFrontend.argument(input)
-        self.ptr_mean = TorchFrontend.argument(mean)
-        self.ptr_std = TorchFrontend.argument(std)
+        super().__init__(operation, problem_size, **kwargs)
+        
+        self.ptr_input = self.tensor2ptr(input)
+        self.ptr_mean = self.tensor2ptr(mean)
+        self.ptr_std = self.tensor2ptr(std)
         self.output_op = output_op
         self.eps = eps
-        # assert isinstance(output, torch.Tensor)
-        # self.ptr_output = TorchFrontend.argument(output)
-
-        self.operation = operation
-        self.problem_size = problem_size
 
         self.initialize()
-
+    
     def get_arguments(self):
 
         self.arguments = self.operation.argument_type(
@@ -77,157 +39,49 @@ class LayerNormArguments:
             self.output_op
         )
 
-    def initialize(self):
-        # get launch configuration
-        launch_config = self.operation.rt_module.plan(self)
-
-        self.get_arguments()
-
-        res_args = self.operation.rt_module.get_args(ctypes.byref(self.arguments))
-        self.host_workspace = bytearray(res_args.contents)
-        self.device_workspace = None
-        self.launch_config = launch_config
-
-
-class LayerNormRT(ExecutableOperation):
-    """
-    LayerNormRT manages the CUTLASS runtime components
-    """
-
-    HostTemplate = r'''
-extern "C" {
-    // Get the size of params in bytes
-    int ${operation_name}_get_param_size(){
-        return sizeof(${operation_name}${operation_suffix}::Params);
-    }
-
-    // Get the size of dynamic shared memory in bytes
-    int ${operation_name}_shared_memory_size() {
-        return int(sizeof(${operation_name}${operation_suffix}::SharedStorage));
-    }
-
-    // Get the params as byte array
-    char* ${operation_name}_get_params(${operation_name}_base::Arguments* argument) {
-        ${operation_name}_base::Params* params;
-        params = new ${operation_name}_base::Params(*argument);
-
-        char *bytes = ((char*)(params));
-        char *output = new char[sizeof(${operation_name}_base::Params)];
-        for (unsigned int i = 0; i < sizeof(${operation_name}_base::Params); i ++)
-            output[i] = bytes[i];
-        return output;
-    }
-}
-    '''
-
-    KernelTemplate = r'''
-extern "C"
-__global__ void
-${operation_name}(${operation_name}${operation_suffix}::Params params) {
-
-    // Dynamic shared memory base pointer
-    extern __shared__ int SharedStorageBase[];
-
-    // Declare pointer to dynamic shared memory
-    ${operation_name}${operation_suffix}::SharedStorage *shared_storage = 
-        reinterpret_cast<${operation_name}${operation_suffix}::SharedStorage *>(SharedStorageBase);
-    
-    ${operation_name}${operation_suffix} op;
-
-    op(params, *shared_storage);
-}
-    '''
+class LayerNormRT(ReduceApplyRT):
     def __init__(self, operation: 'LayerNormOperation'):
         super().__init__(operation)
-
         self.emitter = EmitLayerNormUniversalInstance('_type')
-
-        self.argument_type, self.epilogue_type = get_layernorm_arguments(operation.epilogue_functor)
-        self.argtype = [
-            ctypes.POINTER(self.argument_type)
-        ]
-        self.num_threads = operation.warp_count_column * operation.warp_count_row * 32
     
-    #
-    def emit(self):
-        return self.emitter.emit(self.operation)
+    @staticmethod
+    def get_arguments(epilogue_functor):
+        _EpilogueOutputOpParams = epilogue_functor.epilogue_type
 
-    #
-    def initialize(self):
-        err, = cuda.cuFuncSetAttribute(
-            self.kernel,
-            attrib=cuda.CUfunction_attribute.CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
-            value=self.shared_memory_capacity)
-        if err != cuda.CUresult.CUDA_SUCCESS:
-            raise RuntimeError('Cuda Error: {}'.format(err))
-    
-    #
-    def plan(self, argument):
-        grid_x = argument.problem_size[0]
+        class _LayerNormArguments(ctypes.Structure):
+            _fields_ = [
+                ("ptr_input", ctypes.c_void_p),
+                ("problem_size", MatrixCoord_),
+                ("ptr_input_2", ctypes.c_void_p),
+                ("eps", ctypes.c_float),
+                ("problem_size_2", MatrixCoord_),
+                ("ptr_mean", ctypes.c_void_p),
+                ("ptr_std", ctypes.c_void_p),
+                ("epilogue_args", _EpilogueOutputOpParams)
+            ]
+        
+        return _LayerNormArguments, _EpilogueOutputOpParams
 
-        return LaunchConfiguration(
-            [grid_x, 1, 1],
-            [self.num_threads, 1, 1],
-            self.shared_memory_capacity
-        )
-
-
-class LayerNormOperation:
-    """
-    CUTLASS LayerNorm Operation
-    """
-
+class LayerNormOperation(ReduceApplyOperation):
     def __init__(
         self, input: 'TensorDescription', output: 'TensorDescription',
         threadblock_tile: 'list[int]', warp_count: 'list[int]',
         element_accumulator, epilogue_functor) -> None:
 
-
-        self.arch = 80
-        self.tile_description = None
-        self.epilogue_functor = epilogue_functor
-
         self.element_input = input.element
         self.element_output = output.element
-        self.element_accumulator = element_accumulator
-
-        self.threadblock_row = threadblock_tile[0]
-        self.threadblock_column = threadblock_tile[1]
-
-        self.warp_count_row = warp_count[0]
-        self.warp_count_column = warp_count[1]
-        if self.warp_count_column == 1:
-            self.mode = "Warp"
-        else:
-            self.mode = "Block"
-
         self.alignment_input = input.alignment
         self.alignment_output = output.alignment
+
+        super().__init__(threadblock_tile, warp_count, element_accumulator, epilogue_functor)
 
         self.rt_module = LayerNormRT(self)
 
         self.argument_type = self.rt_module.argument_type
         self.epilogue_type = self.rt_module.epilogue_type
-
     
     def procedural_name(self):
         return "layernorm_kernel"
-    
-    def run(self, arguments: LayerNormArguments, stream=cuda.CUstream(0)) -> cuda.CUresult:
-        """
-        Configure and launch the cuda kernel with input arguments
-        """
-        err = self.rt_module.run(
-            arguments.host_workspace,
-            arguments.device_workspace,
-            arguments.launch_config,
-            stream)
-
-        if err != cuda.CUresult.CUDA_SUCCESS:
-            raise RuntimeError('CUDA Error %s' % str(err))
-
-        return err
-
 
 
 class EmitLayerNormUniversalInstance:
@@ -298,73 +152,3 @@ struct ${operation_name}${operation_suffix} :
         code =  SubstituteTemplate(self.cutlass_template_visitor, values)
 
         return code
-
-
-if __name__ == "__main__":
-    pycutlass.get_memory_pool(init_pool_size=2**10, max_pool_size=2**32)
-    pycutlass.compiler.nvcc()
-
-    num_classes = 32320
-    Input = TensorDescription(cutlass.float16, cutlass.RowMajor, 8)
-    Output = TensorDescription(cutlass.float16, cutlass.RowMajor, 8)
-
-    epilogue_functor = LinearCombination(
-        element_output=Output.element, epilogue_vector_length=Output.alignment,
-        element_accumulator=cutlass.float32,
-        element_epilogue=cutlass.float32)
-
-    class DirectOutput(EpilogueVisitTree):
-        def __call__(self, accum: 'tensor'):
-            D = accum
-            return D
-    
-    epilogue_functor = DirectOutput(
-        elementwise_functor=epilogue_functor, 
-        tile_description=TileDescription(
-            [1, num_classes, 1], stages=1, warp_count=[1, 4, 1],
-            math_instruction=None),
-        element_accumulator=cutlass.float32, elements_per_access=8,
-        element_compute=cutlass.float32, element_output=cutlass.float16
-    )
-    epilogue_functor.initialize()
-
-    operation = LayerNormOperation(
-        input=Input, output=Output, threadblock_tile=[1, num_classes, 1],
-        warp_count=[1, 4, 1], element_accumulator=cutlass.float32, epilogue_functor=epilogue_functor
-    )
-    cutlass_path = os.getenv('CUTLASS_PATH')
-    assert cutlass_path is not None, "Environment variable 'CUTLASS_PATH' is not defined."
-    cuda_install_path = os.getenv('CUDA_INSTALL_PATH')
-    assert cuda_install_path is not None, "Environment variable 'CUDA_INSTALL_PATH' is not defined."
-    include_paths = [
-        cuda_install_path + '/include',
-        cutlass_path + '/include',
-        cutlass_path + '/tools/util/include',
-        cutlass_path + '/tools/library/scripts/pycutlass/src/cpp/include',
-        '/opt/conda/lib/python3.8/site-packages/torch/include/',
-        '/workspace/sparseTraining/src/cuda/'
-    ]
-
-    compile_options = CompilationOptions(
-        ['-std=c++14'], [80, ], include_paths=include_paths
-    )
-
-    pycutlass.compiler.add_module([operation,], compile_options)
-
-    data = torch.randn(size=(3584, 32320), dtype=torch.float16, device="cuda")
-    output = torch.empty_like(data)
-
-    arguments = LayerNormArguments(operation=operation, problem_size=[3584, 32320], input=data, output=output)
-
-    operation.run(arguments)
-
-    for i in range(10):
-        with nvtx.annotate("my_softmax"):
-            operation.run(arguments)
-    
-    for i in range(10):
-        with nvtx.annotate("torch"):
-            torch.ops.aten._softmax(data, dim=1, half_to_float=False)
-
-    # arguments.sync()
-

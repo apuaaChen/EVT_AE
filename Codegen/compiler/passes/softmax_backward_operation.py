@@ -2,45 +2,24 @@ import pycutlass
 from pycutlass import *
 import os
 import nvtx
+from passes.reduce_apply_operation import ReduceApplyArguments, ReduceApplyRT, ReduceApplyOperation
 
 
 ################################################################################
 #
-# Data structure modeling a GEMM operation
+# Data structure modeling a Softmax Backward operation
 #
 ################################################################################
 
-def get_softmax_backward_arguments(epilogue_functor):
-
-    _EpilogueOutputOpParams = epilogue_functor.epilogue_type
-
-    class _SoftmaxBackwardArguments(ctypes.Structure):
-        _fields_ = [
-            ("ptr_o_softmax", ctypes.c_void_p),
-            ("ptr_grad_softmax", ctypes.c_void_p),
-            ("problem_size", MatrixCoord_),
-            ("ptr_o_softmax_2", ctypes.c_void_p),
-            ("ptr_grad_softmax_2", ctypes.c_void_p),
-            ("problem_size_2", MatrixCoord_),
-            ("epilogue_args", _EpilogueOutputOpParams)
-        ]
-
-    return _SoftmaxBackwardArguments, _EpilogueOutputOpParams
-
-class SoftmaxBackwardArguments:
+class SoftmaxBackwardArguments(ReduceApplyArguments):
     def __init__(
         self, operation: 'SoftmaxBackwardOperation', problem_size: 'list[int]',
         o_softmax: 'Tensor', grad_softmax: 'Tensor', output_op, **kwargs) -> None:
-        # get pointers
-        assert isinstance(o_softmax, torch.Tensor)
-        assert isinstance(grad_softmax, torch.Tensor)
-
-        self.ptr_o_softmax = TorchFrontend.argument(o_softmax)
-        self.ptr_grad_softmax = TorchFrontend.argument(grad_softmax)
+        #
+        super().__init__(operation, problem_size, **kwargs)
+        self.ptr_o_softmax = self.tensor2ptr(o_softmax)
+        self.ptr_grad_softmax = self.tensor2ptr(grad_softmax)
         self.output_op = output_op
-
-        self.operation = operation
-        self.problem_size = problem_size
 
         self.initialize()
     
@@ -55,156 +34,50 @@ class SoftmaxBackwardArguments:
             self.output_op
         )
 
-    def initialize(self):
-        # get launch configuration
-        launch_config = self.operation.rt_module.plan(self)
-
-        self.get_arguments()
-
-        res_args = self.operation.rt_module.get_args(ctypes.byref(self.arguments))
-        self.host_workspace = bytearray(res_args.contents)
-        self.device_workspace = None
-        self.launch_config = launch_config
-
-
-class SoftmaxBackwardRT(ExecutableOperation):
-    """
-    SoftmaxBackwardRT manages the CUTLASS runtime components
-    """
-
-    HostTemplate = r'''
-extern "C" {
-    // Get the size of params in bytes
-    int ${operation_name}_get_param_size(){
-        return sizeof(${operation_name}${operation_suffix}::Params);
-    }
-
-    // Get the size of dynamic shared memory in bytes
-    int ${operation_name}_shared_memory_size() {
-        return int(sizeof(${operation_name}${operation_suffix}::SharedStorage));
-    }
-
-    // Get the params as byte array
-    char* ${operation_name}_get_params(${operation_name}_base::Arguments* argument) {
-        ${operation_name}_base::Params* params;
-        params = new ${operation_name}_base::Params(*argument);
-
-        char *bytes = ((char*)(params));
-        char *output = new char[sizeof(${operation_name}_base::Params)];
-        for (unsigned int i = 0; i < sizeof(${operation_name}_base::Params); i ++)
-            output[i] = bytes[i];
-        return output;
-    }
-}
-    '''
-
-    KernelTemplate = r'''
-extern "C"
-__global__ void
-${operation_name}(${operation_name}${operation_suffix}::Params params) {
-
-    // Dynamic shared memory base pointer
-    extern __shared__ int SharedStorageBase[];
-
-    // Declare pointer to dynamic shared memory
-    ${operation_name}${operation_suffix}::SharedStorage *shared_storage = 
-        reinterpret_cast<${operation_name}${operation_suffix}::SharedStorage *>(SharedStorageBase);
-    
-    ${operation_name}${operation_suffix} op;
-
-    op(params, *shared_storage);
-}
-    '''
-    def __init__(self, operation: 'SoftmaxBackwardOperation'):
+class SoftmaxBackwardRT(ReduceApplyRT):
+    def __init__(self, operation: 'ReduceApplyOperation'):
         super().__init__(operation)
-
         self.emitter = EmitSoftmaxBackwardUniversalInstance('_type')
-
-        self.argument_type, self.epilogue_type = get_softmax_backward_arguments(operation.epilogue_functor)
-        self.argtype = [
-            ctypes.POINTER(self.argument_type)
-        ]
-        self.num_threads = operation.warp_count_column * operation.warp_count_row * 32
     
-    #
-    def emit(self):
-        return self.emitter.emit(self.operation)
+    @staticmethod
+    def get_arguments(epilogue_functor):
+        _EpilogueOutputOpParams = epilogue_functor.epilogue_type
 
-    #
-    def initialize(self):
-        err, = cuda.cuFuncSetAttribute(
-            self.kernel,
-            attrib=cuda.CUfunction_attribute.CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
-            value=self.shared_memory_capacity)
-        if err != cuda.CUresult.CUDA_SUCCESS:
-            raise RuntimeError('Cuda Error: {}'.format(err))
-    
-    #
-    def plan(self, argument):
-        grid_x = argument.problem_size[0]
+        class _SoftmaxBackwardArguments(ctypes.Structure):
+            _fields_ = [
+                ("ptr_o_softmax", ctypes.c_void_p),
+                ("ptr_grad_softmax", ctypes.c_void_p),
+                ("problem_size", MatrixCoord_),
+                ("ptr_o_softmax_2", ctypes.c_void_p),
+                ("ptr_grad_softmax_2", ctypes.c_void_p),
+                ("problem_size_2", MatrixCoord_),
+                ("epilogue_args", _EpilogueOutputOpParams)
+            ]
 
-        return LaunchConfiguration(
-            [grid_x, 1, 1],
-            [self.num_threads, 1, 1],
-            self.shared_memory_capacity
-        )
+        return _SoftmaxBackwardArguments, _EpilogueOutputOpParams
 
 
-class SoftmaxBackwardOperation:
-    """
-    CUTLASS Softmax Operation
-    """
-
+class SoftmaxBackwardOperation(ReduceApplyOperation):
     def __init__(
         self, input: 'TensorDescription', output: 'TensorDescription',
         threadblock_tile: 'list[int]', warp_count: 'list[int]',
         element_accumulator, epilogue_functor) -> None:
 
-
-        self.arch = 80
-        self.tile_description = None
-        self.epilogue_functor = epilogue_functor
-
         self.element_input = input.element
         self.element_output = output.element
-        self.element_accumulator = element_accumulator
-
-        self.threadblock_row = threadblock_tile[0]
-        self.threadblock_column = threadblock_tile[1]
-
-        self.warp_count_row = warp_count[0]
-        self.warp_count_column = warp_count[1]
-        if self.warp_count_column == 1:
-            self.mode = "Warp"
-        else:
-            self.mode = "Block"
 
         self.alignment_input = input.alignment
         self.alignment_output = output.alignment
+
+        super().__init__(threadblock_tile, warp_count, element_accumulator, epilogue_functor)
 
         self.rt_module = SoftmaxBackwardRT(self)
 
         self.argument_type = self.rt_module.argument_type
         self.epilogue_type = self.rt_module.epilogue_type
-
     
     def procedural_name(self):
         return "softmax_kernel"
-    
-    def run(self, arguments: SoftmaxBackwardArguments, stream=cuda.CUstream(0)) -> cuda.CUresult:
-        """
-        Configure and launch the cuda kernel with input arguments
-        """
-        err = self.rt_module.run(
-            arguments.host_workspace,
-            arguments.device_workspace,
-            arguments.launch_config,
-            stream)
-
-        if err != cuda.CUresult.CUDA_SUCCESS:
-            raise RuntimeError('CUDA Error %s' % str(err))
-
-        return err
 
 
 class EmitSoftmaxBackwardUniversalInstance:

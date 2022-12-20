@@ -501,27 +501,33 @@ class FusedBMM:
                 results.append(kwargs["output_" + self.output_2_kernel_output[output_node].name].view(output_node.meta["tensor_meta"].shape))
         return results
 
-
 ################################################################################
-# Graph-level pass to fuse Softmax kernels
+# Graph-level pass to fuse ReduceApply Ops
 ################################################################################
-
-class FusedSoftmax:
-    __name__ = "cutlass_softmax_with_visitor"
+class FusedReduceApply:
     def __init__(self, node) -> None:
-        assert node.target == torch.ops.aten._softmax
+        assert node.target == self.target
 
         # update the softmax shape
         shape = node.meta["tensor_meta"].shape
-        reduction_dim = node.args[1]
-        if reduction_dim < 0:
-            reduction_dim = len(shape) + reduction_dim
-        independent_size = 1
-        for idx, dim in enumerate(shape):
-            if idx == reduction_dim: continue
-            independent_size *= dim
-        self.shape = (independent_size, shape[reduction_dim])
-        reduction_dim = 1
+        if self.reduction_dim_arg_idx is not None:
+            reduction_dim = node.args[self.reduction_dim_arg_idx]
+            if reduction_dim < 0:
+                reduction_dim = len(shape) + reduction_dim
+            independent_size = 1
+            for idx, dim in enumerate(shape):
+                if idx == reduction_dim: continue
+                independent_size *= dim
+            self.shape = (independent_size, shape[reduction_dim])
+            reduction_dim = 1
+        else:
+            reduction_dim = len(shape) - 1
+            independent_size = 1
+            for idx, dim in enumerate(shape):
+                if idx == reduction_dim: continue
+                independent_size *= dim
+            self.shape = (independent_size, shape[reduction_dim])
+            reduction_dim = 1
 
         # get alignment
         if self.shape[1] % 8 == 0:
@@ -532,36 +538,48 @@ class FusedSoftmax:
             alignment = 2
         else:
             alignment = 1
+        
+        self.Input = TensorDescription(cutlass.float16, cutlass.RowMajor, alignment)
+        self.Output = TensorDescription(cutlass.float16, cutlass.RowMajor, alignment)
 
-        Input = TensorDescription(cutlass.float16, cutlass.RowMajor, alignment)
-        Output = TensorDescription(cutlass.float16, cutlass.RowMajor, alignment)
+        warp_count = min(max(1, (self.shape[1] + (32 * alignment * 2) - 1) // (32 * alignment * 4)), 4)
 
-        warp_count = min(max(1, (self.shape[1] + (32 * alignment * 2) - 1) // (32 * alignment * 2)), 4)
-
-        tile_description = TileDescription(
+        self.tile_description = TileDescription(
             threadblock_shape=[1, self.shape[reduction_dim], 1], stages=1,
             warp_count=[1, warp_count, 1], math_instruction=None
         )
 
         epilogue_functor = LinearCombination(
-            element_output=Output.element, 
-            epilogue_vector_length=Output.alignment,
+            element_output=self.Output.element, 
+            epilogue_vector_length=self.Output.alignment,
             element_accumulator=cutlass.float32,
             element_epilogue=cutlass.float32)
         
         self.epilogue_functor = EpilogueVisitTreeDAG(
             elementwise_functor=epilogue_functor, 
             element_accumulator=cutlass.float32,
-            elements_per_access=Output.alignment,
-            element_compute=cutlass.float32, element_output=Output.element
+            elements_per_access=self.Output.alignment,
+            element_compute=cutlass.float32, element_output=self.Output.element
         )
 
         self.epilogue_functor.initialize(node)
-        self.epilogue_functor.optimize(tile_description)
+        self.epilogue_functor.optimize(self.tile_description)
 
+
+################################################################################
+# Graph-level pass to fuse Softmax kernels
+################################################################################
+
+class FusedSoftmax(FusedReduceApply):
+    __name__ = "cutlass_softmax_with_visitor"
+    target = torch.ops.aten._softmax
+    reduction_dim_arg_idx = 1
+
+    def __init__(self, node) -> None:
+        super().__init__(node)
         self.operation = SoftmaxOperation(
-            input=Input, output=Output, threadblock_tile=tile_description.threadblock_shape,
-            warp_count=tile_description.warp_count, element_accumulator=cutlass.float32, epilogue_functor=self.epilogue_functor
+            input=self.Input, output=self.Output, threadblock_tile=self.tile_description.threadblock_shape,
+            warp_count=self.tile_description.warp_count, element_accumulator=cutlass.float32, epilogue_functor=self.epilogue_functor
         )
         cutlass_path = os.getenv('CUTLASS_PATH')
         assert cutlass_path is not None, "Environment variable 'CUTLASS_PATH' is not defined."
@@ -599,10 +617,6 @@ class FusedSoftmax:
                 )
             for idx, epilogue_arg in enumerate(self.epilogue_functor.args):
                 kwargs[epilogue_arg.name] = args[idx]
-            
-            # output_op = self.operation.epilogue_type(**kwargs)
-            # TODO: to deprecate
-            # softmax_output = torch.empty_like(args[-3])
 
             output_op = self.operation.epilogue_type(**kwargs)            
 
@@ -619,8 +633,6 @@ class FusedSoftmax:
             results = []
             for output_node in self.outputs:
                 results.append(kwargs["output_" + self.output_2_kernel_output[output_node].name].view(output_node.meta["tensor_meta"].shape))
-
-            # results_origin = [view_4, view_2]
         return results
 
 
@@ -628,62 +640,15 @@ class FusedSoftmax:
 # Graph-level pass to fuse Softmax Backward kernels
 ################################################################################
 
-class FusedSoftmaxBackward:
+class FusedSoftmaxBackward(FusedReduceApply):
     __name__ = "cutlass_softmax_with_visitor"
+    target = torch.ops.aten._softmax_backward_data
+    reduction_dim_arg_idx = 2
     def __init__(self, node) -> None:
-        assert node.target == torch.ops.aten._softmax_backward_data
-
-        # update the softmax shape
-        shape = node.meta["tensor_meta"].shape
-        reduction_dim = node.args[2]
-        if reduction_dim < 0:
-            reduction_dim = len(shape) + reduction_dim
-        independent_size = 1
-        for idx, dim in enumerate(shape):
-            if idx == reduction_dim: continue
-            independent_size *= dim
-        self.shape = (independent_size, shape[reduction_dim])
-        reduction_dim = 1
-
-        # get alignment
-        if self.shape[1] % 8 == 0:
-            alignment = 8
-        elif self.shape[1] % 4 == 0:
-            alignment = 4
-        elif self.shape[1] % 2 == 0:
-            alignment = 2
-        else:
-            alignment = 1
-
-        Input = TensorDescription(cutlass.float16, cutlass.RowMajor, alignment)
-        Output = TensorDescription(cutlass.float16, cutlass.RowMajor, alignment)
-
-        warp_count = min(max(1, (self.shape[1] + (32 * alignment * 2) - 1) // (32 * alignment * 2)), 4)
-
-        tile_description = TileDescription(
-            threadblock_shape=[1, self.shape[reduction_dim], 1], stages=1,
-            warp_count=[1, warp_count, 1], math_instruction=None
-        )
-
-        epilogue_functor = LinearCombination(
-            element_output=Output.element, 
-            epilogue_vector_length=Output.alignment,
-            element_accumulator=cutlass.float32,
-            element_epilogue=cutlass.float32)
-        
-        self.epilogue_functor = EpilogueVisitTreeDAG(
-            elementwise_functor=epilogue_functor, 
-            element_accumulator=cutlass.float32,
-            elements_per_access=Output.alignment,
-            element_compute=cutlass.float32, element_output=Output.element
-        )
-
-        self.epilogue_functor.initialize(node)
-        self.epilogue_functor.optimize(tile_description)
-
+        super().__init__(node)
         self.operation = SoftmaxBackwardOperation(
-            input=Input, output=Output, threadblock_tile=tile_description.threadblock_shape,
-            warp_count=tile_description.warp_count, element_accumulator=cutlass.float32, epilogue_functor=self.epilogue_functor
+            input=self.Input, output=self.Output, threadblock_tile=self.tile_description.threadblock_shape,
+            warp_count=self.tile_description.warp_count, element_accumulator=cutlass.float32, epilogue_functor=self.epilogue_functor
         )
         cutlass_path = os.getenv('CUTLASS_PATH')
         assert cutlass_path is not None, "Environment variable 'CUTLASS_PATH' is not defined."
@@ -720,10 +685,6 @@ class FusedSoftmaxBackward:
                 )
             for idx, epilogue_arg in enumerate(self.epilogue_functor.args):
                 kwargs[epilogue_arg.name] = args[idx]
-            
-            # output_op = self.operation.epilogue_type(**kwargs)
-            # TODO: to deprecate
-            # softmax_output = torch.empty_like(args[-3])
 
             output_op = self.operation.epilogue_type(**kwargs)            
 
@@ -740,77 +701,23 @@ class FusedSoftmaxBackward:
             results = []
             for output_node in self.outputs:
                 results.append(kwargs["output_" + self.output_2_kernel_output[output_node].name].view(output_node.meta["tensor_meta"].shape))
-
-            # o_softmax = args[-3]
-            # grad_softmax = args[-4]
-            # grad_input = o_softmax * grad_softmax - torch.sum(o_softmax * grad_softmax, dim=-1, keepdim=True) * o_softmax
-            # grad_input = (grad_input / 8).view(-1, 512, 512)
-            # results  = [grad_input]
-
-            # results_origin = [view_4, view_2]
         return results
-        # return [grad_input]
 
 
 ################################################################################
 # Graph-level pass to fuse LayerNorm kernels
 ################################################################################
 
-class FusedLayerNormForward:
+class FusedLayerNormForward(FusedReduceApply):
     __name__ = "cutlass_layernorm_with_visitor"
+    target = torch.ops.aten.native_layer_norm
+    reduction_dim_arg_idx = None
     def __init__(self, node) -> None:
-        assert node.target == torch.ops.aten.native_layer_norm
-
-        # update the layernorm shape
-        shape = node.meta["tensor_meta"].shape
-        reduction_dim = len(shape) - 1
-        ###############
-        independent_size = 1
-        for idx, dim in enumerate(shape):
-            if idx == reduction_dim: continue
-            independent_size *= dim
-        self.shape = (independent_size, shape[reduction_dim])
-        reduction_dim = 1
-
-        # get alignment
-        if self.shape[1] % 8 == 0:
-            alignment = 8
-        elif self.shape[1] % 4 == 0:
-            alignment = 4
-        elif self.shape[1] % 2 == 0:
-            alignment = 2
-        else:
-            alignment = 1
-
-        Input = TensorDescription(cutlass.float16, cutlass.RowMajor, alignment)
-        Output = TensorDescription(cutlass.float16, cutlass.RowMajor, alignment)
-
-        warp_count = 1  # currently we only support one warp per row in layer norm
-
-        tile_description = TileDescription(
-            threadblock_shape=[1, self.shape[reduction_dim], 1], stages=1,
-            warp_count=[1, warp_count, 1], math_instruction=None
-        )
-
-        epilogue_functor = LinearCombination(
-            element_output=Output.element, 
-            epilogue_vector_length=Output.alignment,
-            element_accumulator=cutlass.float32,
-            element_epilogue=cutlass.float32)
-        
-        self.epilogue_functor = EpilogueVisitTreeDAG(
-            elementwise_functor=epilogue_functor, 
-            element_accumulator=cutlass.float32,
-            elements_per_access=Output.alignment,
-            element_compute=cutlass.float32, element_output=Output.element
-        )
-
-        self.epilogue_functor.initialize(node)
-        self.epilogue_functor.optimize(tile_description)
+        super().__init__(node)
 
         self.operation = LayerNormOperation(
-            input=Input, output=Output, threadblock_tile=tile_description.threadblock_shape,
-            warp_count=tile_description.warp_count, element_accumulator=cutlass.float32, epilogue_functor=self.epilogue_functor
+            input=self.Input, output=self.Output, threadblock_tile=self.tile_description.threadblock_shape,
+            warp_count=self.tile_description.warp_count, element_accumulator=cutlass.float32, epilogue_functor=self.epilogue_functor
         )
         cutlass_path = os.getenv('CUTLASS_PATH')
         assert cutlass_path is not None, "Environment variable 'CUTLASS_PATH' is not defined."
@@ -892,61 +799,16 @@ class FusedLayerNormForward:
 # Graph-level pass to fuse LayerNorm kernels
 ################################################################################
 
-class FusedLayerNormBackward:
+class FusedLayerNormBackward(FusedReduceApply):
     __name__ = "cutlass_layernorm_backward_with_visitor"
+    target = torch.ops.aten.native_layer_norm_backward
+    reduction_dim_arg_idx = None
     def __init__(self, node) -> None:
-        assert node.target == torch.ops.aten.native_layer_norm_backward
-
-        # update the layernorm shape
-        shape = node.meta["tensor_meta"].shape
-        reduction_dim = len(shape) - 1
-        ###############
-        independent_size = 1
-        for idx, dim in enumerate(shape):
-            if idx == reduction_dim: continue
-            independent_size *= dim
-        self.shape = (independent_size, shape[reduction_dim])
-        reduction_dim = 1
-
-        # get alignment
-        if self.shape[1] % 8 == 0:
-            alignment = 8
-        elif self.shape[1] % 4 == 0:
-            alignment = 4
-        elif self.shape[1] % 2 == 0:
-            alignment = 2
-        else:
-            alignment = 1
-
-        Input = TensorDescription(cutlass.float16, cutlass.RowMajor, alignment)
-        Output = TensorDescription(cutlass.float16, cutlass.RowMajor, alignment)
-
-        warp_count = 1  # currently we only support one warp per row in layer norm
-
-        tile_description = TileDescription(
-            threadblock_shape=[1, self.shape[reduction_dim], 1], stages=1,
-            warp_count=[1, warp_count, 1], math_instruction=None
-        )
-
-        epilogue_functor = LinearCombination(
-            element_output=Output.element, 
-            epilogue_vector_length=Output.alignment,
-            element_accumulator=cutlass.float32,
-            element_epilogue=cutlass.float32)
-        
-        self.epilogue_functor = EpilogueVisitTreeDAG(
-            elementwise_functor=epilogue_functor, 
-            element_accumulator=cutlass.float32,
-            elements_per_access=Output.alignment,
-            element_compute=cutlass.float32, element_output=Output.element
-        )
-
-        self.epilogue_functor.initialize(node)
-        self.epilogue_functor.optimize(tile_description)
+        super().__init__(node)
 
         self.operation = LayerNormBackwardOperation(
-            input=Input, output=Output, threadblock_tile=tile_description.threadblock_shape,
-            warp_count=tile_description.warp_count, element_accumulator=cutlass.float32, epilogue_functor=self.epilogue_functor
+            input=self.Input, output=self.Output, threadblock_tile=self.tile_description.threadblock_shape,
+            warp_count=self.tile_description.warp_count, element_accumulator=cutlass.float32, epilogue_functor=self.epilogue_functor
         )
         cutlass_path = os.getenv('CUTLASS_PATH')
         assert cutlass_path is not None, "Environment variable 'CUTLASS_PATH' is not defined."
@@ -1059,7 +921,6 @@ def pass_gemm_fusion(module, graph, verbose=True):
     Fuse GEMM kernel with its epilogues
     """
 
-    layer_norm_idx = 0
     for node in graph.nodes:
         if node.op == "call_function":
             if node.target == torch.ops.aten.mm:

@@ -69,9 +69,9 @@ class SoftmaxTestSm80(unittest.TestCase):
         ## run the compiler pass
         symbolic_traced : torch.fx.GraphModule = symbolic_trace(module)
         grad_output = torch.randn(
-            (32, 16, 512, 512), dtype=torch.float16, device="cuda")
+            (32, 16384), dtype=torch.float16, device="cuda")
         softmax_output = torch.randn(
-            (32, 16, 512, 512), dtype=torch.float16, device="cuda")
+            (32, 16384), dtype=torch.float16, device="cuda")
         
         ShapeProp(symbolic_traced).propagate(grad_output, softmax_output)
 

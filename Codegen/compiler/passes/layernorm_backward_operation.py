@@ -242,7 +242,7 @@ class EmitLayerNormBackwardUniversalInstance:
             "cutlass/layout/matrix.h",
             "epilogue/epilogue_visitor_generic.h",
             "softmax/kernel/default_layernorm_backward_universal.h",
-            "softmax/kernel/layernorm_backward_universal_with_visitor.h",
+            "softmax/kernel/reduce_apply_universal_with_visitor.h",
             "softmax/epilogue/epilogue_backward_with_visitor.h"
         ]
 
@@ -259,7 +259,7 @@ using ${operation_name}_default =
 
 ${epilogue_visitor}
 
-// debug
+// debug3
 
 using ${operation_name}_Epilogue = typename cutlass::softmax::threadblock::LayerNormEpilogueBackwardWithVisitorFromExistingEpilogue<
     ${operation_name}_EpilogueVisitor,
@@ -267,7 +267,7 @@ using ${operation_name}_Epilogue = typename cutlass::softmax::threadblock::Layer
 
 /// using ${operation_name}_base = ${operation_name}_default;
 using ${operation_name}_base = 
-    cutlass::softmax::kernel::LayerNormBackwardUniversalwithEpilogueVisitor${Mode}<
+    cutlass::softmax::kernel::ReduceApplywithEpilogueVisitor${Mode}<
         typename ${operation_name}_default::Reduction,
         ${operation_name}_Epilogue
     >;

@@ -18,6 +18,7 @@ from nodes import *
 from functorch._src.partitioners import _is_primal, _is_tangent, _extract_graph_with_inputs_outputs
 from passes.print_graph import pass_print_graph
 from passes.extract_common_factor import extract_factor
+import operator
 
 
 ################################################################################
@@ -284,6 +285,19 @@ def inject_subgraph(inject_point, replaced_node, module, graph, submodule, subgr
         elif node.op == "output":
             replaced_node.replace_all_uses_with(env[node.args[0][0]])
 
+def get_priority(node):
+    if len(node.users) > 1:
+        return -1
+    user = list(node.users.keys())[0]
+    if user.op == "output":
+        return 0
+    elif user.op == "call_function":
+        if user.target in [torch.ops.aten.view, torch.ops.aten.unsqueeze, torch.ops.aten.squeeze, torch.ops.aten._unsafe_view, operator.getitem]:
+            return get_priority(user)
+        else:
+            return -1
+    else:
+        raise NotImplementedError()
 
 def constant_graph_folding(module, graph):
     """
@@ -302,6 +316,11 @@ def constant_graph_folding(module, graph):
         if not branched_parent: continue
         # TODO: The rule could be applied to general node cases
         if node.target in [torch.ops.aten.sum,]:
+            # we can filter the bias gradient nodes as thoses nodes 
+            # are certainly not constant
+            priority = get_priority(node)
+            if priority == 0: continue
+
             # extract input nodes of the graph
             primal_inputs = list(filter(_is_primal, module.graph.nodes))
             tangent_inputs = list(filter(_is_tangent, module.graph.nodes))

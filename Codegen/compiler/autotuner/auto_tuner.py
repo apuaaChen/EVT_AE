@@ -7,6 +7,21 @@ from autotuner.design_space_descriptor import GemmConfigDescriptor
 # Number of Features
 NUM_FEATURES = 15
 
+def module_profiler(module, input_nodes, tangents, profile_iter=10):
+    module.recompile()
+    for _ in range(10):
+        module(input_nodes, tangents)
+    
+    torch.cuda.synchronize()
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
+    for i in range(profile_iter):
+        output = module(input_nodes, tangents)
+    end.record()
+    torch.cuda.synchronize()
+
+    return start.elapsed_time(end) / profile_iter
 
 def sample_implementation_parameters(heuristics):
     # Sample a valid parameter from heuristic
@@ -91,6 +106,80 @@ class Autotuner:
             except:
                 if self.verbose:
                     print("Pre-trained model is not found. Train from scratch.")
+    
+    def tune_module(self, config_descriptor, module, input_nodes, tangents, node_dict):
+        problem_size = config_descriptor.problem_description["problem_size"]
+        
+        self.model = xgb.XGBRegressor()
+        self.cold = True
+        heuristics = config_descriptor.heuristic
+
+        features = np.zeros((0, len(config_descriptor.CONFIG)))
+        labels = np.array([])
+
+        sampled_latency = {
+            "mean": [],
+            "std": []
+        }
+
+        best_latency = 1e+16
+        checked_configs = set({})
+
+        for round_idx in range(self.autotuning_rounds):
+            if self.cold:
+                sampled_parameters = sample_parameters_without_ML(
+                    heuristics, 
+                    num_samples=self.samples_per_round,
+                    checked_configs=checked_configs
+                )
+            else:
+                sampled_parameters = sample_parameters_with_ML(
+                    heuristics,
+                    num_samples=self.samples_per_round,
+                    model=self.model,
+                    problem_size=problem_size,
+                    checked_configs=checked_configs
+                )
+            profiled_latency = []
+            for i in range(self.samples_per_round):
+                parameter = sampled_parameters[i]
+                if self.verbose:
+                    print(parameter)
+                assert isinstance(parameter, dict)
+                # update all the same node in the module
+                # create threadblock shape
+
+                operation = config_descriptor.generate_code(parameter)
+                key = config_descriptor.get_key()
+                for node in node_dict[key]:
+                    pass
+                    # node.target.operation = operation
+                    # node.target.split_k_slices = parameter['split_k_slices']
+                
+                latency = module_profiler(module, input_nodes, tangents)
+                profiled_latency.append(latency)
+            
+            features = np.vstack([
+                heuristics.parameter_to_feature(
+                    parameter, problem_size) for parameter in sampled_parameters
+            ])
+            labels = profiled_latency
+            if self.cold:
+                self.model.fit(features, labels)
+                self.cold = False
+            else:
+                self.model.fit(features, labels, xgb_model=self.model)
+            array_labels = np.array(labels)
+            top_idx = np.argsort(array_labels)[0]
+            if self.verbose:
+                print("round: ", round_idx, ", best parameter:", sampled_parameters[top_idx], ", measured latency: ", array_labels[top_idx], ", mean sampled latency: ", np.mean(labels))
+            if array_labels[top_idx] < best_latency:
+                best_parameter = sampled_parameters[top_idx]
+                best_latency = array_labels[top_idx]
+
+            sampled_latency["mean"].append(np.mean(labels))
+            sampled_latency["std"].append(np.std(labels))
+        
     
     def __call__(self, config_descriptor):
         problem_size = config_descriptor.problem_description["problem_size"]

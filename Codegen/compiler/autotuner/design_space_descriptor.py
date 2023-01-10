@@ -92,6 +92,7 @@ class GemmConfigDescriptor(ConfigDescriptor):
 
         cursor.execute(sqlite_fetch_blob_query, (key, ))
         record = cursor.fetchall()
+        
         if len(record) == 0:
             return None
         else:
@@ -109,6 +110,17 @@ class GemmConfigDescriptor(ConfigDescriptor):
             } 
             return parameters
     
+    def cache_insert_with_key(self, key, best_config):
+        connection = sqlite3.connect("./compiled_cache.db")
+        cursor = connection.cursor()
+        sqlite_insert_blob_query = """ INSERT OR IGNORE INTO 
+            gemm_best_config (op_key, block_x, block_y, block_z, warp_x, 
+                warp_y, warp_z, stage, swizzle, split_k_slices) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+        cursor.execute(sqlite_insert_blob_query, tuple([key,] + best_config))
+        connection.commit()
+        cursor.close()
+    
     def cache_insert(self, best_config):
         key = self.get_key()
         connection = sqlite3.connect("./compiled_cache.db")
@@ -120,6 +132,63 @@ class GemmConfigDescriptor(ConfigDescriptor):
         cursor.execute(sqlite_insert_blob_query, tuple([key,] + best_config))
         connection.commit()
         cursor.close()
+
+    def generate_code(self, config):
+        math_inst = MathInstruction(
+            instruction_shape=[16, 8, 16],
+            element_a=self.problem_description["element_a"], 
+            element_b=self.problem_description["element_b"],
+            element_accumulator=self.problem_description["element_accumulator"],
+            opcode_class=cutlass.OpClass.TensorOp
+        )
+
+        threadblock_shape = [
+            config["block_x"], config["block_y"], config["block_z"]
+        ]
+
+        warp_count = [
+            config["block_x"] // config["warp_x"],
+            config["block_y"] // config["warp_y"],
+            config["block_z"] // config["warp_z"]
+        ]
+
+        stages = config["stage"]
+
+        tile_description = TileDescription(
+            threadblock_shape, stages, warp_count, math_inst
+        )
+        swizzling_functor = getattr(
+            cutlass, "IdentitySwizzle%d"%int(pow(2, config["log_swizzle"])))
+            
+
+        A = TensorDescription(
+            self.problem_description["element_a"], 
+            self.problem_description["layout_a"], 
+            self.problem_description["alignment_a"])
+        B = TensorDescription(
+            self.problem_description["element_b"], 
+            self.problem_description["layout_b"], 
+            self.problem_description["alignment_b"])
+        C = TensorDescription(
+            self.problem_description["element_c"], 
+            self.problem_description["layout_c"], 
+            self.problem_description["alignment_c"])
+
+        epilogue_functor = LinearCombination(
+            element_output=C.element, epilogue_vector_length=C.alignment,
+            element_accumulator=math_inst.element_accumulator,
+            element_epilogue=cutlass.float32
+        )
+
+        operation = GemmOperationUniversal(
+            arch=80, tile_description=tile_description,
+            A=A, B=B, C=C, epilogue_functor=epilogue_functor,
+            swizzling_functor=swizzling_functor
+        )
+
+        pycutlass.compiler.add_module([operation])
+
+        return operation
     
     def generate_code_and_profile(self, config):
 

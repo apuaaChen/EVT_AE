@@ -130,7 +130,7 @@ class Bert(torch.nn.Module):
         self.static_embedding_output = torch.randn(size=(batch, sequence_length, self.config.hidden_size), dtype=torch.float16, device=device, requires_grad=True)
 
         # warmup iterations
-        s = torch.cuda.Stream()
+        s = torch.cuda.Stream(priority=-1)
         s.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(s):
             for _ in range(warmup_iteration):
@@ -156,6 +156,8 @@ class Bert(torch.nn.Module):
         self.encoder_graph = torch.cuda.CUDAGraph()
         optimizer.zero_grad()
         with torch.cuda.graph(self.encoder_graph):
+            s = torch.cuda.Stream(priority=-1)
+            s.wait_stream(torch.cuda.current_stream())
             loss_sum = self.encoder(
                 self.static_input_ids, self.static_embedding_output, 
                 self.static_attention_mask, self.static_labels, 
@@ -164,6 +166,7 @@ class Bert(torch.nn.Module):
             loss = loss_sum / valid_labels
             with scale_loss(loss, optimizer) as scaled_loss:
                 scaled_loss.backward()
+            torch.cuda.current_stream().wait_stream(s)
     
     def training_with_graph(self, input_ids, token_type_ids, attention_mask, masked_lm_labels, labels, next_sentence_labels):
         self.static_input_ids.copy_(input_ids)

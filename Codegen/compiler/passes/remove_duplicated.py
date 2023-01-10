@@ -21,18 +21,22 @@ from nodes import *
 ################################################################################
 
 def pass_remove_duplicated_node(module, graph):
+    # step 1: update topological index
+    for idx, node in enumerate(graph.nodes):
+        node.meta["topo_idx"] = idx
     modified = True
     while(modified):
         modified = False
-        for i, u in enumerate(graph.nodes):
-            for j, v in enumerate(graph.nodes):
-                if i == j: continue
-                if node_equal(u, v):
-                    v.replace_all_uses_with(u)
-                    graph.eliminate_dead_code()
-                    modified = True
-                    break
-            if modified == True:
-                break
-    
+        for u in graph.nodes:
+            for input in u.all_input_nodes:
+                user_list = list(input.users.keys())
+                for v in user_list:
+                    if u.meta["topo_idx"] >= v.meta["topo_idx"]: continue
+                    if node_equal(u, v):
+                        v.replace_all_uses_with(u)
+                        graph.erase_node(v)
+                        modified = True
+
+
+    graph.eliminate_dead_code()
     graph.lint()

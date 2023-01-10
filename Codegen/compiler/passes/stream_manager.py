@@ -37,7 +37,10 @@ def get_priority(node):
 def pass_assign_stream(module, graph,):
     default_stream = torch.cuda.default_stream()
 
-    less_priority_stream = torch.cuda.Stream(priority=0)
+    less_priority_streams = [
+        torch.cuda.Stream(priority=0), 
+        torch.cuda.Stream(priority=0),
+        torch.cuda.Stream(priority=0)]
 
     remaining_nodes = []
     executed_nodes = []
@@ -65,7 +68,7 @@ def pass_assign_stream(module, graph,):
         
         remaining_nodes = [n for n in remaining_nodes if n not in executed_nodes]
         wavefronts.append(wavefront)
-    
+    idx = 0
     for wavefront in wavefronts:
         for node in wavefront:
             if node.op in ["placeholder", "get_attr"]:
@@ -81,7 +84,8 @@ def pass_assign_stream(module, graph,):
                     if stream is None:
                         priority = get_priority(node)
                         if priority == 0:
-                            stream = less_priority_stream
+                            stream = less_priority_streams[idx]
+                            idx = (idx + 1) % len(less_priority_streams)
                         else:
                             # stream = torch.cuda.Stream(priority=priority)
                             stream = default_stream# high_priority_stream
@@ -133,7 +137,8 @@ def pass_assign_stream(module, graph,):
                                 self.input_indices.append(idx)
 
                     def __call__(self, *args):
-                        torch.cuda.current_stream().wait_stream(less_priority_stream)
+                        for stream in less_priority_streams:
+                            torch.cuda.current_stream().wait_stream(stream)
                         return args
                 
                 graph.inserting_before(node)

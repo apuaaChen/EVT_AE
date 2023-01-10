@@ -119,7 +119,7 @@ for param1, param2 in zip(list(model.named_parameters()), list(model_fused.named
         print(param1[0])
         print(param1[1].grad)
         print(param2[1].grad)
-
+        print(param1[1].grad.size())
 
 # for i in range(40):
 #     with nvtx.annotate("torch"):

@@ -57,6 +57,12 @@ def pre_partition_optimization(joint_module):
     # pass: assign stream
     pass_assign_stream(joint_module, graph)
 
+    # reorder the instructions
+    # pass_instruction_reorder(joint_module, graph)
+
+    # pass weight grad tuner
+    pass_weight_gradient_tuner(joint_module, graph)
+
     # recompile graph
     joint_module.recompile()
 

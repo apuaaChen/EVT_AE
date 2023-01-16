@@ -160,14 +160,11 @@ def get_priority(node):
 #     graph.lint()
 
 
-def pass_assign_stream(module, graph):
+def pass_assign_stream(module, graph, num_stream=3):
     default_stream = torch.cuda.default_stream()
-
-    less_priority_streams = [
-        torch.cuda.Stream(priority=0), 
-        torch.cuda.Stream(priority=0),
-        torch.cuda.Stream(priority=0)
-    ]
+    less_priority_streams = []
+    for s in range(num_stream):
+        less_priority_streams.append(torch.cuda.Stream(priority=0))
 
     idx = 0
     for node in graph.nodes:

@@ -147,6 +147,8 @@ operators = {
     torch.ops.aten.neg: "Mult",
     torch.ops.aten.ne: "Ne",
     torch.ops.aten.gelu: "GeLU",
+    torch.ops.aten.relu: "relu",
+    torch.ops.aten.sigmoid: "sigmoid",
     torch.ops.aten.tanh: "tanh",
     torch.ops.aten.tanh_backward: "TanhBackward",
     torch.ops.aten.gelu_backward: "GeluBackward"
@@ -323,12 +325,17 @@ class ColumnBroadcastNodeDAG(ColumnBroadcastNode):
             return super().get_argument(visitor_args, kwargs)
 
 class ScalarInputNodeDAG(ScalarInputNode):
-    def __init__(self, node) -> None:
+    def __init__(self, element_accumulator, node, element_input=None) -> None:
         self.id = node.name
         self.tag = "Scalar:" + self.id
         self.type = "scalar"
+        self.element_accumulator = element_accumulator
+        self.element_input = element_input
 
         self.element_ptr = torch_2_cutlass_type[node.meta["tensor_meta"].dtype] 
+    
+    def get_argument(self, visitor_args, kwargs):
+        return super().get_argument(visitor_args, kwargs)
 
 
 class AccumulatorNodeDAG(AccumulatorNode):
@@ -559,7 +566,7 @@ class EpilogueASTDAG:
                     else:
                         rhs_nodes = []
                     return lhs_nodes + rhs_nodes + [node, ]
-                elif node.target in [torch.ops.aten.neg, torch.ops.aten.sum, torch.ops.aten.native_dropout, torch.ops.aten.permute, torch.ops.aten.gelu, torch.ops.aten.tanh, torch.ops.aten.one_hot, torch.ops.aten.ne]:
+                elif node.target in [torch.ops.aten.neg, torch.ops.aten.sum, torch.ops.aten.native_dropout, torch.ops.aten.permute, torch.ops.aten.gelu, torch.ops.aten.relu, torch.ops.aten.sigmoid, torch.ops.aten.tanh, torch.ops.aten.one_hot, torch.ops.aten.ne]:
                     return self.ast_top_down_parsing_bmm(node.args[0], parse_output) + [node,]
                 elif node.target in [torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten.bmm, torch.ops.aten._softmax_backward_data, torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward]:
                     return [node,]
@@ -810,7 +817,7 @@ class EpilogueASTDAG:
                 self.stack.append(unaryop.id)
                 self.visit(node.args[0])
                 self.stack.pop()
-            elif node.target in [torch.ops.aten.gelu, torch.ops.aten.tanh]:
+            elif node.target in [torch.ops.aten.gelu, torch.ops.aten.tanh, torch.ops.aten.relu, torch.ops.aten.sigmoid]:
                 unaryop = UnaryNodeDAG(
                     self.element_accumulator, self.element_compute,
                     self.elements_per_access, node, args=[]
@@ -883,7 +890,7 @@ class EpilogueASTDAG:
                 tensor_type = node_tensor.get_tensor_type()
                 # case 1: scalar
                 if tensor_type == "scalar":
-                    name_node = ScalarInputNodeDAG(node)
+                    name_node = ScalarInputNodeDAG(self.element_accumulator, node, source_type)
                 # case 2: row broadcast
                 elif tensor_type == "row":
                     name_node = RowBroadcastNodeDAG(
@@ -1022,8 +1029,8 @@ using ${operation_name}_EpilogueVisitor = cutlass::epilogue::threadblock::Epilog
                 for input_key in function.input_args.keys():
                     if input_key == "accum":
                         continue
-                    if function.input_args[input_key][0] == "scalar":
-                        continue
+                    # if function.input_args[input_key][0] == "scalar":
+                    #     continue
                     # tensor input
                     else:
                         if isinstance(kwargs[input_key], tuple):

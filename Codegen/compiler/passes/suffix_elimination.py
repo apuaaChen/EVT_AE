@@ -31,6 +31,7 @@ suffix_dict = {
     torch.ops.aten.expand.default: torch.ops.aten.expand,
     torch.ops.aten.neg.default: torch.ops.aten.neg,
     torch.ops.aten.div.Scalar: torch.ops.aten.div,
+    torch.ops.aten.div_.Scalar: torch.ops.aten.div_,
     torch.ops.aten.mm.default: torch.ops.aten.mm,
     torch.ops.aten.sum.dim_IntList: torch.ops.aten.sum,
     torch.ops.aten.detach.default: torch.ops.aten.detach,
@@ -41,6 +42,7 @@ suffix_dict = {
     torch.ops.aten.addmm.default: torch.ops.aten.addmm,
     torch.ops.aten._to_copy.default: torch.ops.aten._to_copy,
     torch.ops.aten.rsub.Scalar: torch.ops.aten.sub,
+    torch.ops.aten.sub.Tensor: torch.ops.aten.sub,
     torch.ops.aten.arange.default: torch.ops.aten.arange,
     torch.ops.aten.embedding.default:torch.ops.aten.embedding,
     torch.ops.aten.native_layer_norm.default: torch.ops.aten.native_layer_norm,
@@ -71,7 +73,10 @@ suffix_dict = {
     torch.ops.aten.slice_backward.default: torch.ops.aten.slice_backward,
     torch.ops.aten.native_dropout_backward.default: torch.ops.aten.native_dropout_backward,
     torch.ops.aten._softmax_backward_data.default: torch.ops.aten._softmax_backward_data,
-    torch.ops.aten.embedding_dense_backward.default: torch.ops.aten.embedding_dense_backward
+    torch.ops.aten.embedding_dense_backward.default: torch.ops.aten.embedding_dense_backward,
+    torch.ops.aten.relu.default: torch.ops.aten.relu,
+    torch.ops.aten.sigmoid.default: torch.ops.aten.sigmoid,
+    torch.ops.aten.threshold_backward.default: torch.ops.aten.threshold_backward
 }
 
 def pass_suffix_elimination(module, graph):

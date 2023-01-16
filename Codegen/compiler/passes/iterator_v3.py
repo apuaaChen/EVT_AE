@@ -561,7 +561,7 @@ class IterVarHyperGraph:
                         new_arg_graph.debroadcast(list(arg.meta["tensor_meta"].shape))
                         arg.meta['tensor'] = new_arg_graph
             node.meta["tensor"] = new_graph
-        elif node.target in [torch.ops.aten.neg, torch.ops.aten.native_dropout, torch.ops.aten.clone, torch.ops.aten.gelu, torch.ops.aten.tanh]:
+        elif node.target in [torch.ops.aten.neg, torch.ops.aten.native_dropout, torch.ops.aten.clone, torch.ops.aten.gelu, torch.ops.aten.tanh, torch.ops.aten.relu, torch.ops.aten.sigmoid]:
             node.meta["tensor"] = new_graph
         elif node.target in [operator.getitem]:
             if len(node.meta["tensor_meta"].shape) != len(shape):
@@ -594,7 +594,7 @@ class IterVarHyperGraph:
             if 'tensor' in input.meta.keys(): return
             # new_graph.view(shape=list(input.meta['tensor_meta'].shape))
             input.meta['tensor'] = new_graph
-        elif node.target in [torch.ops.aten._to_copy, torch.ops.aten.neg, torch.ops.aten.native_dropout, operator.getitem, torch.ops.aten.ne, torch.ops.aten.clone, torch.ops.aten.gelu, torch.ops.aten.tanh]:
+        elif node.target in [torch.ops.aten._to_copy, torch.ops.aten.neg, torch.ops.aten.native_dropout, operator.getitem, torch.ops.aten.ne, torch.ops.aten.clone, torch.ops.aten.gelu, torch.ops.aten.tanh, torch.ops.aten.relu, torch.ops.aten.sigmoid]:
             input = node.args[0]
             if 'tensor' in input.meta.keys(): return
             input.meta['tensor'] = new_graph

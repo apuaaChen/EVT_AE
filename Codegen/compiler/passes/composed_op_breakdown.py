@@ -71,6 +71,14 @@ def pass_composed_op_breakdown(module, graph):
                 mul_node = inject_mul(node, graph, grad_Y, mask)
                 mul_node2 = inject_mul(mul_node, graph, mul_node, node.args[2])
                 node.replace_all_uses_with(mul_node2)
+            elif node.target == torch.ops.aten.threshold_backward:
+                grad_Y = node.args[0]
+                threshold_output = node.args[1]
+                threshold = node.args[2]
+
+                ne_node = inject_ne(node, graph, threshold_output, threshold)
+                mul_node = inject_mul(ne_node, graph, grad_Y, ne_node)
+                node.replace_all_uses_with(mul_node)
             
     graph.eliminate_dead_code()
     graph.lint()

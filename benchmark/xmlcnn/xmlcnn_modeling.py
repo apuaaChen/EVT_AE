@@ -29,10 +29,8 @@ class cnn_encoder(torch.nn.Module):
         self.conv_layers = nn.ModuleList()
         self.pool_layers = nn.ModuleList()
         
-        # self.drp = nn.Dropout(p=1e-19)
-        # self.drp5 = nn.Dropout(p=1e-19)
-        self.drp = nn.Dropout(p=0)
-        self.drp5 = nn.Dropout(p=0)
+        self.drp = nn.Dropout(p=1e-19)
+        self.drp5 = nn.Dropout(p=1e-19)
 
         for fsz in params.filter_sizes:
             l_conv = nn.Conv2d(params.embedding_dim, params.num_filters, (1, fsz), stride=(1, 2), padding=(0, fsz//2 - 1))

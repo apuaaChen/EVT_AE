@@ -614,7 +614,7 @@ class IterVarHyperGraph:
             if 'tensor' in input.meta.keys(): return
             new_graph.get_index(0)
             input.meta['tensor'] = new_graph
-        elif node.target in [torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data, torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward]:
+        elif node.target in [torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data, torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward, torch.ops.aten.convolution]:
             raise NotImplementedError()
         else:
             raise NotImplementedError()

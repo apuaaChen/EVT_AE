@@ -15,7 +15,7 @@ import nvtx
 
 batch_size = 128
 
-x = torch.randn(size=(batch_size, 3, 224, 224), dtype=torch.float16, device="cuda")
+x = torch.randn(size=(batch_size, 4, 224, 224), dtype=torch.float16, device="cuda")
 y = torch.randint(low=0, high=1000, size=(batch_size,), dtype=torch.int64, device="cuda")
 
 learning_rate = 6e-3
@@ -61,13 +61,7 @@ loss_1 = model(x, y) * 1e+4
 loss_1.backward()
 
 
-# model = model.to(memory_format=torch.channels_last)
-# x = x.to(memory_format=torch.channels_last)
 
-# for i in range(10):
-#     with nvtx.annotate("nhwc"):
-#         loss_1 = model(x, y)
-#         loss_1.backward()
 
 
 ##############################################################################
@@ -93,11 +87,26 @@ loss.backward()
 torch.cuda.synchronize()
 
 # if args.mode == "verify":
-for param1, param2 in zip(list(model.named_parameters()), list(model_fused.named_parameters())):
-    print(torch.sum(torch.isclose(param1[1].grad, param2[1].grad, rtol=3e-1)) / param2[1].grad.numel())
-    try:
-        assert torch.sum(torch.isclose(param1[1].grad, param2[1].grad, rtol=3e-1)) / param2[1].grad.numel() > 0.7
-    except:
-        print(param1[0])
-        print(param1[1].grad.view(-1))
-        print(param2[1].grad.view(-1))
+# for param1, param2 in zip(list(model.named_parameters()), list(model_fused.named_parameters())):
+#     print(torch.sum(torch.isclose(param1[1].grad, param2[1].grad, rtol=3e-1)) / param2[1].grad.numel())
+#     try:
+#         assert torch.sum(torch.isclose(param1[1].grad, param2[1].grad, rtol=3e-1)) / param2[1].grad.numel() > 0.7
+#     except:
+#         print(param1[0])
+#         print(param1[1].grad.view(-1))
+#         print(param2[1].grad.view(-1))
+
+# for profiling
+model = model.to(memory_format=torch.channels_last)
+x = x.to(memory_format=torch.channels_last)
+
+for i in range(10):
+    with nvtx.annotate("nhwc"):
+        loss_1 = model(x, y) * 1e+4
+        loss_1.backward()
+
+x_nhwc = x
+for i in range(10):
+    with nvtx.annotate("ours"):
+        loss = model_fused(x_nhwc.contiguous(), y) * 1e+4
+        loss.backward()

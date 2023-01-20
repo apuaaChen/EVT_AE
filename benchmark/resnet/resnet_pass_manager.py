@@ -28,6 +28,9 @@ def pre_partition_optimization(joint_module):
     # pass: strength reduction
     pass_stength_reduction(joint_module, graph)
 
+    # pass: batch norm preprocessing
+    pass_batchnorm_preprocessing(joint_module, graph)
+
     # pass conv fusion
     pass_conv_fusion(joint_module, graph)
     

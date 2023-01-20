@@ -20,6 +20,8 @@ import pycutlass
 from pycutlass import *
 from passes.epilogue_parser import EpilogueVisitTreeDAG
 import operator
+from passes import autotuner
+from autotuner.design_space_descriptor import ConvConfigDescriptor
 
 
 def get_alignment(dim):
@@ -89,10 +91,10 @@ class FusedConv2d:
         )
 
         # TODO: tune this problem size
-        tile_description = TileDescription(
-            [128, 128, 32], 2, [2, 2, 1], math_inst
-        )
-        split_k_slices = 1
+        # tile_description = TileDescription(
+        #     [128, 64, 32], 2, [2, 2, 1], math_inst
+        # )
+        # split_k_slices = 1
 
         layout_a = cutlass.TensorNHWC
         layout_b = cutlass.TensorNHWC
@@ -133,10 +135,48 @@ class FusedConv2d:
         )
 
         self.epilogue_functor.initialize(node)
+
+        self.problem_size = cutlass.conv.Conv2dProblemSize(
+            cutlass.Tensor4DCoord(N, H, W, C),
+            cutlass.Tensor4DCoord(K, R, S, C),
+            cutlass.Tensor4DCoord(padding[0], padding[0], padding[1], padding[1]),
+            cutlass.MatrixCoord(stride[0], stride[1]),
+            cutlass.MatrixCoord(dilation[0], dilation[1]),
+            cutlass.conv.Mode.cross_correlation,
+            1, 1
+        )
+
+        self.conv_descriptor = ConvConfigDescriptor(
+            problem_size=self.problem_size, element_a=element_a,
+            element_b=element_b, element_c=element_c, 
+            element_accumulator=element_acc, alignment_a=align_a,
+            alignment_b=align_b, alignment_c=align_c
+        )
+
+        best_config = autotuner(self.conv_descriptor)
+
+        print(best_config)
+
+        threadblock_shape = [
+            best_config['block_x'], best_config['block_y'], best_config['block_z']]
+        warp_count = [
+            best_config['block_x'] // best_config['warp_x'],
+            best_config['block_y'] // best_config['warp_y'],
+            best_config['block_z'] // best_config['warp_z']
+        ]
+
+        stages = best_config['stage']
+        log_swizzle = best_config['log_swizzle']
+        self.split_k_slices = best_config['split_k_slices']
+        swizzling_functor = getattr(cutlass, "IdentitySwizzle%d"%int(pow(2, log_swizzle)))
+
+        tile_description = TileDescription(
+            threadblock_shape, stages, warp_count, math_inst
+        )
+        
         self.epilogue_functor.optimize(tile_description)
 
-        iterator_algorithm = cutlass.conv.IteratorAlgorithm.optimized
-        swizzling_functor = cutlass.IdentitySwizzle8
+        iterator_algorithm = self.conv_descriptor.heuristic.available_iterator_algorithms[best_config["iterator_algorithm"]]
         stride_support = StrideSupport.Strided
         conv_kind = cutlass.conv.Operator.fprop
 
@@ -148,15 +188,6 @@ class FusedConv2d:
 
         pycutlass.compiler.add_module([self.operation,])
 
-        self.problem_size = cutlass.conv.Conv2dProblemSize(
-            cutlass.Tensor4DCoord(N, H, W, C),
-            cutlass.Tensor4DCoord(K, R, S, C),
-            cutlass.Tensor4DCoord(padding[0], padding[0], padding[1], padding[1]),
-            cutlass.MatrixCoord(stride[0], stride[1]),
-            cutlass.MatrixCoord(dilation[0], dilation[1]),
-            cutlass.conv.Mode.cross_correlation,
-            split_k_slices, 1
-        )
 
         N_, K_, P, Q = list(node.meta["tensor_meta"].shape)
         assert N_ == N
@@ -216,11 +247,51 @@ class FusedConv2d:
         for output_node in self.outputs:
             output_tensor = kwargs["output_" + self.output_2_kernel_output[output_node].name].view(output_node.meta["tensor_meta"].shape)
             if output_tensor.numel() == self.output_numel:
-                results.append(output_tensor.view(self.output_shape).permute(0, 3, 1, 2).contiguous())
+                results.append(output_tensor.view(self.output_shape).permute(0, 3, 1, 2))#.contiguous())
             else:
                 results.append(output_tensor)
 
         return results
+
+class FusedBNForward:
+    __name__ = "nvfuser_bn_fp"
+    def __init__(self, node) -> None:
+        assert node.target == torch.ops.aten.native_batch_norm
+        self.node = node
+
+        def splitted_batch_norm(
+            input: torch.Tensor,
+            gamma: torch.Tensor,
+            beta: torch.Tensor,
+            running_mean: torch.Tensor,
+            running_var: torch.Tensor,
+            momentum: float,
+            eps: float, 
+            mean: torch.Tensor,
+            D: torch.Tensor):
+            #
+            var = D - mean * mean
+            invstd = 1./torch.sqrt(var + eps)
+            output = torch.nn.functional.relu((input - mean) * invstd * gamma + beta)
+            running_mean = (1-momentum) * running_mean + momentum * mean
+            running_var = (1-momentum) * running_var + momentum * var
+
+            return output.to(torch.float16), invstd
+        
+        self.scripted_splitted_batch_norm = torch.jit.script(splitted_batch_norm)
+    
+    def __call__(self, *args):
+        input, gamma, beta, running_mean, running_var, is_training, momentum, eps, mean, D = args
+
+        input = input.permute(0, 2, 3, 1).contiguous()
+
+        output, invstd = self.scripted_splitted_batch_norm(input, gamma, beta, running_mean, running_var, momentum, eps, mean, D)
+        # output, mean, invstd = torch.ops.aten.native_batch_norm(input, gamma, beta, running_mean, running_var, is_training, momentum, eps)
+    
+
+        output = output.permute(0, 3, 1, 2).contiguous()
+        return [output, mean, invstd]
+
 
 
 def pass_conv_fusion(module, graph, verbose=True):
@@ -229,6 +300,7 @@ def pass_conv_fusion(module, graph, verbose=True):
     """
 
     conv_idx = 0
+    bn_fp_idx = 0
     for node in tqdm(graph.nodes):
         if node.op == "call_function":
             if node.target == torch.ops.aten.convolution:
@@ -263,6 +335,18 @@ def pass_conv_fusion(module, graph, verbose=True):
                 # erase_node_recursive(graph, node)
                 
                 conv_idx += 1
+            
+            elif node.target == torch.ops.aten.native_batch_norm:
+                if bn_fp_idx >= 1: continue
+
+                fused_bn_fp = FusedBNForward(node)
+                graph.inserting_after(node)
+                fused_node = graph.call_function(fused_bn_fp, args=tuple(node.args))
+                node.replace_all_uses_with(fused_node)
+                bn_fp_idx += 1
+                
+
+
     
     graph.lint()
     graph.eliminate_dead_code()

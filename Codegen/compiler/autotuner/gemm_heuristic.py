@@ -408,6 +408,7 @@ class DefaultMmaCore:
         self.mma_policy = MmaPolicy(
             mma_tensor_op, MatrixShape(0, 0), MatrixShape(0, 0), K // Kw
         )
+        self.mma_tensor_op = mma_tensor_op
 
 class MmaPolicy:
     def __init__(self, operator, smem_padding_A, smem_padding_B, partitions_K=1) -> None:

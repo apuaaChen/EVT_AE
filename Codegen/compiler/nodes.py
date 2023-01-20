@@ -195,13 +195,17 @@ def inject_unsqueeze(inject_point, graph, parent_node, dim, tmp_node=None):
     
     return unsqueeze_node
 
-def inject_sum(inject_point, graph, parent_node, dim, tmp_node=None):
+def inject_sum(inject_point, graph, parent_node, dim, tmp_node=None, dtype=None):
     if tmp_node is None: tmp_node = parent_node
+    if dtype is None: dtype = parent_node.meta["tensor_meta"].dtype
 
     graph.inserting_after(inject_point)
     if isinstance(dim, int):
         dim = [dim,]
-    sum_node = graph.call_function(torch.ops.aten.sum, args=(tmp_node, dim))
+    # if dtype == None:
+    #     sum_node = graph.call_function(torch.ops.aten.sum, args=(tmp_node, dim))
+    # else:
+    sum_node = graph.call_function(torch.ops.aten.sum, args=(tmp_node, dim), kwargs={"dtype": dtype})
     sum_node.meta = {}
     shape = list(parent_node.meta['tensor_meta'].shape)
     # handle d < 0
@@ -219,7 +223,8 @@ def inject_sum(inject_point, graph, parent_node, dim, tmp_node=None):
     #     else:
     #         shape.pop(d)
     sum_node.meta['tensor_meta'] = parent_node.meta['tensor_meta']._replace(
-        shape=tuple(new_shape)
+        shape=tuple(new_shape),
+        dtype=dtype
     )
     
     return sum_node
@@ -298,7 +303,7 @@ def inject_permute(inject_point, graph, input, dims, tmp_input=None):
     if tmp_input is None: tmp_input = input
 
     graph.inserting_after(inject_point)
-    permute_node = graph.call_function(torch.ops.aten.permute, args=(input, dims))
+    permute_node = graph.call_function(torch.ops.aten.permute, args=(tmp_input, dims))
     shape = [input.meta['tensor_meta'].shape[i] for i in dims]
     permute_node.meta = {}
     permute_node.meta['tensor_meta'] = inject_point.meta['tensor_meta']._replace(shape=shape)

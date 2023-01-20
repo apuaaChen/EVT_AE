@@ -23,7 +23,7 @@ from functools import reduce
 from passes.iterator_v3 import *
 import operator
 import philox
-
+import treelib
 
 torch_2_cutlass_type = {
     torch.float32: cutlass.float32,
@@ -620,7 +620,10 @@ class EpilogueASTDAG:
         elif self.anchor.target == torch.ops.aten.convolution:
             iter_names = ['m', 'n']
             N, K, P, Q = list(self.anchor.meta["tensor_meta"].shape)
-            self.anchor.meta["tensor"] = IterVarHyperGraph([N * P * Q, K], iter_names)
+            graph = IterVarHyperGraph([N * P * Q, K], iter_names)
+            graph.view([N, P, Q, K])
+            graph.permute([0, 3, 1, 2])
+            self.anchor.meta["tensor"] = graph#IterVarHyperGraph([N * P * Q, K], iter_names)
         elif self.anchor.target in [
             torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data, 
             torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward]:
@@ -724,6 +727,14 @@ class EpilogueASTDAG:
                         reduction_type = "column_reduction"
                 
                 if reduction_type is not None:
+                    # get reduction data type
+                    element_reduction = user_node.meta["tensor_meta"].dtype
+                    if element_reduction == torch.float16:
+                        el_reduction = cutlass.float16
+                    elif element_reduction == torch.float32:
+                        el_reduction = cutlass.float32
+                    else:
+                        raise NotImplementedError("unkown data type")
                     # case 1: for GEMM kernels
                     if self.anchor.target in [torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten.convolution]:
                         # create reduction node
@@ -734,7 +745,7 @@ class EpilogueASTDAG:
                             )
                         elif reduction_type == "column_reduction":
                             reduction_node = ColumnReductionNodeDAG(
-                                self.element_accumulator, self.element_output,
+                                self.element_accumulator, el_reduction,
                                 self.element_accumulator, user_node
                             )
                         else:
@@ -761,19 +772,25 @@ class EpilogueASTDAG:
                 print(node)
                 raise RuntimeError("The node to fuse doesn't have tensor attribute")
         is_output = False
+        duplicated_output = False
 
         if node in self.outputs:
             if not is_input:
             # assert not is_input
                 if reduction_node is None or len(node.users.keys()) != 1:
-                    # visit the output node
-                    name_node = TensorOutputNodeDAG(self.element_accumulator, node)
-                    if name_node.layout not in self.output_layouts:
-                        self.output_layouts.append(name_node.layout)
-                    self.epilogue_tree.create_node(name_node.tag, name_node.id, parent=self.stack[-1], data=name_node)
-                    self.stack.append(name_node.id)
-                    is_output = True
-            if not is_output:
+                    if node == self.root or len([user for user in node.users if user.target not in [torch.ops.aten.sum] or (user.target in [torch.ops.aten.sum] and user not in self.outputs)]) > 1:
+                        # visit the output node
+                        name_node = TensorOutputNodeDAG(self.element_accumulator, node)
+                        if name_node.layout not in self.output_layouts:
+                            self.output_layouts.append(name_node.layout)
+                        try:
+                            self.epilogue_tree.create_node(name_node.tag, name_node.id, parent=self.stack[-1], data=name_node)
+                            self.stack.append(name_node.id)
+                            is_output = True
+                        except treelib.exceptions.DuplicatedNodeIdError:
+                            duplicated_output = True
+                    
+            if not is_output and not duplicated_output:
                 self.outputs.remove(node)
 
         if node.op == "call_function" and not is_input:
@@ -861,9 +878,14 @@ class EpilogueASTDAG:
                 name_node = AccumulatorNodeDAG(
                     self.element_accumulator, self.elements_per_access, node
                 )
-                self.epilogue_tree.create_node(
-                    name_node.tag, name_node.id, 
-                    data=name_node, parent=self.stack[-1])
+                try:
+                    self.epilogue_tree.create_node(
+                        name_node.tag, name_node.id, 
+                        data=name_node, parent=self.stack[-1])
+                except treelib.exceptions.DuplicatedNodeIdError:
+                    self.epilogue_tree.create_node(
+                        name_node.tag, name_node.id + "1", 
+                        data=name_node, parent=self.stack[-1])
             elif node.target in [torch.ops.aten.native_dropout]:
                 dropout_node = DropoutForwardNodeDAG(
                     self.element_accumulator, self.element_compute, 

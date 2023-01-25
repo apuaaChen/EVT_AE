@@ -22,10 +22,15 @@ from nodes import *
 ################################################################################
 def pass_batchnorm_preprocessing(module, graph):
     batch_norm_idx = 0
+    batch_norm_backward_idx = 0
     for node in graph.nodes:
         if node.op == "call_function":
             if node.target == torch.ops.aten.native_batch_norm:
-                if batch_norm_idx >=1: continue
+                if batch_norm_idx >=20: continue
+                print("=========================================================")
+                print(node)
+
+                
 
                 ################################################################
                 # inject the epilogue nodes for reduction fusion
@@ -40,10 +45,46 @@ def pass_batchnorm_preprocessing(module, graph):
                 mean_x2_node = inject_sum(mul_node, graph, mul_node, [0, 2, 3], dtype=torch.float32)
 
                 graph.inserting_after(node)
-                bn_splitted = graph.call_function(node.target, args=(*node.args, mean_x_node, mean_x2_node))
+                bn_splitted = graph.call_function(torch.ops.aten.native_batch_norm.default, args=(*node.args, mean_x_node, mean_x2_node))
 
                 # bn_splitted.meta["tensor_meta"] = node.meta["tensor_meta"]._replace()
                 node.replace_all_uses_with(bn_splitted)
                 graph.erase_node(node)
+
+                # update the meta data of output saved mean & std
+                _, saved_mean, saved_invstd = list(bn_splitted.users.keys())
+
+                saved_mean.meta["tensor_meta"] = saved_mean.meta["tensor_meta"]._replace(shape=(1, K, 1, 1))
+                saved_invstd.meta["tensor_meta"] = saved_invstd.meta["tensor_meta"]._replace(shape=(1, K, 1, 1))
                 
                 batch_norm_idx += 1
+            # for batch norm backward
+            elif node.target == torch.ops.aten.native_batch_norm_backward:
+                # print(node.args)
+                if batch_norm_backward_idx >= 2: continue
+
+                # inject the epilogue nodes for reduction fusion
+                y_grad, input, gamma, running_mean, running_var, saved_mean, saved_invstd, is_training, epsilon, input_mask = node.args
+                N, C, H, W = list(y_grad.meta["tensor_meta"].shape)
+                reduction_length = N * H * W
+
+                sum_grad_y_node = inject_sum(y_grad, graph, y_grad, [0, 2, 3], dtype=torch.float32)
+                # get x_hat
+                sub_mean_node = inject_sub(sum_grad_y_node, graph, input, saved_mean)
+                mul_invstd_node = inject_mul(sub_mean_node, graph, sub_mean_node, saved_invstd)
+                # add a cast node to project x_hat to float16, as the code above could be fused into the preceeding kernel
+                cast_node = inject_dtype_cast(mul_invstd_node, graph, mul_invstd_node, torch.float16)
+                mul_xhat_node = inject_mul(cast_node, graph, y_grad, cast_node)
+                sum_grad_y_xhat_node = inject_sum(mul_xhat_node, graph, mul_xhat_node, [0, 2, 3], dtype=torch.float32)
+
+                # update the args of the batch_norm_backward node
+                node.args = (y_grad, input, gamma, running_mean, running_var, saved_mean, saved_invstd, is_training, epsilon, sum_grad_y_node, sum_grad_y_xhat_node, float(reduction_length))
+
+                if "tensor_meta" in node.meta.keys():
+                    node.meta["tensor_meta"] = node.meta["tensor_meta"][0]
+                else:
+                    node.meta["tensor_meta"] = input.meta["tensor_meta"]._replace()
+                batch_norm_backward_idx += 1
+    
+    graph.lint()
+    graph.eliminate_dead_code()

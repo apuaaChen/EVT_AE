@@ -67,6 +67,14 @@ def inject_neg(inject_point, graph, parent_node, tmp_node=None):
     neg_node.meta['tensor_meta'] = parent_node.meta['tensor_meta']._replace()
     return neg_node
 
+def inject_dtype_cast(inject_point, graph, parent_node, dtype, tmp_node=None):
+    if tmp_node is None: tmp_node = parent_node
+    graph.inserting_after(inject_point)
+    neg_node = graph.call_function(torch.ops.aten.to, args=(tmp_node, dtype))
+    neg_node.meta = {}
+    neg_node.meta['tensor_meta'] = parent_node.meta['tensor_meta']._replace(dtype=dtype)
+    return neg_node
+
 def get_shape(node):
     if isinstance(node, fx.Node):
         return node.meta['tensor_meta'].shape
@@ -202,9 +210,6 @@ def inject_sum(inject_point, graph, parent_node, dim, tmp_node=None, dtype=None)
     graph.inserting_after(inject_point)
     if isinstance(dim, int):
         dim = [dim,]
-    # if dtype == None:
-    #     sum_node = graph.call_function(torch.ops.aten.sum, args=(tmp_node, dim))
-    # else:
     sum_node = graph.call_function(torch.ops.aten.sum, args=(tmp_node, dim), kwargs={"dtype": dtype})
     sum_node.meta = {}
     shape = list(parent_node.meta['tensor_meta'].shape)

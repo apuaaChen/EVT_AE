@@ -234,8 +234,13 @@ class DropoutForwardNodeDAG(DropoutForwardNode):
         self.id = self.op + str(DropoutForwardNodeDAG.cnt)
 
         self.p = 1. - node.args[1]
-        if anchor.target in [torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten.convolution]:
+        if anchor.target in [torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten.convolution, torch.nn.grad.conv2d_weight]:
             self.iterator_type = "cutlass::epilogue::threadblock::PredicatedTileIterator"
+        elif anchor.target == torch.nn.grad.conv2d_input:
+            if anchor.args[3][0] == 1 and anchor.args[3][1] == 1:
+                self.iterator_type = "cutlass::epilogue::threadblock::PredicatedTileIterator"
+            else:
+                self.iterator_type = "cutlass::epilogue::threadblock::PredicatedTileIteratorStridedDgrad"
         elif anchor.target in [torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data, torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward]:
             self.iterator_type = "cutlass::softmax::threadblock::RowTileIterator"
         
@@ -519,6 +524,8 @@ class EpilogueASTDAG:
         # step 1: check if the node is a dependency of anchor
         if node.op == "call_function":
             if node != self.anchor and dfs(node, self.anchor):
+                if self.anchor.target in [torch.ops.aten.convolution, torch.nn.grad.conv2d_weight]:
+                    return ["invalid",]
                 return [node,]
         else:
             return [node,]
@@ -568,7 +575,7 @@ class EpilogueASTDAG:
                     return lhs_nodes + rhs_nodes + [node, ]
                 elif node.target in [torch.ops.aten.neg, torch.ops.aten.sum, torch.ops.aten.native_dropout, torch.ops.aten.permute, torch.ops.aten.gelu, torch.ops.aten.relu, torch.ops.aten.sigmoid, torch.ops.aten.tanh, torch.ops.aten.one_hot, torch.ops.aten.ne]:
                     return self.ast_top_down_parsing_bmm(node.args[0], parse_output) + [node,]
-                elif node.target in [torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten.bmm, torch.ops.aten._softmax_backward_data, torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward, torch.ops.aten.convolution]:
+                elif node.target in [torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten.bmm, torch.ops.aten._softmax_backward_data, torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward, torch.ops.aten.convolution, torch.nn.grad.conv2d_input, torch.nn.grad.conv2d_weight]:
                     return [node,]
                 else:
                     return []
@@ -617,7 +624,7 @@ class EpilogueASTDAG:
             iter_names = ['m', 'n']
             shape = list(self.anchor.meta["tensor_meta"].shape)
             self.anchor.meta["tensor"] = IterVarHyperGraph(shape, iter_names)
-        elif self.anchor.target == torch.ops.aten.convolution:
+        elif self.anchor.target in [torch.ops.aten.convolution, torch.nn.grad.conv2d_input, torch.nn.grad.conv2d_weight]:
             iter_names = ['m', 'n']
             N, K, P, Q = list(self.anchor.meta["tensor_meta"].shape)
             graph = IterVarHyperGraph([N * P * Q, K], iter_names)
@@ -659,7 +666,7 @@ class EpilogueASTDAG:
         #                 self.root_candidates[others].append(root)
         #                 self.root_candidates[root] = None
         
-        if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data, torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward, torch.ops.aten.convolution]:
+        if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data, torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward, torch.ops.aten.convolution, torch.nn.grad.conv2d_input, torch.nn.grad.conv2d_weight]:
             root_to_remove = []
             for root in self.root_candidates.keys():
                 if self.root_candidates[root] is not None:
@@ -669,7 +676,12 @@ class EpilogueASTDAG:
                         self.root_candidates[root] = None
                         root_to_remove.append(root)
                     for n in node_list:
-                        if n.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data, torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward, torch.ops.aten.convolution]:
+                        if self.anchor.target in [torch.ops.aten.convolution, torch.nn.grad.conv2d_input, torch.nn.grad.conv2d_weight]:
+                            if n == "invalid":
+                                if root not in root_to_remove:
+                                    root_to_remove.append(root)
+                                break
+                        if n.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data, torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward, torch.ops.aten.convolution, torch.nn.grad.conv2d_input, torch.nn.grad.conv2d_weight]:
                             if n.meta['topo_idx'] > self.anchor.meta['topo_idx']:
                                 if root not in root_to_remove:
                                     root_to_remove.append(root)
@@ -736,7 +748,7 @@ class EpilogueASTDAG:
                     else:
                         raise NotImplementedError("unkown data type")
                     # case 1: for GEMM kernels
-                    if self.anchor.target in [torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten.convolution]:
+                    if self.anchor.target in [torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten.convolution, torch.nn.grad.conv2d_input, torch.nn.grad.conv2d_weight]:
                         # create reduction node
                         if reduction_type == "row_reduction":
                             reduction_node = RowReductionNodeDAG(
@@ -767,7 +779,7 @@ class EpilogueASTDAG:
                     is_input = True
         else:
             is_input = True
-        if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data, torch.ops.aten.convolution]:
+        if self.anchor.target in [torch.ops.aten.bmm, torch.ops.aten.mm, torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data, torch.ops.aten.convolution, torch.nn.grad.conv2d_input, torch.nn.grad.conv2d_weight]:
             if 'tensor' not in node.meta.keys():
                 print(node)
                 raise RuntimeError("The node to fuse doesn't have tensor attribute")
@@ -906,14 +918,17 @@ class EpilogueASTDAG:
             if self.anchor.target in [
                 torch.ops.aten.bmm, torch.ops.aten.mm, 
                 torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data,
-                torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward, torch.ops.aten.convolution]:
+                torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward, torch.ops.aten.convolution, torch.nn.grad.conv2d_input, torch.nn.grad.conv2d_weight]:
                 if node.target in [torch.ops.aten.native_dropout]:
                     node = self.get_item_stack[-1]
                 source_type = torch_2_cutlass_type[node.meta['tensor_meta'].dtype]
 
                 node_tensor = node.meta['tensor']
 
-                tensor_type = node_tensor.get_tensor_type()
+                if self.anchor.target in [torch.ops.aten.convolution, torch.nn.grad.conv2d_input, torch.nn.grad.conv2d_weight]:
+                    tensor_type = node_tensor.get_tensor_type_nchw()
+                else:
+                    tensor_type = node_tensor.get_tensor_type()
                 # case 1: scalar
                 if tensor_type == "scalar":
                     name_node = ScalarInputNodeDAG(self.element_accumulator, node, source_type)
@@ -1016,7 +1031,7 @@ using ${operation_name}_EpilogueVisitor = cutlass::epilogue::threadblock::Epilog
         self.output_layout = function.output_layouts[0]
 
         # check whether output is simple TensorOutput
-        if node.target in [torch.ops.aten.mm, torch.ops.aten.convolution]:
+        if node.target in [torch.ops.aten.mm, torch.ops.aten.convolution, torch.nn.grad.conv2d_input, torch.nn.grad.conv2d_weight]:
             root_node = self.tree.get_node(self.tree.root)
             if isinstance(root_node.data, TensorOutputNodeDAG):
                 child_node = self.tree.get_node(root_node.successors(self.tree.identifier)[0])

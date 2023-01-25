@@ -87,14 +87,14 @@ loss.backward()
 torch.cuda.synchronize()
 
 # if args.mode == "verify":
-# for param1, param2 in zip(list(model.named_parameters()), list(model_fused.named_parameters())):
-#     print(torch.sum(torch.isclose(param1[1].grad, param2[1].grad, rtol=3e-1)) / param2[1].grad.numel())
-#     try:
-#         assert torch.sum(torch.isclose(param1[1].grad, param2[1].grad, rtol=3e-1)) / param2[1].grad.numel() > 0.7
-#     except:
-#         print(param1[0])
-#         print(param1[1].grad.view(-1))
-#         print(param2[1].grad.view(-1))
+for param1, param2 in zip(list(model.named_parameters()), list(model_fused.named_parameters())):
+    print(torch.sum(torch.isclose(param1[1].grad, param2[1].grad, rtol=3e-1)) / param2[1].grad.numel())
+    try:
+        assert torch.sum(torch.isclose(param1[1].grad, param2[1].grad, rtol=3e-1)) / param2[1].grad.numel() > 0.7
+    except:
+        print(param1[0])
+        print(param1[1].grad.view(-1))
+        print(param2[1].grad.view(-1))
 
 # for profiling
 model = model.to(memory_format=torch.channels_last)

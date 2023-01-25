@@ -465,12 +465,19 @@ class ConvConfigDescriptor(ConfigDescriptor):
     OP_NAME = "CONV"
     def __init__(self, problem_size, element_a, element_b, element_c,
         element_accumulator, alignment_a, alignment_b, alignment_c,
-        split_k_mode="None") -> None:
+        split_k_mode="None", conv_kind = cutlass.conv.Operator.fprop) -> None:
         #
         super().__init__()
 
-        self.conv_kind = cutlass.conv.Operator.fprop
+        self.conv_kind = conv_kind
         self.problem_size = problem_size
+
+        if self.conv_kind == cutlass.conv.Operator.fprop:
+            conv_kind_str = "fprop"
+        elif self.conv_kind == cutlass.conv.Operator.dgrad:
+            conv_kind_str = "dgrad_"
+        elif self.conv_kind == cutlass.conv.Operator.wgrad:
+            conv_kind_str = "wgrad_"
         
 
         self.problem_size_list = [
@@ -491,13 +498,14 @@ class ConvConfigDescriptor(ConfigDescriptor):
             "alignment_b": alignment_b,
             "alignment_c": alignment_c,
             "split_k_mode": split_k_mode,
-            "problem_size": self.problem_size_list 
+            "problem_size": self.problem_size_list,
+            "conv_kind": conv_kind_str
         }
 
         self.heuristic = Conv2dHeuristics(
             element_a, element_b, element_c, element_accumulator,
             alignment_a, alignment_b, alignment_c, problem_size,
-            split_k_mode
+            split_k_mode, conv_kind
         )
     
     def cache_init(self):
@@ -587,10 +595,22 @@ class ConvConfigDescriptor(ConfigDescriptor):
         tile_description = TileDescription(
             threadblock_shape, stages, warp_count, math_inst
         )
+
         swizzling_functor = getattr(
             cutlass, "IdentitySwizzle%d"%int(pow(2, config["log_swizzle"])))
-        
+
         stride_support = StrideSupport.Strided
+
+        # case strided dgrad
+        if self.conv_kind == cutlass.conv.Operator.dgrad:
+            if self.problem_size.stride_h == 1 and self.problem_size.stride_w == 1:
+                stride_support = StrideSupport.Unity
+            else:
+                swizzling_functor = getattr(
+                    cutlass, "StridedDgradIdentityThreadblockSwizzle%d"%int(pow(2, config["log_swizzle"]))
+                )
+        
+        
         iterator_algorithm = self.heuristic.available_iterator_algorithms[
             config["iterator_algorithm"]
         ]

@@ -1,13 +1,15 @@
 import cutlass
 import random
-from autotuner.gemm_heuristic import DefaultMmaCore, DefaultEpilogueTensorOp, MmaBase, GemmHeuristics, a100_metafile, EpilogueWithVisitor
+from autotuner.gemm_heuristic import DefaultMmaCore, DefaultEpilogueTensorOp, MmaBase, GemmHeuristics, a100_metafile, EpilogueWithVisitor, DefaultThreadMapTensorOp
 # from gemm_heuristic import DefaultMmaCore, DefaultEpilogueTensorOp, MmaBase, GemmHeuristics, a100_metafile, EpilogueWithVisitor
 import numpy as np
+from pycutlass import *
 
 class Conv2dHeuristics(GemmHeuristics):
     def __init__(
         self, element_a, element_b, element_c, element_accumulator,
-        alignment_a, alignment_b, alignment_c, problem_size, split_k_mode="None"
+        alignment_a, alignment_b, alignment_c, problem_size, split_k_mode="None",
+        conv_kind = cutlass.conv.Operator.fprop
         ) -> None:
         #
         self.metafile = a100_metafile
@@ -21,6 +23,14 @@ class Conv2dHeuristics(GemmHeuristics):
         self.split_k_mode = split_k_mode
         self.enable_split_k = self.split_k_mode != "None"
         self.problem_size = problem_size
+        self.conv_kind = conv_kind
+        # set stride support
+        self.stride_support = StrideSupport.Strided
+        if self.conv_kind == cutlass.conv.Operator.dgrad:
+            if self.problem_size.stride_h == 1 or self.problem_size.stride_w == 1:
+                self.stride_support == StrideSupport.Unity
+        
+
         self.set_parameter_range()
 
         self.available_iterator_algorithms = [
@@ -91,6 +101,13 @@ class Conv2dHeuristics(GemmHeuristics):
         )
         return feature.reshape((1, 10))
     
+    def check_dgrad_swizzling(self, parameter):
+        if self.conv_kind == cutlass.conv.Operator.dgrad:
+            if self.problem_size.stride_h != 1 or self.problem_size.stride_w != 1:
+                if parameter["log_swizzle"] not in [0, 2, 3]:
+                    return False
+        return True
+    
     def is_valid(self, parameters):
         block_tiling_size = [
             parameters["block_x"], parameters["block_y"], parameters["block_z"]]
@@ -98,12 +115,13 @@ class Conv2dHeuristics(GemmHeuristics):
             parameters["warp_x"], parameters["warp_y"], parameters["warp_z"]
         ]
         try:
-            DefaultConv2dFprop(
+            DefaultConv2d(
                 self.element_a, cutlass.TensorNHWC, self.element_b, cutlass.TensorNHWC,
                 self.element_c, cutlass.TensorNHWC, self.element_accumulator,
                 cutlass.OpClass.TensorOp, block_tiling_size, warp_tiling_size,
                 [16, 8, 16], parameters["stage"], self.available_iterator_algorithms[parameters["iterator_algorithm"]],
-                self.alignment_a, self.alignment_b, self.alignment_c, self.problem_size
+                self.alignment_a, self.alignment_b, self.alignment_c, self.problem_size,
+                self.stride_support, self.conv_kind
             )
         except (AssertionError, ZeroDivisionError):
             return False
@@ -212,6 +230,91 @@ class Conv2dFpropFilterTileAccessIteratorOptimized:
         assert problem_size.C % self.access_type.elements == 0
 
 
+class Conv2dDgradOutputGradientTileAccessIteratorAnalytic:
+    def __init__(self, shape, element, threadmap, stride_support, access_type) -> None:
+        self.access_type = access_type
+        self.stride_support = stride_support
+        assert threadmap.elements_per_access % access_type.elements == 0
+        assert threadmap.iterations.contiguous() == 1
+    
+    def can_implement(self, problem_size):
+        assert problem_size.K % self.access_type.elements == 0
+        if self.stride_support == StrideSupport.Unity:
+            assert problem_size.stride_h == 1
+            assert problem_size.stride_w == 1
+
+
+class Conv2dDgradOutputGradientTileAccessIteratorOptimized:
+    def __init__(self, shape, element, threadmap, stride_support, access_type) -> None:
+        self.access_type = access_type
+        self.stride_support = stride_support
+        assert threadmap.elements_per_access % access_type.elements == 0
+        assert threadmap.iterations.contiguous() == 1
+    
+    def can_implement(self, problem_size):
+        assert problem_size.K % self.access_type.elements == 0
+        assert problem_size.R <= 32
+        assert problem_size.S <= 32
+    
+        if self.stride_support == StrideSupport.Unity:
+            assert problem_size.stride_h == 1
+            assert problem_size.stride_w == 1
+
+
+class Conv2dDgradFilterTileAccessIteratorAnalytic:
+    def __init__(self, shape, element, threadmap, stride_support, access_type) -> None:
+        self.access_type = access_type
+        assert threadmap.elements_per_access % access_type.elements == 0
+    
+    def can_implement(self, problem_size):
+        assert problem_size.C % self.access_type.elements == 0
+
+
+class Conv2dDgradFilterTileAccessIteratorOptimized:
+    def __init__(self, shape, element, threadmap, stride_support, access_type) -> None:
+        self.access_type = access_type
+        assert threadmap.elements_per_access % access_type.elements == 0
+        assert threadmap.iterations.strided() * threadmap.iterations.contiguous() < 32
+    
+    def can_implement(self, problem_size):
+        assert problem_size.C % self.access_type.elements == 0
+
+
+class Conv2dWgradOutputGradientTileAccessIteratorAnalytic:
+    def __init__(self, shape, element, threadmap, access_type) -> None:
+        self.access_type = access_type
+        assert threadmap.elements_per_access % access_type.elements == 0
+    
+    def can_implement(self, problem_size):
+        assert problem_size.C % self.access_type.elements == 0
+
+
+class Conv2dWgradOutputGradientTileAccessIteratorOptimized:
+    def __init__(self, shape, element, threadmap, access_type) -> None:
+        self.access_type = access_type
+        assert threadmap.elements_per_access % access_type.elements == 0
+    
+    def can_implement(self, problem_size):
+        assert problem_size.C % self.access_type.elements == 0
+
+
+class Conv2dWgradActivationTileAccessIteratorAnalytic:
+    def __init__(self, shape, element, threadmap, access_type) -> None:
+        self.access_type = access_type
+        assert threadmap.elements_per_access % access_type.elements == 0
+    
+    def can_implement(self, problem_size):
+        assert problem_size.K % self.access_type.elements == 0
+
+
+class Conv2dWgradActivationTileAccessIteratorOptimized:
+    def __init__(self, shape, element, threadmap, access_type) -> None:
+        self.access_type = access_type
+        assert threadmap.elements_per_access % access_type.elements == 0
+    
+    def can_implement(self, problem_size):
+        assert problem_size.K % self.access_type.elements == 0
+        
 class ConvTileIterator:
     def __init__(self, iterator) -> None:
         self.iterator = iterator
@@ -235,42 +338,101 @@ class ImplicitGemmConvolution:
         pass
 
 
-class DefaultConv2dFprop:
+class PredicatedTileIteratorStridedDgrad:
+    def __init__(self, threadmap, element_C) -> None:
+        assert threadmap.iterations.row > 0, "ThreadMap::Iterations::kRow must be > 0"
+        assert threadmap.iterations.group > 0, "ThreadMap::Iterations::kGroup must be > 0"
+        assert threadmap.iterations.cluster > 0, "ThreadMap::Iterations::kCluster must be > 0"
+        assert threadmap.iterations.column > 0, "ThreadMap::Iterations::kColumn must be > 0"
+
+
+class DefaultEpilogueTensorOpStridedDgrad:
+    def __init__(self, threadblock_shape, warp_mma_tensor_op, partition_k, element_C, elements_per_access) -> None:
+        self.output_tile_threadmp = DefaultThreadMapTensorOp(
+            threadblock_shape, warp_mma_tensor_op.shape, partition_k, element_C, elements_per_access
+        ).type
+
+        self.output_tile_iterator = PredicatedTileIteratorStridedDgrad(
+            self.output_tile_threadmp, element_C
+        )
+
+class DefaultConv2d:
     def __init__(
         self, element_a, layout_a, element_b, layout_b, element_c, layout_c,
         element_accumulator, operator_class, threadblock_shape,
         warp_shape, instruction_shape, stages, iterator_algorithm, 
-        alignment_a, alignment_b, alignment_c, problem_size) -> None:
+        alignment_a, alignment_b, alignment_c, problem_size, 
+        stride_support=StrideSupport.Strided,
+        conv_kind=cutlass.conv.Operator.fprop) -> None:
 
         if operator_class == cutlass.OpClass.TensorOp:
-            self.mma_core = DefaultMmaCore(
-                threadblock_shape, warp_shape, instruction_shape, element_a,
-                cutlass.RowMajor, element_b, cutlass.ColumnMajor,
-                element_accumulator)
+            if conv_kind == cutlass.conv.Operator.fprop:
+                self.mma_core = DefaultMmaCore(
+                    threadblock_shape, warp_shape, instruction_shape, element_a,
+                    cutlass.RowMajor, element_b, cutlass.ColumnMajor,
+                    element_accumulator)
+            elif conv_kind == cutlass.conv.Operator.dgrad:
+                self.mma_core = DefaultMmaCore(
+                    threadblock_shape, warp_shape, instruction_shape, element_a,
+                    cutlass.RowMajor, element_b, cutlass.RowMajor,
+                    element_accumulator)
+            elif conv_kind == cutlass.conv.Operator.wgrad:
+                self.mma_core = DefaultMmaCore(
+                    threadblock_shape, warp_shape, instruction_shape, element_a,
+                    cutlass.ColumnMajor, element_b, cutlass.RowMajor,
+                    element_accumulator)
             
             self.threadmap_a = self.mma_core.iterator_threadmap_A
             # using AccessTypeA = cutlass::AlignedArray<ElementA, AlignmentA>;
             self.access_type_a = AlignedArray(element_a, alignment_a)
             if iterator_algorithm == cutlass.conv.IteratorAlgorithm.analytic:
-                self.iterator_a = Conv2dFpropActivationTileAccessIteratorAnalytic(
-                    [threadblock_shape[0], threadblock_shape[2]], element_a,
-                    layout_a, self.threadmap_a, self.access_type_a
-                )
+                if conv_kind == cutlass.conv.Operator.fprop:
+                    self.iterator_a = Conv2dFpropActivationTileAccessIteratorAnalytic(
+                        [threadblock_shape[0], threadblock_shape[2]], element_a,
+                        layout_a, self.threadmap_a, self.access_type_a
+                    )
+                elif conv_kind == cutlass.conv.Operator.dgrad:
+                    self.iterator_a = Conv2dDgradOutputGradientTileAccessIteratorAnalytic(
+                        [threadblock_shape[0], threadblock_shape[2]], element_a,
+                        self.threadmap_a, stride_support, self.access_type_a
+                    )
+                elif conv_kind == cutlass.conv.Operator.wgrad:
+                    self.iterator_a = Conv2dWgradOutputGradientTileAccessIteratorAnalytic(
+                        [threadblock_shape[0], threadblock_shape[2]], element_a,
+                        self.threadmap_a, self.access_type_a
+                    )
             elif iterator_algorithm == cutlass.conv.IteratorAlgorithm.fixed_channels:
-                self.iterator_a = Conv2dFpropActivationTileAccessIteratorFixedChannels(
-                    [threadblock_shape[0], threadblock_shape[2]], element_a,
-                    layout_a, self.threadmap_a, self.access_type_a
-                )
+                if conv_kind == cutlass.conv.Operator.fprop:
+                    self.iterator_a = Conv2dFpropActivationTileAccessIteratorFixedChannels(
+                        [threadblock_shape[0], threadblock_shape[2]], element_a,
+                        layout_a, self.threadmap_a, self.access_type_a
+                    )
+                elif conv_kind == cutlass.conv.Operator.dgrad:
+                    assert False
             elif iterator_algorithm == cutlass.conv.IteratorAlgorithm.few_channels:
-                self.iterator_a = Conv2dFpropActivationTileAccessIteratorFewChannels(
-                    [threadblock_shape[0], threadblock_shape[2]], element_a,
-                    layout_a, self.threadmap_a, self.access_type_a
-                )
+                if conv_kind == cutlass.conv.Operator.fprop:
+                    self.iterator_a = Conv2dFpropActivationTileAccessIteratorFewChannels(
+                        [threadblock_shape[0], threadblock_shape[2]], element_a,
+                        layout_a, self.threadmap_a, self.access_type_a
+                    )
+                elif conv_kind == cutlass.conv.Operator.dgrad:
+                    assert False
             elif iterator_algorithm == cutlass.conv.IteratorAlgorithm.optimized:
-                self.iterator_a = Conv2dFpropActivationTileAccessIteratorOptimized(
-                    [threadblock_shape[0], threadblock_shape[2]], element_a,
-                    layout_a, self.threadmap_a, self.access_type_a
-                )
+                if conv_kind == cutlass.conv.Operator.fprop:
+                    self.iterator_a = Conv2dFpropActivationTileAccessIteratorOptimized(
+                        [threadblock_shape[0], threadblock_shape[2]], element_a,
+                        layout_a, self.threadmap_a, self.access_type_a
+                    )
+                elif conv_kind == cutlass.conv.Operator.dgrad:
+                    self.iterator_a = Conv2dDgradOutputGradientTileAccessIteratorOptimized(
+                        [threadblock_shape[0], threadblock_shape[2]], element_a,
+                        self.threadmap_a, stride_support, self.access_type_a
+                    )
+                elif conv_kind == cutlass.conv.Operator.wgrad:
+                    self.iterator_a = Conv2dWgradOutputGradientTileAccessIteratorOptimized(
+                        [threadblock_shape[0], threadblock_shape[2]], element_a,
+                        self.threadmap_a, self.access_type_a
+                    )
             else:
                 raise ValueError
             
@@ -281,26 +443,57 @@ class DefaultConv2dFprop:
             self.threadmap_b = self.mma_core.iterator_threadmap_B
             self.access_type_b = AlignedArray(element_b, alignment_b)
             if iterator_algorithm == cutlass.conv.IteratorAlgorithm.analytic:
-                self.iterator_b = Conv2dFpropFilterTileAccessIteratorAnalytic(
-                    [threadblock_shape[2], threadblock_shape[1]], element_b,
-                    layout_b, self.threadmap_b, self.access_type_b
-                )
+                if conv_kind == cutlass.conv.Operator.fprop:
+                    self.iterator_b = Conv2dFpropFilterTileAccessIteratorAnalytic(
+                        [threadblock_shape[2], threadblock_shape[1]], element_b,
+                        layout_b, self.threadmap_b, self.access_type_b
+                    )
+                elif conv_kind == cutlass.conv.Operator.dgrad:
+                    self.iterator_b = Conv2dDgradFilterTileAccessIteratorAnalytic(
+                        [threadblock_shape[2], threadblock_shape[1]],
+                        element_b, self.threadmap_b,
+                        stride_support, self.access_type_b
+                    )
+                elif conv_kind == cutlass.conv.Operator.wgrad:
+                    self.iterator_b = Conv2dWgradActivationTileAccessIteratorAnalytic(
+                        [threadblock_shape[2], threadblock_shape[1]],
+                        element_b, self.threadmap_b, self.access_type_b
+                    )
             elif iterator_algorithm == cutlass.conv.IteratorAlgorithm.fixed_channels:
-                self.iterator_b = Conv2dFpropFilterTileAccessIteratorFixedChannels(
-                    [threadblock_shape[2], threadblock_shape[1]], element_b,
-                    layout_b, self.threadmap_b, self.access_type_b
-                )
+                if conv_kind == cutlass.conv.Operator.fprop:
+                    self.iterator_b = Conv2dFpropFilterTileAccessIteratorFixedChannels(
+                        [threadblock_shape[2], threadblock_shape[1]], element_b,
+                        layout_b, self.threadmap_b, self.access_type_b
+                    )
+                elif conv_kind == cutlass.conv.Operator.dgrad:
+                    assert False
                 
             elif iterator_algorithm == cutlass.conv.IteratorAlgorithm.few_channels:
-                self.iterator_b = Conv2dFpropFilterTileAccessIteratorFewChannels(
-                    [threadblock_shape[2], threadblock_shape[1]], element_b,
-                    layout_b, self.threadmap_b, self.access_type_b
-                )
+                if conv_kind == cutlass.conv.Operator.fprop:
+                    self.iterator_b = Conv2dFpropFilterTileAccessIteratorFewChannels(
+                        [threadblock_shape[2], threadblock_shape[1]], element_b,
+                        layout_b, self.threadmap_b, self.access_type_b
+                    )
+                elif conv_kind == cutlass.conv.Operator.dgrad:
+                    assert False
             elif iterator_algorithm == cutlass.conv.IteratorAlgorithm.optimized:
-                self.iterator_b = Conv2dFpropFilterTileAccessIteratorOptimized(
-                    [threadblock_shape[2], threadblock_shape[1]], element_b,
-                    layout_b, self.threadmap_b, self.access_type_b
-                )
+                if conv_kind == cutlass.conv.Operator.fprop:
+                    self.iterator_b = Conv2dFpropFilterTileAccessIteratorOptimized(
+                        [threadblock_shape[2], threadblock_shape[1]], element_b,
+                        layout_b, self.threadmap_b, self.access_type_b
+                    )
+                elif conv_kind == cutlass.conv.Operator.dgrad:
+                    self.iterator_b = Conv2dDgradFilterTileAccessIteratorOptimized(
+                        [threadblock_shape[2], threadblock_shape[1]],
+                        element_b, self.threadmap_b,
+                        stride_support, self.access_type_b
+                    )
+                elif conv_kind == cutlass.conv.Operator.wgrad:
+                    self.iterator_b = Conv2dWgradActivationTileAccessIteratorOptimized(
+                        [threadblock_shape[2], threadblock_shape[1]],
+                        element_b, self.threadmap_b,
+                        self.access_type_b
+                    )
             else:
                 raise ValueError
             if stages == 2:
@@ -337,10 +530,16 @@ class DefaultConv2dFprop:
 
             self.partition_k = threadblock_shape[2] // warp_shape[2]
 
-            self.epilogue = DefaultEpilogueTensorOp(
-                threadblock_shape, self.warp_mma_tensor_op, self.partition_k,
-                element_c, alignment_c
-            )
+            if conv_kind == cutlass.conv.Operator.dgrad and stride_support == StrideSupport.Strided:
+                self.epilogue = DefaultEpilogueTensorOpStridedDgrad(
+                    threadblock_shape, self.warp_mma_tensor_op, self.partition_k,
+                    element_c, alignment_c
+                )
+            else:
+                self.epilogue = DefaultEpilogueTensorOp(
+                    threadblock_shape, self.warp_mma_tensor_op, self.partition_k,
+                    element_c, alignment_c
+                )
 
             self.kernel = ImplicitGemmConvolution(
                 self.mma, self.epilogue, cutlass.conv.Operator.fprop
@@ -355,6 +554,9 @@ class DefaultConv2dFprop:
         self.iterator_b.can_implement(problem_size)
 
 
+# TODO: Dgrad Strided requires special swizzling functor:
+# threadblock::StridedDgradIdentityThreadblockSwizzle<1/4/8>
+
 if __name__ == "__main__":
 
     problem_size = cutlass.conv.Conv2dProblemSize(
@@ -367,12 +569,12 @@ if __name__ == "__main__":
         1, 1
     )
 
-    rule = DefaultConv2dFprop(
+    rule = DefaultConv2d(
         cutlass.float16, cutlass.TensorNHWC,
         cutlass.float16, cutlass.TensorNHWC,
         cutlass.float16, cutlass.TensorNHWC,
-        cutlass.float32, cutlass.OpClass.TensorOp, [128, 64, 32], [64, 32, 32],
-        [16, 8, 16], 2, cutlass.conv.IteratorAlgorithm.fixed_channels,
+        cutlass.float32, cutlass.OpClass.TensorOp, [64, 32, 64], [32, 32, 64],
+        [16, 8, 16], 3, cutlass.conv.IteratorAlgorithm.fixed_channels,
         4, 4, 8, problem_size
     )
     print(rule)

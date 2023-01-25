@@ -76,7 +76,15 @@ suffix_dict = {
     torch.ops.aten.embedding_dense_backward.default: torch.ops.aten.embedding_dense_backward,
     torch.ops.aten.relu.default: torch.ops.aten.relu,
     torch.ops.aten.sigmoid.default: torch.ops.aten.sigmoid,
-    torch.ops.aten.threshold_backward.default: torch.ops.aten.threshold_backward
+    torch.ops.aten.threshold_backward.default: torch.ops.aten.threshold_backward,
+    torch.ops.aten.convolution.default: torch.ops.aten.convolution,
+    torch.ops.aten.native_batch_norm_backward.default: torch.ops.aten.native_batch_norm_backward,
+    torch.ops.aten.native_batch_norm.default: torch.ops.aten.native_batch_norm,
+    torch.ops.aten.relu_.default: torch.ops.aten.relu,
+    torch.ops.aten.add_.Tensor: torch.ops.aten.add,
+    torch.ops.aten.mean.dim: torch.ops.aten.mean,
+    torch.ops.aten.native_batch_norm_backward.default: torch.ops.aten.native_batch_norm_backward,
+    torch.ops.aten.convolution_backward.default: torch.ops.aten.convolution_backward
 }
 
 def pass_suffix_elimination(module, graph):

@@ -422,6 +422,48 @@ class IterVarHyperGraph:
             if valid_iters[key] is not None:
                 permute.append(valid_iters[key])
         return list(np.argsort(permute))
+    
+    def get_tensor_type_nchw(self):
+        iter_vars = self.get_iter_vars()
+
+        valid_iters = {
+            "m.0.0": None,
+            "n": None,
+            "m.0.1": None,
+            "m.1": None
+        }
+
+        try:
+            for iter_var in iter_vars:
+                if iter_var.extent > 1:
+                    if "m.0.0" in iter_var.name:
+                        valid_iters['m.0.0'] = iter_var
+                    elif "n" in iter_var.name:
+                        valid_iters['n'] = iter_var
+                    elif "m.0.1" in iter_var.name:
+                        valid_iters['m.0.1'] = iter_var
+                    elif "m.1" in iter_var.name:
+                        valid_iters['m.1'] = iter_var
+                    else:
+                        self.print_iter_vars()
+                        raise NotImplementedError()
+            # get tensor type
+            if valid_iters['m.0.0'] is None and valid_iters['n'] is None and valid_iters['m.0.1'] is None and valid_iters['m.1'] is None:
+                type = "scalar"
+            elif valid_iters['m.0.0'] is None and valid_iters['m.0.1'] is None and valid_iters['m.1'] is None and valid_iters['n'] is not None:
+                type = "row"
+            elif valid_iters['m.0.0'] is not None and valid_iters['m.0.1'] is not None and valid_iters['m.1'] is not None and valid_iters['n'] is None:
+                type = "column"
+            elif valid_iters['m.0.0'] is not None and valid_iters['m.0.1'] is not None and valid_iters['m.1'] is not None and valid_iters['n'] is not None:
+                type = "tensor"
+            else:
+                raise NotImplementedError()
+
+            return type
+        except NotImplementedError:
+            # TODO: this is not always true
+            return "tensor"
+        
 
     def get_tensor_type(self):
         iter_vars = self.get_iter_vars()
@@ -614,7 +656,7 @@ class IterVarHyperGraph:
             if 'tensor' in input.meta.keys(): return
             new_graph.get_index(0)
             input.meta['tensor'] = new_graph
-        elif node.target in [torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data, torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward, torch.ops.aten.convolution]:
+        elif node.target in [torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data, torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward, torch.ops.aten.convolution, torch.nn.grad.conv2d_input, torch.nn.grad.conv2d_weight]:
             raise NotImplementedError()
         else:
             raise NotImplementedError()

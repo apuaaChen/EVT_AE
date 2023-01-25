@@ -22,10 +22,11 @@ from nodes import *
 ################################################################################
 # TODO: the general substitution doesn't work for these cases
 
-def pass_composed_op_breakdown(module, graph):
+def pass_composed_op_breakdown(module, graph, disabled_list=[]):
     softmax_node = None
     for node in graph.nodes:
         if node.op == "call_function":
+            if node.target in disabled_list: continue
             if node.target == torch.ops.aten._log_softmax:
                 # break it down into softmax and log
                 softmax_node = inject_softmax(
@@ -79,6 +80,44 @@ def pass_composed_op_breakdown(module, graph):
                 ne_node = inject_ne(node, graph, threshold_output, threshold)
                 mul_node = inject_mul(ne_node, graph, grad_Y, ne_node)
                 node.replace_all_uses_with(mul_node)
-            
+            elif node.target == torch.ops.aten.convolution_backward:
+                print(node.args)
+                print(node.users)
+                grad_output, input, weight, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, output_mask = node.args
+                n, c, h, w = input.meta["tensor_meta"].shape
+                k, c_, r, s = weight.meta["tensor_meta"].shape
+                assert c == c_
+                # inject dgrad node 
+                if output_mask[0] and output_mask[1]:
+                    dgrad_output = list(node.users.keys())[0]
+                    wgrad_output = list(node.users.keys())[1]
+                elif (not output_mask[0]) and output_mask[1]:
+                    dgrad_output = None
+                    wgrad_output = list(node.users.keys())[0]
+                elif output_mask[0] and (not output_mask[1]):
+                    dgrad_output = list(node.users.keys())[0]
+                    wgrad_output = None
+                else:
+                    raise NotImplementedError
+                
+                if dgrad_output is not None:
+                    dgrad_args = [
+                        (n, c, h, w), weight, grad_output, stride, padding, dilation, groups
+                    ]
+                    graph.inserting_after(node)
+                    dgrad_node = graph.call_function(torch.nn.grad.conv2d_input, args=tuple(dgrad_args))
+                    dgrad_node.meta["tensor_meta"] = dgrad_output.meta["tensor_meta"]._replace()
+                    dgrad_output.replace_all_uses_with(dgrad_node)
+                
+                if wgrad_output is not None:
+                    wgrad_args = [
+                        input, (k, c, r, s), grad_output, stride, padding, dilation, groups
+                    ]
+
+                    graph.inserting_after(node)
+                    wgrad_node = graph.call_function(torch.nn.grad.conv2d_weight, args=tuple(wgrad_args))
+                    wgrad_node.meta["tensor_meta"] = wgrad_output.meta["tensor_meta"]._replace()
+                    wgrad_output.replace_all_uses_with(wgrad_node)
+                
     graph.eliminate_dead_code()
     graph.lint()

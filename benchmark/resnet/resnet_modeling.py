@@ -206,7 +206,7 @@ class ResNet_(nn.Module):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
         
-        self.loss = nn.CrossEntropyLoss(label_smoothing=0.0)
+        self.loss = nn.CrossEntropyLoss(label_smoothing=0.0, reduction="sum")
 
         # Zero-initialize the last BN in each residual branch,
         # so that the residual branch starts with zeros, and each residual block behaves like an identity.

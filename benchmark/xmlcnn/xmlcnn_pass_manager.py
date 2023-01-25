@@ -14,7 +14,7 @@ def pre_partition_optimization(joint_module):
     pass_loss_elimination(joint_module, graph)
 
     # pass: composed op breakdown
-    pass_composed_op_breakdown(joint_module, graph)
+    pass_composed_op_breakdown(joint_module, graph, disabled_list=[torch.ops.aten.convolution_backward,])
 
     # pass: eliminate expand
     pass_eliminate_transparent_node(

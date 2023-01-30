@@ -233,10 +233,13 @@ class ResNet_(nn.Module):
             self.dilation *= stride
             stride = 1
         if stride != 1 or self.inplanes != planes * block.expansion:
-            downsample = nn.Sequential(
-                conv1x1(self.inplanes, planes * block.expansion, stride),
-                norm_layer(planes * block.expansion),
-            )
+            # Currently we cannot handle the norm layer in branch
+            # As it requires an epilogue visitor forest
+            # downsample = nn.Sequential(
+            #     conv1x1(self.inplanes, planes * block.expansion, stride),
+            #     norm_layer(planes * block.expansion),
+            # )
+            downsample = conv1x1(self.inplanes, planes * block.expansion, stride)
 
         layers = []
         layers.append(
@@ -296,6 +299,12 @@ class ResNet(nn.Module):
         super().__init__()
         self.model = ResNet_(block, layers, num_classes, zero_init_residual, groups, width_per_group, replace_stride_with_dilation, norm_layer)
     
+    def to_channels_last(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                weight_shape = m.weight.data.size()
+                m.weight.data = m.weight.data.permute(0, 2, 3, 1).contiguous().view(weight_shape)#.permute(0, 3, 1, 2)
+    
     def aot_optimize(self, fw_compiler, bw_compiler, partition_fn):
         self.model = aot_module(
             self.model, fw_compiler=fw_compiler, 
@@ -303,3 +312,40 @@ class ResNet(nn.Module):
     
     def forward(self, x, y):
         return self.model(x, y)
+    
+    def capture_graph(self, input_size, optimizer, warmup_iteration=3):
+        device = next(self.parameters()).device
+        # self.model = self.model.to(memory_format=torch.channels_last)
+        self.static_x = torch.randn(size=input_size, dtype=torch.float16, device="cuda")#.permute(0, 3, 1, 2)#.to(memory_format=torch.channels_last)
+        self.static_y = torch.randint(low=0, high=1000, size=(input_size[0],), dtype=torch.int64, device="cuda")
+
+        # warmup iterations
+        s = torch.cuda.Stream(priority=-1)
+        s.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(s):
+            for _ in range(warmup_iteration):
+                optimizer.zero_grad()
+                loss = self.model(self.static_x, self.static_y) * 1e+4
+                loss.backward()
+        
+        torch.cuda.current_stream().wait_stream(s)
+
+        self.static_x = torch.randn(size=input_size, dtype=torch.float16, device="cuda")#.permute(0, 3, 1, 2)#.to(memory_format=torch.channels_last)
+        self.static_y = torch.randint(low=0, high=1000, size=(input_size[0],), dtype=torch.int64, device="cuda")
+
+        # tracing iterations
+        self.encoder_graph = torch.cuda.CUDAGraph()
+        optimizer.zero_grad()
+        with torch.cuda.graph(self.encoder_graph):
+            s = torch.cuda.Stream(priority=-1)
+            s.wait_stream(torch.cuda.current_stream())
+            loss = self.model(self.static_x, self.static_y) * 1e+4
+            loss.backward()
+            torch.cuda.current_stream().wait_stream(s)
+
+    
+    def train_with_graph(self, x, y):
+        self.static_x.copy_(x)
+        self.static_y.copy_(y)
+
+        self.encoder_graph.replay()

@@ -210,7 +210,10 @@ class FusedConv2d:
         # permute the input as they are under the HCHW layout
         # cl stands for channel last
         input_cl = input.permute(0, 2, 3, 1).contiguous()
-        weight_cl = weight.permute(0, 2, 3, 1).contiguous()
+
+        # we permute it before training
+        # weight_cl = weight.permute(0, 2, 3, 1).contiguous()
+        weight_cl = weight
 
         kwargs = {"problem_size": self.implicit_mn}
         for output_node in self.kernel_outputs:
@@ -363,7 +366,7 @@ class FusedConv2dDgrad:
             swizzling_functor = getattr(cutlass, "IdentitySwizzle%d"%int(pow(2, log_swizzle)))
             stride_support = StrideSupport.Unity
         else:
-            swizzling_functor = getattr(cutlass, "StridedDgradIdentityThreadblockSwizzle%d"%int(pow(2, log_swizzle)))
+            swizzling_functor = getattr(cutlass, "StridedDgradIdentitySwizzle%d"%int(pow(2, log_swizzle)))
             stride_support = StrideSupport.Strided
 
         tile_description = TileDescription(
@@ -400,7 +403,10 @@ class FusedConv2dDgrad:
         # permute the input as they are under the HCHW layout
         # cl stands for channel last
         grad_output_cl = grad_output.permute(0, 2, 3, 1).contiguous()
-        weight_cl = weight.permute(0, 2, 3, 1).contiguous()
+        
+        # we permute it before training
+        # weight_cl = weight.permute(0, 2, 3, 1).contiguous()
+        weight_cl = weight
 
         kwargs = {"problem_size": self.implicit_mn}
         for output_node in self.kernel_outputs:
@@ -411,7 +417,7 @@ class FusedConv2dDgrad:
                     device="cuda"
                 )
             else:
-                kwargs["output_" + output_node.name] = torch.zeros(
+                kwargs["output_" + output_node.name] = torch.empty(
                     size=output_node.meta['tensor_meta'].shape,
                     dtype=output_node.meta['tensor_meta'].dtype,
                     device="cuda"
@@ -447,21 +453,21 @@ class FusedConv2dDgrad:
 
 
 class FusedConv2dWgrad:
-    __name__ = "cutlass_conv2d_wgrad_with_visitor"
+    # we use the standalone conv2d wgrad kernels
+    __name__ = "cutlass_conv2d_wgrad"
     def __init__(self, node) -> None:
+        raise DeprecationWarning("This module has low performance")
         assert node.target == torch.nn.grad.conv2d_weight
         self.node = node
 
-        grad_output = node.args[0]
-        input = node.args[1]
-        weight = node.args[2]
+        input = node.args[0]
+        K, C, R, S = node.args[1]
+        grad_output = node.args[2]
+        stride = node.args[3]
+        padding = node.args[4]
+        dilation = node.args[5]
 
-        stride = node.args[4]
-        padding = node.args[5]
-        dilation = node.args[6]
-
-        N, C, H, W = list(input.meta["tensor_meta"].shape)
-        K, C_, R, S = list(weight.meta["tensor_meta"].shape)
+        N, C_, H, W = list(input.meta["tensor_meta"].shape)
 
         assert C_ == C
 
@@ -504,16 +510,6 @@ class FusedConv2dWgrad:
             D.element, D.alignment, math_inst.element_accumulator, element_epilogue
         )
 
-        # Creating the epilogue visitor tree
-        self.epilogue_functor = EpilogueVisitTreeDAG(
-            elementwise_functor=epilogue_functor,
-            element_accumulator=math_inst.element_accumulator,
-            elements_per_access=D.alignment,
-            element_compute=cutlass.float32, element_output=D.element
-        )
-
-        self.epilogue_functor.initialize(node)
-
         self.problem_size = cutlass.conv.Conv2dProblemSize(
             cutlass.Tensor4DCoord(N, H, W, C),
             cutlass.Tensor4DCoord(K, R, S, C),
@@ -524,15 +520,16 @@ class FusedConv2dWgrad:
             1, 1
         )
 
-        self.conv_descriptor_wgrad = ConvConfigDescriptor(
+        self.conv_descriptor = ConvConfigDescriptor(
             problem_size=self.problem_size, element_a=element_a,
             element_b=element_b, element_c=element_c, 
             element_accumulator=element_acc, alignment_a=align_a,
             alignment_b=align_b, alignment_c=align_c, 
-            conv_kind=cutlass.conv.Operator.wgrad
+            conv_kind=cutlass.conv.Operator.wgrad, split_k_mode="Serial",
+            autotuning_rounds=30
         )
 
-        best_config = autotuner(self.conv_descriptor_wgrad)
+        best_config = autotuner(self.conv_descriptor)
 
         print(best_config)
 
@@ -558,76 +555,51 @@ class FusedConv2dWgrad:
 
         iterator_algorithm = self.conv_descriptor.heuristic.available_iterator_algorithms[best_config["iterator_algorithm"]]
         
-        conv_kind = cutlass.conv.Operator.dgrad
+        conv_kind = cutlass.conv.Operator.wgrad
 
         self.operation = Conv2dOperation(
             conv_kind, iterator_algorithm,
             80, tile_description, A, B, D, stride_support,
-            self.epilogue_functor, swizzling_functor, visitor=True
+            epilogue_functor, swizzling_functor, visitor=False
         )
 
         pycutlass.compiler.add_module([self.operation,])
 
-        self.output_shape = (K, R, S, C)
+        self.output_shape = (K, C, R, S)
         self.implicit_mn = [K * R * S, C]
         self.output_numel = K * R * S * C
 
-        self.args = self.epilogue_functor.args + [grad_output, weight]
-        self.outputs = self.epilogue_functor.outputs
-        self.kernel_outputs = self.epilogue_functor.kernel_outputs
-        self.output_2_kernel_output = self.epilogue_functor.output_2_kernel_output
+        self.args = [grad_output, input]
     
     def __call__(self, *args):
+        raise DeprecationWarning("This module has low performance")
         grad_output = args[-2]  # N, K, P, Q
-        grad_input = args[-1]  # N, H, W, C
+        input = args[-1]  # N, H, W, C
 
         # permute the input as they are under the HCHW layout
         # cl stands for channel last
         grad_output_cl = grad_output.permute(0, 2, 3, 1).contiguous()
-        grad_input_cl = grad_input.permute(0, 2, 3, 1).contiguous()
+        input_cl = input.permute(0, 2, 3, 1).contiguous()
 
-        kwargs = {"problem_size": self.implicit_mn}
-        for output_node in self.kernel_outputs:
-            if output_node.target in [torch.ops.aten.sum]:
-                kwargs["output_" + output_node.name] = torch.zeros(
-                    size=output_node.meta['tensor_meta'].shape,
-                    dtype=output_node.meta['tensor_meta'].dtype,
-                    device="cuda"
-                )
-            else:
-                kwargs["output_" + output_node.name] = torch.empty(
-                    size=output_node.meta['tensor_meta'].shape,
-                    dtype=output_node.meta['tensor_meta'].dtype,
-                    device="cuda"
-                )
-        
-        for idx, epilogue_arg in enumerate(self.epilogue_functor.args):
-            kwargs[epilogue_arg.name] = args[idx]
-        
-        output_op = self.operation.epilogue_type(**kwargs)
+        grad_weight_cl = torch.empty(
+            size=self.output_shape, dtype=torch.float16,
+            device="cuda"
+        )
 
         # tensor_D = torch.empty(size=self.output_shape, dtype=torch.float16, device="cuda")
 
         arguments = Conv2dArguments(
             self.operation, self.problem_size,
-            A=grad_output_cl, B=grad_input_cl, C=grad_output_cl, D=grad_output_cl,
-            output_op=output_op,
+            A=grad_output_cl, B=input_cl, C=grad_weight_cl, D=grad_weight_cl,
+            output_op=self.operation.epilogue_type(1.0, 0.0),
             split_k_mode=cutlass.conv.SplitKMode.Serial,
-            split_k_slices=1
+            split_k_slices=self.split_k_slices
         )
         stream = torch.cuda.current_stream()
 
         self.operation.run(arguments, stream=stream.cuda_stream)
 
-        results = []
-        for output_node in self.outputs:
-            output_tensor = kwargs["output_" + self.output_2_kernel_output[output_node].name].view(output_node.meta["tensor_meta"].shape)
-            if output_tensor.numel() == self.output_numel:
-                results.append(output_tensor.view(self.output_shape).permute(0, 3, 1, 2))#.contiguous())
-            else:
-                results.append(output_tensor)
-
-        return results
+        return grad_weight_cl#.permute(0, 3, 1, 2).contiguous()
 
 
 class FusedBNForward:
@@ -777,7 +749,7 @@ def pass_conv_fusion(module, graph, verbose=True):
                 conv_idx += 1
             
             elif node.target == torch.nn.grad.conv2d_input:
-                if conv_dgrad_idx >= 1: continue
+                if conv_dgrad_idx >= 19: continue  # conv_dgrad_2 is wrong
                 update_topological_index(graph)
                 fused_conv_dgrad = FusedConv2dDgrad(node)
                 inserting_point = node
@@ -800,27 +772,28 @@ def pass_conv_fusion(module, graph, verbose=True):
                 
                 conv_dgrad_idx += 1
             
-            elif node.target == torch.nn.grad.conv2d_weight:
-                if conv_wgrad_idx >= 0: continue
-                update_topological_index(graph)
-                fused_conv_wgrad = FusedConv2dWgrad(node)
-                inserting_point = node
+            # elif node.target == torch.nn.grad.conv2d_weight:
+            #     if conv_wgrad_idx >= 20: continue
+            #     update_topological_index(graph)
+            #     fused_conv_wgrad = FusedConv2dWgrad(node)
+            #     inserting_point = node
 
-                graph.inserting_after(inserting_point)
-                fused_node_wgrad = graph.call_function(fused_conv_wgrad, args=tuple(node.args))
-                fused_node_wgrad.meta = {}
-                fused_node_wgrad.meta['tensor_meta'] = fused_conv_wgrad.epilogue_functor.root.meta['tensor_meta']._replace()
-                node.users[1].replace_all_uses_with(fused_node_wgrad)
-                erase_node_recursive(graph, node.users[1])
+            #     graph.inserting_after(inserting_point)
+            #     fused_node_wgrad = graph.call_function(fused_conv_wgrad, args=tuple(fused_conv_wgrad.args))
+            #     fused_node_wgrad.meta = {}
+            #     fused_node_wgrad.meta['tensor_meta'] = node.meta['tensor_meta']._replace()
+            #     node.replace_all_uses_with(fused_node_wgrad)
+            #     erase_node_recursive(graph, node)
 
-                graph.inserting_after(fused_node_wgrad)
-                for idx, output_node in enumerate(fused_conv_wgrad.outputs):
-                    get_item_node = graph.call_function(operator.getitem, args=(fused_node_wgrad, idx))
-                    get_item_node.meta["tensor_meta"] = output_node.meta["tensor_meta"]._replace()
-                    get_item_node.meta["unfusible"] = True
-                    graph.inserting_after(get_item_node)
-                    output_node.replace_all_uses_with(get_item_node)
-                    erase_node_recursive(graph, output_node)
+            #     # graph.inserting_after(fused_node_wgrad)
+            #     # for idx, output_node in enumerate(fused_conv_wgrad.outputs):
+            #     #     get_item_node = graph.call_function(operator.getitem, args=(fused_node_wgrad, idx))
+            #     #     get_item_node.meta["tensor_meta"] = output_node.meta["tensor_meta"]._replace()
+            #     #     get_item_node.meta["unfusible"] = True
+            #     #     graph.inserting_after(get_item_node)
+            #     #     output_node.replace_all_uses_with(get_item_node)
+            #     #     erase_node_recursive(graph, output_node)
+            #     conv_wgrad_idx += 1
 
             
             elif node.target == torch.ops.aten.native_batch_norm.default:
@@ -861,7 +834,7 @@ def pass_conv_fusion(module, graph, verbose=True):
                 bn_fp_idx += 1
             
             elif node.target == torch.ops.aten.native_batch_norm_backward:
-                if bn_bp_idx >= 2: continue
+                if bn_bp_idx >= 16: continue
                 print("=========================================================")
                 print(node)
 

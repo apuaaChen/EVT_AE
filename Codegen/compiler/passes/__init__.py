@@ -34,3 +34,7 @@ from passes.stream_manager import pass_assign_stream
 from passes.trans_2_permute import pass_trans_2_permute
 from passes.mark_epilogue_permute import pass_mark_epilogue_permutations
 from passes.instruction_reorder import pass_instruction_reorder
+from passes.weight_grad_tuner import pass_weight_gradient_tuner
+from passes.conv_fusion import pass_conv_fusion
+from passes.batch_norm_preprocessing import pass_batchnorm_preprocessing
+from passes.layout_transform import pass_nchw_to_nhwc

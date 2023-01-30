@@ -6,7 +6,8 @@ import pycutlass
 from pycutlass.test.profiler import GpuTimer
 
 class ConfigDescriptor:
-    def __init__(self) -> None:
+    def __init__(self, autotuning_rounds=15) -> None:
+        self.autotuning_rounds = autotuning_rounds
         self.arg_key = {
             cutlass.float16: "f16",
             cutlass.bfloat16: "bf16",
@@ -43,9 +44,9 @@ class GemmConfigDescriptor(ConfigDescriptor):
     OP_NAME = "GEMM"
     def __init__(self, problem_size, element_a, layout_a, element_b, layout_b,
         element_c, layout_c, element_accumulator, alignment_a, alignment_b,
-        alignment_c, split_k_mode="None") -> None:
+        alignment_c, split_k_mode="None", autotuning_rounds=15) -> None:
         #
-        super().__init__()
+        super().__init__(autotuning_rounds)
 
         self.problem_description = {
             "element_a": element_a,
@@ -296,9 +297,9 @@ class BatchedGemmConfigDescriptor(ConfigDescriptor):
     OP_NAME = "BGEMM"
     def __init__(self, problem_size, element_a, layout_a, element_b, layout_b,
         element_c, layout_c, element_accumulator, alignment_a, alignment_b,
-        alignment_c, permute_a, permute_b) -> None:
+        alignment_c, permute_a, permute_b, autotuning_rounds=15) -> None:
         #
-        super().__init__()
+        super().__init__(autotuning_rounds)
 
         self.problem_description = {
             "element_a": element_a,
@@ -465,19 +466,23 @@ class ConvConfigDescriptor(ConfigDescriptor):
     OP_NAME = "CONV"
     def __init__(self, problem_size, element_a, element_b, element_c,
         element_accumulator, alignment_a, alignment_b, alignment_c,
-        split_k_mode="None", conv_kind = cutlass.conv.Operator.fprop) -> None:
+        split_k_mode="None", conv_kind = cutlass.conv.Operator.fprop, 
+        autotuning_rounds=15) -> None:
         #
-        super().__init__()
+        super().__init__(autotuning_rounds)
 
         self.conv_kind = conv_kind
         self.problem_size = problem_size
+        self.autotuning_rounds = autotuning_rounds
 
         if self.conv_kind == cutlass.conv.Operator.fprop:
             conv_kind_str = "fprop"
         elif self.conv_kind == cutlass.conv.Operator.dgrad:
-            conv_kind_str = "dgrad_"
+            conv_kind_str = "dgrad_4"
         elif self.conv_kind == cutlass.conv.Operator.wgrad:
-            conv_kind_str = "wgrad_"
+            conv_kind_str = "wgrad_t2"
+        
+        self.autotuning_rounds = autotuning_rounds
         
 
         self.problem_size_list = [
@@ -607,7 +612,7 @@ class ConvConfigDescriptor(ConfigDescriptor):
                 stride_support = StrideSupport.Unity
             else:
                 swizzling_functor = getattr(
-                    cutlass, "StridedDgradIdentityThreadblockSwizzle%d"%int(pow(2, config["log_swizzle"]))
+                    cutlass, "StridedDgradIdentitySwizzle%d"%int(pow(2, config["log_swizzle"]))
                 )
         
         
@@ -663,12 +668,14 @@ class ConvConfigDescriptor(ConfigDescriptor):
         tensor_B = torch.empty(size=(tensor_B_size,), dtype=torch.float16, device="cuda")
         tensor_C = torch.empty(size=(tensor_C_size,), dtype=torch.float16, device="cuda")
 
+        self.problem_size.split_k_slices = config["split_k_slices"]
+
         arguments = Conv2dArguments(
             operation, self.problem_size,
             A=tensor_A, B=tensor_B, C=tensor_C, D=tensor_C,
             output_op=operation.epilogue_type(1.0, 0.0),
             split_k_mode=cutlass.conv.SplitKMode.Serial,
-            split_k_slices=1
+            split_k_slices=config["split_k_slices"]
         )
 
         # warmup iterations

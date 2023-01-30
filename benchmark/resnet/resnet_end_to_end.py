@@ -50,13 +50,6 @@ model, optimizer = amp.initialize(
 )
 model.train()
 optimizer.zero_grad()
-# for i in range(10):
-#     with nvtx.annotate("nchw"):
-#         loss_1 = model(x, y)
-#         loss_1.backward()
-
-# for i in range(10):
-#     with nvtx.annotate("nchw"):
 loss_1 = model(x, y) * 1e+4
 loss_1.backward()
 
@@ -75,38 +68,51 @@ model_fused, optimizer_fused = amp.initialize(
 )
 
 model_fused.train()
-# model_fused = model_fused.to(memory_format=torch.channels_last)
+model_fused.to_channels_last()
 model_fused.aot_optimize(compiler_fn, compiler_fn, partition_func)
-# model_fused = model_fused.to(memory_format=torch.channels_last)
+# 
+model_fused.capture_graph((batch_size, 4, 224, 224), optimizer_fused)
 
 optimizer_fused.zero_grad()
-# loss = model_fused(x.to(memory_format=torch.channels_last), y)
-loss = model_fused(x, y) * 1e+4
-loss.backward()
+model_fused.train_with_graph(x, y)
 
 torch.cuda.synchronize()
 
 # if args.mode == "verify":
 for param1, param2 in zip(list(model.named_parameters()), list(model_fused.named_parameters())):
-    print(torch.sum(torch.isclose(param1[1].grad, param2[1].grad, rtol=3e-1)) / param2[1].grad.numel())
+    grad_origin = param1[1].grad
+    if len(grad_origin.size()) == 4:
+        K, C, R, S = grad_origin.size()
+        grad_fused = param2[1].grad.view(K, R, S, C).permute(0, 3, 1, 2).contiguous()
+    else:
+        grad_fused = param2[1].grad.contiguous()
+    print(torch.sum(torch.isclose(grad_origin, grad_fused, rtol=3e-1)) / grad_origin.numel())
     try:
-        assert torch.sum(torch.isclose(param1[1].grad, param2[1].grad, rtol=3e-1)) / param2[1].grad.numel() > 0.7
+        assert torch.sum(torch.isclose(grad_origin, grad_fused, rtol=3e-1)) / grad_origin.numel() > 0.7
     except:
         print(param1[0])
-        print(param1[1].grad.view(-1))
-        print(param2[1].grad.view(-1))
+        print(grad_origin.view(-1))
+        print(grad_fused.view(-1))
 
 # for profiling
 model = model.to(memory_format=torch.channels_last)
 x = x.to(memory_format=torch.channels_last)
 
 for i in range(10):
-    with nvtx.annotate("nhwc"):
-        loss_1 = model(x, y) * 1e+4
-        loss_1.backward()
+    loss_1 = model(x, y) * 1e+4
+    loss_1.backward()
 
-x_nhwc = x
+with nvtx.annotate("nhwc_40"):
+    for i in range(40):
+        with nvtx.annotate("nhwc"):
+            loss_1 = model(x, y) * 1e+4
+            loss_1.backward()
+
+x_nhwc = x.contiguous()
 for i in range(10):
-    with nvtx.annotate("ours"):
-        loss = model_fused(x_nhwc.contiguous(), y) * 1e+4
-        loss.backward()
+    model_fused.train_with_graph(x_nhwc, y)
+
+with nvtx.annotate("ours_40"):
+    for i in range(40):
+        with nvtx.annotate("ours"):
+            model_fused.train_with_graph(x_nhwc, y)

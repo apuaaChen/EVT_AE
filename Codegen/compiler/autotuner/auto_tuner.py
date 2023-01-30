@@ -7,7 +7,7 @@ from autotuner.design_space_descriptor import GemmConfigDescriptor
 # Number of Features
 NUM_FEATURES = 15
 
-def module_profiler(module, input_nodes, tangents, profile_iter=10):
+def module_profiler(module, input_nodes, tangents, profile_iter=40):
     module.recompile()
     for _ in range(10):
         module(input_nodes, tangents)
@@ -51,7 +51,7 @@ def sample_parameters_with_ML(heuristics, num_samples, model, problem_size, chec
     timeout = 0
     # sample 10 times more samples
     while len(sampled_parameters) < num_samples*10:
-        if timeout >= 1000:
+        if timeout >= 300:
             break
         parameter = heuristics.propose_valid_parameters()
         parameter_str = str(parameter)
@@ -125,7 +125,7 @@ class Autotuner:
         best_latency = 1e+16
         checked_configs = set({})
 
-        for round_idx in range(self.autotuning_rounds):
+        for round_idx in range(config_descriptor.autotuning_rounds):
             if self.cold:
                 sampled_parameters = sample_parameters_without_ML(
                     heuristics, 

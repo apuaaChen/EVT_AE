@@ -81,8 +81,6 @@ def pass_composed_op_breakdown(module, graph, disabled_list=[]):
                 mul_node = inject_mul(ne_node, graph, grad_Y, ne_node)
                 node.replace_all_uses_with(mul_node)
             elif node.target == torch.ops.aten.convolution_backward:
-                print(node.args)
-                print(node.users)
                 grad_output, input, weight, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, output_mask = node.args
                 n, c, h, w = input.meta["tensor_meta"].shape
                 k, c_, r, s = weight.meta["tensor_meta"].shape
@@ -110,14 +108,40 @@ def pass_composed_op_breakdown(module, graph, disabled_list=[]):
                     dgrad_output.replace_all_uses_with(dgrad_node)
                 
                 if wgrad_output is not None:
-                    wgrad_args = [
-                        input, (k, c, r, s), grad_output, stride, padding, dilation, groups
-                    ]
+                    if dgrad_output is not None:
+                        # wgrad_args = [
+                        #     input, (k, c, r, s), grad_output, stride, padding, dilation, groups
+                        # ]
+                        # graph.inserting_after(node)
+                        # wgrad_node = graph.call_function(torch.nn.grad.conv2d_weight, args=tuple(wgrad_args))
+                        # wgrad_node.meta["tensor_meta"] = wgrad_output.meta["tensor_meta"]._replace()
+                        # wgrad_output.replace_all_uses_with(wgrad_node)
+                        
+                        # We use the pytorch naive wgrad kernel for now
+                        # As there is no fusion requirement in the wgrad kernel
+                        # And seems that pytorch's implementation runs faster
+                        # Uncomment above if pycutlass implementation is prefered
+                        def nhwc_wgrad_only(grad_output, input, weight, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, output_mask):
+                            k, c, s, r = weight.size()
+                            weight_permuted = weight.view(k, r, s, c).permute(0, 3, 1, 2)
+                            weight_grad = torch.ops.aten.convolution_backward(grad_output, input, weight_permuted, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, output_mask)[1]
+                            weight_grad = weight_grad.permute(0, 2, 3, 1).view(k, c, r, s)
+                            return weight_grad
 
-                    graph.inserting_after(node)
-                    wgrad_node = graph.call_function(torch.nn.grad.conv2d_weight, args=tuple(wgrad_args))
-                    wgrad_node.meta["tensor_meta"] = wgrad_output.meta["tensor_meta"]._replace()
-                    wgrad_output.replace_all_uses_with(wgrad_node)
+                        graph.inserting_after(node)
+                        wgrad_node = graph.call_function(nhwc_wgrad_only, args=(grad_output, input, weight, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, [False, True, False]))
+                        wgrad_node.meta["tensor_meta"] = wgrad_output.meta["tensor_meta"]._replace()
+                        wgrad_output.replace_all_uses_with(wgrad_node)
+                    else:
+                        # transfer the function to nhwc
+                        def nhwc_wgrad_only(grad_output, input, weight, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, output_mask):
+                            k, c, s, r = weight.size()
+                            weight_permuted = weight.view(k, r, s, c).permute(0, 3, 1, 2)
+                            weight_grad = torch.ops.aten.convolution_backward(grad_output, input, weight_permuted, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, output_mask)[1]
+                            weight_grad = weight_grad.permute(0, 2, 3, 1).view(k, c, r, s)
+                            return [None, weight_grad, None]
+                        
+                        node.target = nhwc_wgrad_only
                 
     graph.eliminate_dead_code()
     graph.lint()

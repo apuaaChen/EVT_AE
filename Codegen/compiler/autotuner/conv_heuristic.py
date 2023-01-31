@@ -41,15 +41,75 @@ class Conv2dHeuristics(GemmHeuristics):
         ]
     
     def determine_iterator_algorithm(self):
-        # check whether the fixed channel is applicable
-        if self.problem_size.C == self.alignment_a:
-            return 1
-        # not sure which is faster
-        elif self.problem_size.C % self.alignment_a == 0:
-            return random.randint(2, 3)
+        if self.conv_kind == cutlass.conv.Operator.fprop:
+            # check whether the fixed channel is applicable
+            if self.problem_size.C == self.alignment_a:
+                return 1
+            # not sure which is faster
+            elif self.problem_size.C % self.alignment_a == 0:
+                return random.randint(2, 3)
+            else:
+                return 0
+        elif self.conv_kind == cutlass.conv.Operator.dgrad:
+            if self.problem_size.K % self.alignment_a == 0 and self.problem_size.R <= 32 and self.problem_size.S <= 32 and self.problem_size.C % self.alignment_b == 0:
+                return 3
+            else:
+                return 0
+        elif self.conv_kind == cutlass.conv.Operator.wgrad:
+            if self.problem_size.K % self.alignment_a == 0 and self.problem_size.C % self.alignment_b == 0:
+                return 3
+            else:
+                return 0
+
+    def set_parameter_range(self):
+        if self.enable_split_k:
+            max_split_k_slices = 16
         else:
-            return 0
+            max_split_k_slices = 1
+        self.parameter_range = {
+            "max_tiling_size" : 128,
+            "max_stages" : 5,
+            "max_log_swizzling": 3,
+            "max_split_k_slices": max_split_k_slices
+        }
     
+    def propose_split_k_slices(self, block_tiling_size, log_swizzle):
+        # A more flexible way to limit the design space for split_k_slices
+        # This is motivated by the observation that for some special case
+        # like the last wgrad layer in resnet, the "optimal" split_k_slice 
+        # could be 128, yet considering such a large amount of candidates
+        # makes the searching more difficult
+
+        if self.conv_kind == cutlass.conv.Operator.wgrad:
+            max_wavefronts = 15 # obtained from observation
+            # step 1: get the number of m & n tiles
+            swizzling_functor = getattr(cutlass, "IdentitySwizzle%d"%int(pow(2, log_swizzle)))
+            tile_size = cutlass.gemm.GemmCoord(
+                block_tiling_size[0], block_tiling_size[1], block_tiling_size[2]
+            )
+
+            grid_size = swizzling_functor().get_tiled_shape(
+                self.conv_kind, self.problem_size, tile_size, 1
+            )
+
+            num_tile_base = grid_size.m() * grid_size.n()
+            # number of wavefronts before split k
+            num_wavefront_base = (num_tile_base + 79) // 80
+
+            if num_wavefront_base >= max_wavefronts:
+                # no split k is required
+                return 1
+            else:
+                num_wave_front = random.randint(num_wavefront_base, max_wavefronts)
+                # compute the split k based on num_wave_front
+                num_threadblocks = num_wave_front * 80
+                split_k_slices = num_threadblocks // num_tile_base
+                return split_k_slices
+
+        else:
+            # simply return the max split_k slices
+            return random.randint(1, self.parameter_range["max_split_k_slices"])
+
     def propose_parameters(self):
         warp_tiling_size = []
         for i in range(3):
@@ -63,7 +123,8 @@ class Conv2dHeuristics(GemmHeuristics):
         
         num_stages = random.randint(2, self.parameter_range["max_stages"])
         log_swizzle = random.randint(0, self.parameter_range["max_log_swizzling"])
-        split_k_slices = random.randint(1, self.parameter_range["max_split_k_slices"])
+        # split_k_slices = random.randint(1, self.parameter_range["max_split_k_slices"])
+        split_k_slices = self.propose_split_k_slices(block_tiling_size, log_swizzle)
 
         # 0: analytic
         # 1: fixedchannels
@@ -104,7 +165,7 @@ class Conv2dHeuristics(GemmHeuristics):
     def check_dgrad_swizzling(self, parameter):
         if self.conv_kind == cutlass.conv.Operator.dgrad:
             if self.problem_size.stride_h != 1 or self.problem_size.stride_w != 1:
-                if parameter["log_swizzle"] not in [0, 2, 3]:
+                if parameter["log_swizzle"] not in [0,]:
                     return False
         return True
     
@@ -123,12 +184,13 @@ class Conv2dHeuristics(GemmHeuristics):
                 self.alignment_a, self.alignment_b, self.alignment_c, self.problem_size,
                 self.stride_support, self.conv_kind
             )
-        except (AssertionError, ZeroDivisionError):
+        except (AssertionError, ZeroDivisionError) as e:
             return False
         valid = self.check_block_tiling_size_valid(block_tiling_size, parameters["stage"]) \
             and self.check_warp_tiling_size_valid(warp_tiling_size) \
             and self.check_warp_count(warp_tiling_size, block_tiling_size) \
-            and self.check_harmony_block_warp_tiling_size(warp_tiling_size, block_tiling_size)
+            and self.check_harmony_block_warp_tiling_size(warp_tiling_size, block_tiling_size) \
+            and self.check_dgrad_swizzling(parameters)
         return valid
 
 class AlignedArray:
@@ -295,7 +357,8 @@ class Conv2dWgradOutputGradientTileAccessIteratorOptimized:
         assert threadmap.elements_per_access % access_type.elements == 0
     
     def can_implement(self, problem_size):
-        assert problem_size.C % self.access_type.elements == 0
+        # not consistent with cutlass, but seems more make sense
+        assert problem_size.K % self.access_type.elements == 0
 
 
 class Conv2dWgradActivationTileAccessIteratorAnalytic:
@@ -313,7 +376,8 @@ class Conv2dWgradActivationTileAccessIteratorOptimized:
         assert threadmap.elements_per_access % access_type.elements == 0
     
     def can_implement(self, problem_size):
-        assert problem_size.K % self.access_type.elements == 0
+        # not consistent with cutlass, but seems more make sense
+        assert problem_size.C % self.access_type.elements == 0
         
 class ConvTileIterator:
     def __init__(self, iterator) -> None:
@@ -355,6 +419,8 @@ class DefaultEpilogueTensorOpStridedDgrad:
         self.output_tile_iterator = PredicatedTileIteratorStridedDgrad(
             self.output_tile_threadmp, element_C
         )
+
+        # TODO: kFragmentsPerIteration
 
 class DefaultConv2d:
     def __init__(
@@ -409,6 +475,8 @@ class DefaultConv2d:
                     )
                 elif conv_kind == cutlass.conv.Operator.dgrad:
                     assert False
+                elif conv_kind == cutlass.conv.Operator.wgrad:
+                    assert False
             elif iterator_algorithm == cutlass.conv.IteratorAlgorithm.few_channels:
                 if conv_kind == cutlass.conv.Operator.fprop:
                     self.iterator_a = Conv2dFpropActivationTileAccessIteratorFewChannels(
@@ -416,6 +484,8 @@ class DefaultConv2d:
                         layout_a, self.threadmap_a, self.access_type_a
                     )
                 elif conv_kind == cutlass.conv.Operator.dgrad:
+                    assert False
+                elif conv_kind == cutlass.conv.Operator.wgrad:
                     assert False
             elif iterator_algorithm == cutlass.conv.IteratorAlgorithm.optimized:
                 if conv_kind == cutlass.conv.Operator.fprop:
@@ -467,6 +537,8 @@ class DefaultConv2d:
                     )
                 elif conv_kind == cutlass.conv.Operator.dgrad:
                     assert False
+                elif conv_kind == cutlass.conv.Operator.wgrad:
+                    assert False
                 
             elif iterator_algorithm == cutlass.conv.IteratorAlgorithm.few_channels:
                 if conv_kind == cutlass.conv.Operator.fprop:
@@ -476,6 +548,9 @@ class DefaultConv2d:
                     )
                 elif conv_kind == cutlass.conv.Operator.dgrad:
                     assert False
+                elif conv_kind == cutlass.conv.Operator.wgrad:
+                    assert False
+
             elif iterator_algorithm == cutlass.conv.IteratorAlgorithm.optimized:
                 if conv_kind == cutlass.conv.Operator.fprop:
                     self.iterator_b = Conv2dFpropFilterTileAccessIteratorOptimized(

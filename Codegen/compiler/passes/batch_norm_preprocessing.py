@@ -61,7 +61,7 @@ def pass_batchnorm_preprocessing(module, graph):
             # for batch norm backward
             elif node.target == torch.ops.aten.native_batch_norm_backward:
                 # print(node.args)
-                if batch_norm_backward_idx >= 16: continue
+                if batch_norm_backward_idx >= 17: continue
 
                 # inject the epilogue nodes for reduction fusion
                 y_grad, input, gamma, running_mean, running_var, saved_mean, saved_invstd, is_training, epsilon, input_mask = node.args

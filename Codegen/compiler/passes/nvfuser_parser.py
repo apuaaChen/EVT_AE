@@ -2,6 +2,7 @@ import torch
 import operator
 import torch.fx as fx
 from functorch._src.partitioners import _extract_graph_with_inputs_outputs
+from typing import List
 
 
 class NvfuserParser:
@@ -154,6 +155,29 @@ class NvfuserParser:
                 return x_grad.to(torch.float16), grad_y_xhat_sum.to(torch.float16).squeeze(), grad_y_sum.to(torch.float16).squeeze() 
 
             self.node.target = splitted_batch_norm_backward
+        
+        elif self.node.target == torch.ops.aten.max_pool2d_with_indices_backward:
+            # replace max pool2d backward
+            def channel_last_max_pool2d_backward(
+                grad_output: torch.Tensor,
+                input: torch.Tensor,
+                kernel_size: List[int],
+                stride: List[int],
+                padding: List[int],
+                dilation: List[int],
+                ceil_mode: bool,
+                indices: torch.Tensor
+            ):
+                grad_output_nchw = grad_output.permute(0, 3, 1, 2)
+                input_nchw = input.permute(0, 3, 1, 2)
+                indices_nchw = indices.permute(0, 3, 1, 2)
+                grad_input =  torch.ops.aten.max_pool2d_with_indices_backward(
+                    grad_output_nchw, input_nchw, kernel_size, stride, padding, dilation, ceil_mode, indices_nchw
+                )
+                return grad_input.permute(0, 2, 3, 1) # back to nhwc
+            
+            self.node.target = channel_last_max_pool2d_backward
+
         
 
         subgraph = _extract_graph_with_inputs_outputs(module.graph, self.input_nodes, self.outputs)

@@ -834,7 +834,7 @@ def pass_conv_fusion(module, graph, verbose=True):
                 bn_fp_idx += 1
             
             elif node.target == torch.ops.aten.native_batch_norm_backward:
-                if bn_bp_idx >= 16: continue
+                if bn_bp_idx >= 17: continue
                 print("=========================================================")
                 print(node)
 
@@ -863,8 +863,8 @@ def pass_conv_fusion(module, graph, verbose=True):
                 # node.replace_all_uses_with(fused_node)
                 bn_bp_idx += 1
             
-            elif node.target in [torch.ops.aten.expand]:
-                if el_idx >= 1: continue
+            elif node.target in [torch.ops.aten.expand, torch.ops.aten.max_pool2d_with_indices_backward]:
+                if el_idx >= 2: continue
                 print("=================================================")
                 print("Elementwise")
                 update_topological_index(graph)

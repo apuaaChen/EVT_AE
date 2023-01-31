@@ -84,7 +84,8 @@ suffix_dict = {
     torch.ops.aten.add_.Tensor: torch.ops.aten.add,
     torch.ops.aten.mean.dim: torch.ops.aten.mean,
     torch.ops.aten.native_batch_norm_backward.default: torch.ops.aten.native_batch_norm_backward,
-    torch.ops.aten.convolution_backward.default: torch.ops.aten.convolution_backward
+    torch.ops.aten.convolution_backward.default: torch.ops.aten.convolution_backward,
+    torch.ops.aten.max_pool2d_with_indices_backward.default: torch.ops.aten.max_pool2d_with_indices_backward
 }
 
 def pass_suffix_elimination(module, graph):

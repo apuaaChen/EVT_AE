@@ -95,6 +95,18 @@ for param1, param2 in zip(list(model.named_parameters()), list(model_fused.named
         print(grad_fused.view(-1))
 
 # for profiling
+
+for i in range(10):
+    loss_1 = model(x, y) * 1e+4
+    loss_1.backward()
+
+with nvtx.annotate("nchw_40"):
+    for i in range(40):
+        with nvtx.annotate("nchw"):
+            loss_1 = model(x, y) * 1e+4
+            loss_1.backward()
+
+
 model = model.to(memory_format=torch.channels_last)
 x = x.to(memory_format=torch.channels_last)
 

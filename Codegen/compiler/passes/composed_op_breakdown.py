@@ -22,6 +22,29 @@ from nodes import *
 ################################################################################
 # TODO: the general substitution doesn't work for these cases
 
+class nhwcWgradOnly:
+    __name__ = "torch_nhwc_wgrad"
+    def __init__(self) -> None:
+        self.stream = None
+
+    def __call__(self, grad_output, input, weight, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, output_mask):
+        default_stream = torch.cuda.current_stream()
+        if self.stream is not None:
+            self.stream.wait_stream(default_stream)
+            stream = self.stream
+        else:
+            stream = torch.cuda.current_stream()
+        with torch.cuda.stream(stream):
+            k, c, s, r = weight.size()
+            weight_permuted = weight.view(k, r, s, c).permute(0, 3, 1, 2)
+            weight_grad = torch.ops.aten.convolution_backward(grad_output, input, weight_permuted, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, output_mask)[1]
+            weight_grad = weight_grad.permute(0, 2, 3, 1).view(k, c, r, s)
+
+            if self.stream is not None:
+                grad_output.record_stream(self.stream)
+                input.record_stream(self.stream)
+        return weight_grad
+
 def pass_composed_op_breakdown(module, graph, disabled_list=[]):
     softmax_node = None
     for node in graph.nodes:
@@ -121,15 +144,17 @@ def pass_composed_op_breakdown(module, graph, disabled_list=[]):
                         # As there is no fusion requirement in the wgrad kernel
                         # And seems that pytorch's implementation runs faster
                         # Uncomment above if pycutlass implementation is prefered
-                        def nhwc_wgrad_only(grad_output, input, weight, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, output_mask):
-                            k, c, s, r = weight.size()
-                            weight_permuted = weight.view(k, r, s, c).permute(0, 3, 1, 2)
-                            weight_grad = torch.ops.aten.convolution_backward(grad_output, input, weight_permuted, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, output_mask)[1]
-                            weight_grad = weight_grad.permute(0, 2, 3, 1).view(k, c, r, s)
-                            return weight_grad
+                        # def nhwc_wgrad_only(grad_output, input, weight, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, output_mask):
+                        #     k, c, s, r = weight.size()
+                        #     weight_permuted = weight.view(k, r, s, c).permute(0, 3, 1, 2)
+                        #     weight_grad = torch.ops.aten.convolution_backward(grad_output, input, weight_permuted, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, output_mask)[1]
+                        #     weight_grad = weight_grad.permute(0, 2, 3, 1).view(k, c, r, s)
+                        #     return weight_grad
+                        
+                        torch_wgrad_func = nhwcWgradOnly()
 
                         graph.inserting_after(node)
-                        wgrad_node = graph.call_function(nhwc_wgrad_only, args=(grad_output, input, weight, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, [False, True, False]))
+                        wgrad_node = graph.call_function(torch_wgrad_func, args=(grad_output, input, weight, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, [False, True, False]))
                         wgrad_node.meta["tensor_meta"] = wgrad_output.meta["tensor_meta"]._replace()
                         wgrad_output.replace_all_uses_with(wgrad_node)
                     else:

@@ -185,4 +185,8 @@ class NvfuserParser:
         print(fused_module)
 
         return torch.jit.script(fused_module)
+        # Note: it is quite strange that the torchscript here returns nan
+        # in the batch norm forward. uncomment it fix this issue
+        # not sure why it happends
+        # return fused_module
 

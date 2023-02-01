@@ -1,5 +1,5 @@
 import torch
-from resnet_modeling import ResNet, BasicBlock
+from resnet_modeling import ResNet, BasicBlock, Bottleneck
 import sys
 sys.path.append("/workspace/sparseTraining/Codegen/compiler")
 sys.path.append("/workspace/bert")
@@ -13,6 +13,13 @@ pycutlass.get_memory_pool(manager="torch")
 pycutlass.compiler.nvcc()
 import nvtx
 
+import argparse
+parser = argparse.ArgumentParser(description="ResNet End-to-End Training with CUDA Graph")
+parser.add_argument('--depth', '-d', type=int, default=18, help="depth of the resnet")
+parser.add_argument('--mode', '-m', type=str, default="verify", choices=["verify", "profile"])
+args = parser.parse_args()
+
+
 batch_size = 128
 
 x = torch.randn(size=(batch_size, 4, 224, 224), dtype=torch.float16, device="cuda")
@@ -20,8 +27,15 @@ y = torch.randint(low=0, high=1000, size=(batch_size,), dtype=torch.int64, devic
 
 learning_rate = 6e-3
 
-def prepare_model_and_optimizer(device, reference=None):
-    model = ResNet(block=BasicBlock, layers=[2, 2, 2, 2])
+def prepare_model_and_optimizer(device, depth, reference=None):
+    if depth == 18:
+        model = ResNet(block=BasicBlock, layers=[2, 2, 2, 2])
+    elif depth == 50:
+        model = ResNet(block=Bottleneck, layers=[3, 4, 6, 3])
+    elif depth == 101:
+        model = ResNet(block=Bottleneck, layers=[3, 4, 23, 3])
+    else:
+        raise NotImplementedError()
     if reference is not None:
         reference_embedding_state_dict = reference.state_dict()
         model.load_state_dict(reference_embedding_state_dict)
@@ -41,24 +55,22 @@ def prepare_model_and_optimizer(device, reference=None):
 
     return model, optimizer
 
-model, optimizer = prepare_model_and_optimizer("cuda")
+model, optimizer = prepare_model_and_optimizer("cuda", args.depth)
+model = model.to(memory_format=torch.channels_last)
 model, optimizer = amp.initialize(
     model, optimizer, 
     cast_model_outputs=torch.float16, 
-    opt_level="O2", keep_batchnorm_fp32=False, 
+    opt_level="O2", keep_batchnorm_fp32=True, 
     loss_scale="dynamic"
 )
 model.train()
-optimizer.zero_grad()
-loss_1 = model(x, y) * 1e+4
-loss_1.backward()
+model.capture_graph((batch_size, 4, 224, 224), optimizer)
 
-
-
+model.train_with_graph(x, y)
 
 
 ##############################################################################
-model_fused, optimizer_fused = prepare_model_and_optimizer("cuda", reference=model)
+model_fused, optimizer_fused = prepare_model_and_optimizer("cuda", args.depth, reference=model)
 
 model_fused, optimizer_fused = amp.initialize(
     model_fused, optimizer_fused, 
@@ -78,53 +90,38 @@ model_fused.train_with_graph(x, y)
 
 torch.cuda.synchronize()
 
-# if args.mode == "verify":
-for param1, param2 in zip(list(model.named_parameters()), list(model_fused.named_parameters())):
-    grad_origin = param1[1].grad
-    if len(grad_origin.size()) == 4:
-        K, C, R, S = grad_origin.size()
-        grad_fused = param2[1].grad.view(K, R, S, C).permute(0, 3, 1, 2).contiguous()
-    else:
-        grad_fused = param2[1].grad.contiguous()
-    print(torch.sum(torch.isclose(grad_origin, grad_fused, rtol=3e-1)) / grad_origin.numel())
-    try:
-        assert torch.sum(torch.isclose(grad_origin, grad_fused, rtol=3e-1)) / grad_origin.numel() > 0.7
-    except:
-        print(param1[0])
-        print(grad_origin.view(-1))
-        print(grad_fused.view(-1))
+if args.mode == "verify":
+    for param1, param2 in zip(list(model.named_parameters()), list(model_fused.named_parameters())):
+        grad_origin = param1[1].grad.to(torch.float16)
+        if len(grad_origin.size()) == 4:
+            K, C, R, S = grad_origin.size()
+            grad_fused = param2[1].grad.view(K, R, S, C).permute(0, 3, 1, 2).contiguous()
+        else:
+            grad_fused = param2[1].grad.contiguous()
+        print(torch.sum(torch.isclose(grad_origin, grad_fused, rtol=3e-1)) / grad_origin.numel())
+        try:
+            assert torch.sum(torch.isclose(grad_origin, grad_fused, rtol=3e-1)) / grad_origin.numel() > 0.7
+        except:
+            print(param1[0])
+            print(grad_origin.contiguous().view(-1))
+            print(grad_fused.contiguous().view(-1))
 
 # for profiling
+if args.mode == "profile":
 
-for i in range(10):
-    loss_1 = model(x, y) * 1e+4
-    loss_1.backward()
+    for i in range(10):
+        model.train_with_graph(x, y)
 
-with nvtx.annotate("nchw_40"):
-    for i in range(40):
-        with nvtx.annotate("nchw"):
-            loss_1 = model(x, y) * 1e+4
-            loss_1.backward()
+    with nvtx.annotate("nhwc_40"):
+        for i in range(40):
+            with nvtx.annotate("nhwc"):
+                model.train_with_graph(x, y)
 
+    x_nhwc = x.contiguous()
+    for i in range(10):
+        model_fused.train_with_graph(x_nhwc, y)
 
-model = model.to(memory_format=torch.channels_last)
-x = x.to(memory_format=torch.channels_last)
-
-for i in range(10):
-    loss_1 = model(x, y) * 1e+4
-    loss_1.backward()
-
-with nvtx.annotate("nhwc_40"):
-    for i in range(40):
-        with nvtx.annotate("nhwc"):
-            loss_1 = model(x, y) * 1e+4
-            loss_1.backward()
-
-x_nhwc = x.contiguous()
-for i in range(10):
-    model_fused.train_with_graph(x_nhwc, y)
-
-with nvtx.annotate("ours_40"):
-    for i in range(40):
-        with nvtx.annotate("ours"):
-            model_fused.train_with_graph(x_nhwc, y)
+    with nvtx.annotate("ours_40"):
+        for i in range(40):
+            with nvtx.annotate("ours"):
+                model_fused.train_with_graph(x_nhwc, y)

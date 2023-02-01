@@ -75,7 +75,7 @@ class BasicBlock(nn.Module):
         # Both self.conv1 and self.downsample layers downsample the input when stride != 1
         self.conv1 = conv3x3(inplanes, planes, stride)
         self.bn1 = norm_layer(planes)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = nn.ReLU()
         self.conv2 = conv3x3(planes, planes)
         self.bn2 = norm_layer(planes)
         self.downsample = downsample
@@ -131,7 +131,7 @@ class Bottleneck(nn.Module):
         self.bn2 = norm_layer(width)
         self.conv3 = conv1x1(width, planes * self.expansion)
         self.bn3 = norm_layer(planes * self.expansion)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = nn.ReLU()
         self.downsample = downsample
         self.stride = stride
 
@@ -325,7 +325,7 @@ class ResNet(nn.Module):
         with torch.cuda.stream(s):
             for _ in range(warmup_iteration):
                 optimizer.zero_grad()
-                loss = self.model(self.static_x, self.static_y) * 1e+4
+                loss = self.model(self.static_x, self.static_y) * 1e+2
                 loss.backward()
         
         torch.cuda.current_stream().wait_stream(s)
@@ -336,12 +336,14 @@ class ResNet(nn.Module):
         # tracing iterations
         self.encoder_graph = torch.cuda.CUDAGraph()
         optimizer.zero_grad()
-        with torch.cuda.graph(self.encoder_graph):
-            s = torch.cuda.Stream(priority=-1)
-            s.wait_stream(torch.cuda.current_stream())
-            loss = self.model(self.static_x, self.static_y) * 1e+4
-            loss.backward()
-            torch.cuda.current_stream().wait_stream(s)
+        s = torch.cuda.Stream(priority=-1)
+        s.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(s):
+            with torch.cuda.graph(self.encoder_graph):
+                loss = self.model(self.static_x, self.static_y) * 1e+2
+                loss.backward()
+        
+        torch.cuda.current_stream().wait_stream(s)
 
     
     def train_with_graph(self, x, y):

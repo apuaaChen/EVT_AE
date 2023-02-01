@@ -716,7 +716,6 @@ def pass_conv_fusion(module, graph, verbose=True):
     for node in tqdm(graph.nodes):
         if node.op == "call_function":
             if node.target == torch.ops.aten.convolution:
-                if conv_idx >= 20: continue
 
                 update_topological_index(graph)
                 fused_conv = FusedConv2d(node)
@@ -749,7 +748,6 @@ def pass_conv_fusion(module, graph, verbose=True):
                 conv_idx += 1
             
             elif node.target == torch.nn.grad.conv2d_input:
-                if conv_dgrad_idx >= 19: continue  # conv_dgrad_2 is wrong
                 update_topological_index(graph)
                 fused_conv_dgrad = FusedConv2dDgrad(node)
                 inserting_point = node
@@ -797,7 +795,6 @@ def pass_conv_fusion(module, graph, verbose=True):
 
             
             elif node.target == torch.ops.aten.native_batch_norm.default:
-                if bn_fp_idx >= 20: continue
                 print("=========================================================")
                 print(node)
 
@@ -834,7 +831,6 @@ def pass_conv_fusion(module, graph, verbose=True):
                 bn_fp_idx += 1
             
             elif node.target == torch.ops.aten.native_batch_norm_backward:
-                if bn_bp_idx >= 17: continue
                 print("=========================================================")
                 print(node)
 
@@ -864,7 +860,6 @@ def pass_conv_fusion(module, graph, verbose=True):
                 bn_bp_idx += 1
             
             elif node.target in [torch.ops.aten.expand, torch.ops.aten.max_pool2d_with_indices_backward]:
-                if el_idx >= 2: continue
                 print("=================================================")
                 print("Elementwise")
                 update_topological_index(graph)

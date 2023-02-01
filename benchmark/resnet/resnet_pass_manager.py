@@ -50,13 +50,9 @@ def pre_partition_optimization(joint_module):
 
     # # pass: gemm fusion
     pass_gemm_fusion(joint_module, graph)
-    
 
-    # # pass gemm fusion
-    # pass_gemm_fusion(joint_module, graph)
-
-    # # pass: assign stream
-    # pass_assign_stream(joint_module, graph, 1)
+    # pass: assign stream
+    pass_assign_stream(joint_module, graph, 1)
 
     # recompile graph
     joint_module.recompile()

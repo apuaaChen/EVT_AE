@@ -17,3 +17,4 @@ thirdparty/*
 scratch_space/*
 src/sptrain.egg-info/PKG-INFO
 benchmark/bert/delete_id.py
+benchmark/gnmt_deprecated/*

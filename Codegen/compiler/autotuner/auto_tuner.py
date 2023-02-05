@@ -222,7 +222,7 @@ class Autotuner:
                     checked_configs=checked_configs
                 )
             profiled_latency = []
-            for i in range(self.samples_per_round):
+            for i in range(min(self.samples_per_round, len(sampled_parameters))):
                 parameter = sampled_parameters[i]
                 if self.verbose:
                     print(parameter)

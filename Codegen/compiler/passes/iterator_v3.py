@@ -616,7 +616,6 @@ class IterVarHyperGraph:
             new_graph.permute(node.args[1])
             node.meta["tensor"] = new_graph
         elif node.target in [torch.ops.aten.sum]:
-            print("process sum node!!!!")
             new_graph.reduce(node.args[1])
             node.meta["tensor"] = new_graph
         else:

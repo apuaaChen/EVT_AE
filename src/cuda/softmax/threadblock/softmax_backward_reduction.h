@@ -196,8 +196,8 @@ public:
         typename Base::InputFragment* tmp_grad_softmax = reinterpret_cast<typename Base::InputFragment*>(&input_cache.grad_softmax_buffer);
 
         for (int i = 0; i < Base::InputIterator::Iterations::kColumn; i ++) {
-            o_softmax_iterator_.load(*tmp_o_softmax);
-            grad_softmax_iterator_.load(*tmp_grad_softmax);
+            o_softmax_iterator_.load(*tmp_o_softmax, typename Base::InputIterator::Element(0));
+            grad_softmax_iterator_.load(*tmp_grad_softmax, typename Base::InputIterator::Element(0));
             sum_accumulator = input2acc(*tmp_o_softmax) * input2acc(*tmp_grad_softmax) + sum_accumulator;
             tmp_o_softmax ++;
             tmp_grad_softmax ++;

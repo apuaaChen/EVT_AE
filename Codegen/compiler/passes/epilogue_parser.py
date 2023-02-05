@@ -107,32 +107,38 @@ class TensorOutputNodeDAG(TensorOutputNode):
         
 
 class RowReductionNodeDAG(RowReductionNode):
-    def __init__(self, element_accumulator, element_reduction, element_reduction_accumulator, node, atomic=True) -> None:
+    def __init__(self, element_accumulator, element_reduction, element_reduction_accumulator, node, atomic=True, factor_mode=None) -> None:
         super().__init__(element_accumulator, element_reduction, element_reduction_accumulator, "output_" + node.name, 1., atomic)
         self.node = node
-        non_reduction_dims = [iter_var for iter_var in node.meta["tensor"].get_iter_vars() if iter_var.extent > 1]
-        if non_reduction_dims[0].name == "m":
-            self.factor, self.mod = node.meta["tensor"].get_iterator_factor_mod('b', 'b')
-        elif non_reduction_dims[0].name == "b.1+m":
-            self.factor, self.mod = node.meta["tensor"].get_iterator_factor_mod('b', 'b.1')
+        if factor_mode is None:
+            non_reduction_dims = [iter_var for iter_var in node.meta["tensor"].get_iter_vars() if iter_var.extent > 1]
+            if non_reduction_dims[0].name == "m":
+                self.factor, self.mod = node.meta["tensor"].get_iterator_factor_mod('b', 'b')
+            elif non_reduction_dims[0].name == "b.1+m":
+                self.factor, self.mod = node.meta["tensor"].get_iterator_factor_mod('b', 'b.1')
+            else:
+                raise NotImplementedError
         else:
-            raise NotImplementedError
+            self.factor, self.mod = factor_mode
         print("factor: %d, mod: %d" % (self.factor, self.mod))
     
     def get_argument(self, visitor_args, kwargs):
         self.argument = self.epilogue_node.argument_type(kwargs[self.id + "_ptr"], *visitor_args, self.get_batch_stride(kwargs["problem_size"]), self.factor, self.mod)
 
 class ColumnReductionNodeDAG(ColumnReductionNode):
-    def __init__(self, element_accumulator, element_reduction, element_reduction_accumulator, node, atomic=True) -> None:
+    def __init__(self, element_accumulator, element_reduction, element_reduction_accumulator, node, atomic=True, factor_mode=None) -> None:
         super().__init__(element_accumulator, element_reduction, element_reduction_accumulator, "output_" + node.name, 1., atomic)
         self.node = node
-        non_reduction_dims = [iter_var for iter_var in node.meta["tensor"].get_iter_vars() if iter_var.extent > 1]
-        if non_reduction_dims[0].name == "n":
-            self.factor, self.mod = node.meta["tensor"].get_iterator_factor_mod('b', 'b')
-        elif non_reduction_dims[0].name == "b.1+n":
-            self.factor, self.mod = node.meta["tensor"].get_iterator_factor_mod('b', 'b.1')
+        if factor_mode is None:
+            non_reduction_dims = [iter_var for iter_var in node.meta["tensor"].get_iter_vars() if iter_var.extent > 1]
+            if non_reduction_dims[0].name == "n":
+                self.factor, self.mod = node.meta["tensor"].get_iterator_factor_mod('b', 'b')
+            elif non_reduction_dims[0].name == "b.1+n":
+                self.factor, self.mod = node.meta["tensor"].get_iterator_factor_mod('b', 'b.1')
+            else:
+                raise NotImplementedError
         else:
-            raise NotImplementedError
+            self.factor, self.mod = factor_mode
         print("factor: %d, mod: %d" % (self.factor, self.mod))
     
     def get_argument(self, visitor_args, kwargs):
@@ -444,6 +450,31 @@ class EpilogueASTDAG:
         else:
             for child in node.successors(tree.identifier):
                 self.pass_binary_2_unary(tree, child)
+    
+    # pass 2: correct the row & column when the output layout is in column major
+    def pass_column_major_output_correction(self, tree, nid, output_layout):
+        if output_layout in [cutlass.RowMajor]: return
+        node = tree.get_node(nid)
+        if isinstance(node.data, RowReductionNodeDAG):
+            node.data = ColumnReductionNodeDAG(
+                node.data.element_accumulator, node.data.element_reduction,
+                node.data.element_reduction_accumulator, node.data.node,
+                node.data.atomic, [node.data.factor, node.data.mod]
+            )
+        elif isinstance(node.data, ColumnReductionNodeDAG):
+            node.data = RowReductionNodeDAG(
+                node.data.element_accumulator, node.data.element_reduction,
+                node.data.element_reduction_accumulator, node.data.node,
+                node.data.atomic, [node.data.factor, node.data.mod]
+            )
+        elif isinstance(node.data, ColumnBroadcastNodeDAG):
+            raise NotImplementedError()
+        elif isinstance(node.data, RowBroadcastNodeDAG):
+            raise NotImplementedError()
+
+        for child in node.successors(tree.identifier):
+            self.pass_column_major_output_correction(tree, child, output_layout)
+
 
     def pass_inject_epilogue_op(self, tree, nid):
         node = tree.get_node(nid)
@@ -676,6 +707,12 @@ class EpilogueASTDAG:
                         self.root_candidates[root] = None
                         root_to_remove.append(root)
                     for n in node_list:
+                        # mm doesn't support output permute
+                        if self.anchor.target in [torch.ops.aten.mm]:
+                            if n.target == torch.ops.aten.permute:
+                                if root not in root_to_remove:
+                                    root_to_remove.append(root)
+                                break
                         if self.anchor.target in [torch.ops.aten.convolution, torch.nn.grad.conv2d_input, torch.nn.grad.conv2d_weight]:
                             if n == "invalid":
                                 if root not in root_to_remove:
@@ -1046,6 +1083,8 @@ using ${operation_name}_EpilogueVisitor = cutlass::epilogue::threadblock::Epilog
 
         self.tree.show()
 
+        if self.function.anchor.target in [torch.ops.aten.mm, torch.ops.aten.bmm]:
+            function.pass_column_major_output_correction(self.tree, self.tree.root, self.output_layout)
         function.pass_binary_2_unary(self.tree, self.tree.root)
         # function.pass_inject_reduction(self.tree, self.tree.root)
         function.pass_output_node_fusion(self.tree, self.tree.root)

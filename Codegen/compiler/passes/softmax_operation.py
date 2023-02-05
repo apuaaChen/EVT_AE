@@ -109,7 +109,7 @@ using ${operation_name}_Epilogue = typename cutlass::softmax::threadblock::Epilo
     ${operation_name}_EpilogueVisitor,
     typename ${operation_name}_default::Epilogue>::Epilogue;
 
-// Debug6
+// Debug7
 
 /// using ${operation_name}_base = ${operation_name}_default;
 using ${operation_name}_base = 

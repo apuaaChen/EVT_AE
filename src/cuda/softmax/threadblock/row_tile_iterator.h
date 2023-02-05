@@ -146,13 +146,13 @@ public:
 
     /// Loads a fragment from memory
     CUTLASS_DEVICE
-    void load(Fragment &frag) {
+    void load(Fragment &frag, Element fill_value=Element(-1e+6)) {
         AccessType *frag_ptr = reinterpret_cast<AccessType *>(&frag);
 
         if (column_ < extent_column_){
             *frag_ptr = *pointer_;
         } else {
-            frag.fill(Element(-1e+6));
+            frag.fill(fill_value);
         }
 
         pointer_ += ShapeVec::kColumn;

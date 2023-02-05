@@ -190,3 +190,40 @@ class ViT(nn.Module):
         self.model = aot_module(
             self.model, fw_compiler=fw_compiler, 
             bw_compiler=bw_compiler, partition_fn=partition_fn)
+
+    def capture_graph(self, input_size, optimizer, warmup_iteration=3):
+        # self.model = self.model.to(memory_format=torch.channels_last)
+        self.static_x = torch.randn(size=input_size, dtype=torch.float16, device="cuda")
+        self.static_y = torch.randint(low=0, high=1000, size=(input_size[0],), dtype=torch.int64, device="cuda")
+
+        # warmup iterations
+        s = torch.cuda.Stream(priority=-1)
+        s.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(s):
+            for _ in range(warmup_iteration):
+                optimizer.zero_grad()
+                loss = self.model(self.static_x, self.static_y) * 1e+2
+                loss.backward()
+        
+        torch.cuda.current_stream().wait_stream(s)
+
+        self.static_x = torch.randn(size=input_size, dtype=torch.float16, device="cuda")
+        self.static_y = torch.randint(low=0, high=1000, size=(input_size[0],), dtype=torch.int64, device="cuda")
+
+        # tracing iterations
+        self.encoder_graph = torch.cuda.CUDAGraph()
+        optimizer.zero_grad()
+        s = torch.cuda.Stream(priority=-1)
+        s.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(s):
+            with torch.cuda.graph(self.encoder_graph):
+                loss = self.model(self.static_x, self.static_y) * 1e+2
+                loss.backward()
+        
+        torch.cuda.current_stream().wait_stream(s)
+    
+    def train_with_graph(self, x, y):
+        self.static_x.copy_(x)
+        self.static_y.copy_(y)
+
+        self.encoder_graph.replay()

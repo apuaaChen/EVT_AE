@@ -79,9 +79,10 @@ model_fused, optimizer_fused = amp.initialize(
 
 model_fused.train()
 model_fused.aot_optimize(compiler_fn, compiler_fn, partition_func)
+model_fused.capture_graph((batch_size, 3, 224, 224), optimizer_fused)
+
 optimizer_fused.zero_grad()
-loss = model_fused(x, y) * 1e+2
-loss.backward()
+model_fused.train_with_graph(x, y)
 
 if args.mode == "verify":
     for param1, param2 in zip(list(model.named_parameters()), list(model_fused.named_parameters())):
@@ -101,7 +102,7 @@ if args.mode == "profile":
         loss.backward()
     
     with nvtx.annotate("torch_40"):
-        for i in range(10):
+        for i in range(40):
             with nvtx.annotate("torch"):
                 loss = model(x, y)
                 loss.backward()
@@ -110,11 +111,9 @@ if args.mode == "profile":
     s.wait_stream(torch.cuda.current_stream())
     with torch.cuda.stream(s):
         for i in range(10):
-            loss = model_fused(x, y)
-            loss.backward()
+            model_fused.train_with_graph(x, y)
         
         with nvtx.annotate("torch_40"):
-            for i in range(10):
+            for i in range(40):
                 with nvtx.annotate("torch"):
-                    loss = model_fused(x, y)
-                    loss.backward()
+                    model_fused.train_with_graph(x, y)

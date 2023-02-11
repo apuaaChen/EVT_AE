@@ -26,3 +26,5 @@ def pass_print_graph(module, file):
     g = graph_drawer.FxGraphDrawer(module, "dynamic_classifier")
     with open(file, "wb") as f:
         f.write(g.get_dot_graph().create_svg())
+    # raw_dot = g.get_dot_graph().to_string()
+    # g.get_dot_graph().write_raw("./test.dot")

@@ -1,0 +1,1 @@
+dot -Gnslimit=2 -Gnslimit1=2 -Gmaxiter=500 -Tsvg -v ./test.dot > ./vit.svg 

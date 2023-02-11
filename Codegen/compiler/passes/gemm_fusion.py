@@ -967,7 +967,7 @@ def pass_gemm_fusion(module, graph, verbose=True):
                     output_node.replace_all_uses_with(get_item_node)
                     erase_node_recursive(graph, output_node)
 
-            if node.target == torch.ops.aten.bmm:
+            elif node.target == torch.ops.aten.bmm:
                 if verbose:
                     print("=============================================")
                     print(node)

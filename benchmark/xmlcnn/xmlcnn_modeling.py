@@ -3,7 +3,7 @@ import torch.nn as nn
 import nvtx
 from functorch.compile import aot_module
 
-
+# torch.ops.load_library("/workspace/sparseTraining/Codegen/torchscript/build/libspmm_trace.so")
 class Params:
     def __init__(self, embedding_dim, filter_sizes, sequence_length, batch_size, num_filters, y_dim, hidden_dims, pooling_chunks) -> None:
         self.embedding_dim = embedding_dim
@@ -126,6 +126,7 @@ class xmlCNN(nn.Module):
         s = torch.cuda.Stream(priority=-1)
         s.wait_stream(torch.cuda.current_stream())
         optimizer.zero_grad()
+        # self.model_graph = torch.classes.my_ops.SimpleClass(4)# torch.cuda.CUDAGraph()
         with torch.cuda.stream(s):
             self.model_graph = torch.cuda.CUDAGraph()
             with torch.cuda.graph(self.model_graph):

@@ -26,6 +26,7 @@ from .softmax_operation import SoftmaxArguments, SoftmaxOperation
 from .layernorm_operation import LayerNormArguments, LayerNormOperation
 from .softmax_backward_operation import SoftmaxBackwardArguments, SoftmaxBackwardOperation
 from .layernorm_backward_operation import LayerNormBackwardArguments, LayerNormBackwardOperation
+from .spmm_operator import SpmmOperation, SpmmArguments
 from autotuner.design_space_descriptor import GemmConfigDescriptor, BatchedGemmConfigDescriptor
 from nodes import *
 from tqdm import tqdm
@@ -64,6 +65,145 @@ def get_alignment(dim):
     elif dim % 4 == 0: return 4
     elif dim % 2 == 0: return 2
     else: return 1
+
+class FusedSpmm:
+    __name__ = "cutlass_spmm_with_visitor"
+    def __init__(self, node, module) -> None:
+        assert node.target == torch.ops.aten.mm
+        self.node = node
+        lhs_node = node.args[0]
+        rhs_node = node.args[1]
+
+        # only support row-major * row-major now
+
+        # get shape
+        lhs_shape = lhs_node.meta["tensor_meta"].shape
+        rhs_shape = rhs_node.meta["tensor_meta"].shape
+
+        M, K = lhs_shape[-2:]
+        N = rhs_shape[-1]
+
+        align_emb = get_alignment(N)
+
+        self.Output = TensorDescription(cutlass.float16, cutlass.RowMajor, align_emb)
+
+        tile_num_row = 32
+        num_warp = tile_num_row * N // align_emb // 32
+
+        self.tile_description = TileDescription(
+            threadblock_shape=[tile_num_row, N, 1], stages=1,
+            warp_count=[num_warp, 1, 1], math_instruction=None
+        )
+
+        epilogue_functor = LinearCombination(
+            element_output=self.Output.element,
+            epilogue_vector_length=self.Output.alignment,
+            element_accumulator=cutlass.float32,
+            element_epilogue=cutlass.float32
+        )
+
+        self.epilogue_functor = EpilogueVisitTreeDAG(
+            elementwise_functor=epilogue_functor,
+            element_accumulator=cutlass.float32,
+            elements_per_access=self.Output.alignment,
+            element_compute=cutlass.float32, element_output=self.Output.element
+        )
+
+        self.epilogue_functor.initialize(node)
+        self.epilogue_functor.optimize(self.tile_description)
+
+        self.operation = SpmmOperation(
+            threadblock_tile=self.tile_description.threadblock_shape,
+            element_input=cutlass.float16, element_accumulator=cutlass.float32,
+            alignment_emb=align_emb, alignment_nnz=1, 
+            epilogue_functor=self.epilogue_functor
+        )
+
+        cutlass_path = os.getenv('CUTLASS_PATH')
+        assert cutlass_path is not None, "Environment variable 'CUTLASS_PATH' is not defined."
+        cuda_install_path = os.getenv('CUDA_INSTALL_PATH')
+        assert cuda_install_path is not None, "Environment variable 'CUDA_INSTALL_PATH' is not defined."
+        include_paths = [
+            cuda_install_path + '/include',
+            cutlass_path + '/include',
+            cutlass_path + '/tools/util/include',
+            cutlass_path + '/tools/library/scripts/pycutlass/src/cpp/include',
+            '/opt/conda/lib/python3.8/site-packages/torch/include/',
+            '/workspace/sparseTraining/src/cuda/'
+        ]
+        compile_options = CompilationOptions(
+            ['-std=c++14'], [80, ], include_paths=include_paths
+        )
+
+        pycutlass.compiler.add_module([self.operation,], compile_options)
+
+        self.args = self.epilogue_functor.args + list(node.args)
+        self.outputs = self.epilogue_functor.outputs
+        self.kernel_outputs = self.epilogue_functor.kernel_outputs
+        self.output_2_kernel_output = self.epilogue_functor.output_2_kernel_output
+
+        self.stream = None
+    
+    def __call__(self, *args):
+        default_stream = torch.cuda.current_stream()
+        if self.stream is not None:
+            self.stream.wait_stream(default_stream)
+            stream = self.stream
+        else:
+            stream = torch.cuda.current_stream()
+        with torch.cuda.stream(stream):
+            lhs = args[-2]
+            rhs = args[-1]
+            with nvtx.annotate("cutlass_spmm"):
+                M, K = lhs.size()
+                K, N = rhs.size()
+                rhs = rhs.contiguous()
+                problem_size = cutlass.MatrixCoord(M, N)
+                kwargs = {"problem_size": [M, N]}
+                for output_node in self.kernel_outputs:
+                    if output_node.target in [torch.ops.aten.sum]:
+                        kwargs["output_" + output_node.name] = torch.zeros(
+                            size=output_node.meta['tensor_meta'].shape,
+                            dtype=output_node.meta['tensor_meta'].dtype,
+                            device="cuda"
+                        )
+                    else:
+                        kwargs["output_" + output_node.name] = torch.empty(
+                            size=output_node.meta['tensor_meta'].shape,
+                            dtype=output_node.meta['tensor_meta'].dtype,
+                            device="cuda"
+                        )
+
+                for idx, epilogue_arg in enumerate(self.epilogue_functor.args):
+                    kwargs[epilogue_arg.name] = args[idx]
+
+                output_op = self.operation.epilogue_type(**kwargs)
+                arguments = SpmmArguments(
+                    operation=self.operation, problem_size=problem_size,
+                    csr_matrix=lhs, B=rhs, output_op=output_op
+                )
+
+                if self.stream is None: 
+                    self.operation.run(arguments, stream=torch.cuda.current_stream().cuda_stream)
+                    stream = torch.cuda.current_stream().cuda_stream
+                else:
+                    self.operation.run(arguments, stream=self.stream.cuda_stream)
+                    stream = self.stream.cuda_stream
+
+                results = []
+                for output_node in self.outputs:
+                    results.append(kwargs["output_" + self.output_2_kernel_output[output_node].name].view(output_node.meta["tensor_meta"].shape))
+                
+                if self.stream is not None:
+                    # without the code below, the caching allocator might reuse
+                    # the memory unexpectedly
+                    # https://pytorch.org/docs/stable/generated/torch.Tensor.record_stream.html?highlight=stream#torch.Tensor.record_stream
+                    for arg in args:
+                        if isinstance(arg, torch.Tensor):
+                            arg.record_stream(self.stream)
+        return results
+
+
 
 class FusedGEMM:
     __name__ = "cutlass_gemm_with_visitor"
@@ -931,19 +1071,28 @@ def get_valid_inserting_range(graph, args, outputs):
     return min_idx, max_idx
     
 
-def pass_gemm_fusion(module, graph, verbose=True):
+def pass_gemm_fusion(module, graph, verbose=True, disabled_ops=[]):
     """
     Fuse GEMM kernel with its epilogues
     """
 
     for node in tqdm(graph.nodes):
         if node.op == "call_function":
+            if node.target in disabled_ops: continue
             if node.target == torch.ops.aten.mm:
                 if verbose:
                     print("=============================================")
                     print(node)
                 update_topological_index(graph)
-                fused_gemm = FusedGEMM(node)
+                # check for spmm case
+                # currently, we use a simple heuristic that constant tensor
+                # is used in spmm case
+                if node.args[0].op == "get_attr" or node.args[1].op == "get_attr":
+                    node.meta["sparse"] = True
+                    fused_gemm = FusedSpmm(node, module)
+                else:
+                    node.meta["sparse"] = False
+                    fused_gemm = FusedGEMM(node)
                 inserting_point = fused_gemm.epilogue_functor.root
                 inserting_idx = get_topological_index(graph, inserting_point)
 
@@ -972,6 +1121,7 @@ def pass_gemm_fusion(module, graph, verbose=True):
                     print("=============================================")
                     print(node)
                 update_topological_index(graph)
+                node.meta["sparse"] = False
                 fused_bmm = FusedBMM(node)
 
                 inserting_point = fused_bmm.epilogue_functor.root

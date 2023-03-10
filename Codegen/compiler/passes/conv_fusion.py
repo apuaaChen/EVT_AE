@@ -718,6 +718,7 @@ def pass_conv_fusion(module, graph, verbose=True):
             if node.target == torch.ops.aten.convolution:
 
                 update_topological_index(graph)
+                node.meta["sparse"] = False
                 fused_conv = FusedConv2d(node)
                 inserting_point = fused_conv.epilogue_functor.root
                 inserting_idx = get_topological_index(graph, inserting_point)
@@ -749,6 +750,7 @@ def pass_conv_fusion(module, graph, verbose=True):
             
             elif node.target == torch.nn.grad.conv2d_input:
                 update_topological_index(graph)
+                node.meta["sparse"] = False
                 fused_conv_dgrad = FusedConv2dDgrad(node)
                 inserting_point = node
 

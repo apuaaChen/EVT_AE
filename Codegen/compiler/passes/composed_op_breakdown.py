@@ -70,10 +70,11 @@ def pass_composed_op_breakdown(module, graph, disabled_list=[]):
                 unsqueeze_node = inject_unsqueeze(ne_node, graph, ne_node, 1)
                 mul_mask_node = inject_mul(unsqueeze_node, graph, mul_node, unsqueeze_node)
                 if reduction == "mean":
-                    raise NotImplementedError()
+                    # raise NotImplementedError()
                     # sum_node = inject_sum(ne_node, graph, ne_node, dim=0)
-                    # div_node = inject_div(mul_mask_node, graph, mul_mask_node, sum_node)
-                    # node.replace_all_uses_with(div_node)
+                    # TODO: it actually should be sum of not masked nodes
+                    div_node = inject_div(mul_mask_node, graph, mul_mask_node, mul_mask_node.meta["tensor_meta"].shape[0])
+                    node.replace_all_uses_with(div_node)
                 else:
                     node.replace_all_uses_with(mul_mask_node)
                 # else:

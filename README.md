@@ -87,6 +87,7 @@ Follow instructions on [INSTALL TASO](https://github.com/jiazhihao/TASO/blob/mas
 pip install 'git+https://github.com/NVIDIA/dllogger'
 pip install subword-nmt
 pip install pytablewriter
+pip install einops
 ```
 
 ```shell

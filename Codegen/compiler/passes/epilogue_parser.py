@@ -241,7 +241,10 @@ class DropoutForwardNodeDAG(DropoutForwardNode):
 
         self.p = 1. - node.args[1]
         if anchor.target in [torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten.convolution, torch.nn.grad.conv2d_weight]:
-            self.iterator_type = "cutlass::epilogue::threadblock::PredicatedTileIterator"
+            if anchor.meta["sparse"]:
+                self.iterator_type = "cutlass::spmm::threadblock::OutputTileIterator"
+            else:
+                self.iterator_type = "cutlass::epilogue::threadblock::PredicatedTileIterator"
         elif anchor.target == torch.nn.grad.conv2d_input:
             if anchor.args[3][0] == 1 and anchor.args[3][1] == 1:
                 self.iterator_type = "cutlass::epilogue::threadblock::PredicatedTileIterator"

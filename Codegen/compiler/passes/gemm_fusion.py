@@ -113,7 +113,7 @@ class FusedSpmm:
         self.epilogue_functor.optimize(self.tile_description)
 
         self.operation = SpmmOperation(
-            threadblock_tile=self.tile_description.threadblock_shape,
+            tile_description=self.tile_description,
             element_input=cutlass.float16, element_accumulator=cutlass.float32,
             alignment_emb=align_emb, alignment_nnz=1, 
             epilogue_functor=self.epilogue_functor

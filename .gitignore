@@ -22,3 +22,10 @@ Codegen/compiler/build/*
 Codegen/torchscript/build/*
 *.dot
 GNMT/*
+.vscode/*
+benchmark/gat/dataset/*
+unittest/unit/dataset/*
+Codegen/torchscript/*
+src/sptrain.egg-info/PKG-INFO
+Codegen/torchscript/spmm.cpp
+GNMT/*

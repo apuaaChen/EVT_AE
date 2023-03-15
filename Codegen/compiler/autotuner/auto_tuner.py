@@ -85,7 +85,7 @@ def sample_parameters_with_ML(heuristics, num_samples, model, problem_size, chec
 
 class Autotuner:
     def __init__(self, 
-        autotuning_rounds=10, samples_per_round=10, save_model=True, 
+        autotuning_rounds=10, samples_per_round=10, save_model=False, 
         load_model=True, verbose=False) -> None:
         #
         self.autotuning_rounds = autotuning_rounds

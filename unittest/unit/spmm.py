@@ -47,7 +47,8 @@ class SpmmTestSm80(unittest.TestCase):
                 add_out = torch.ops.aten.add(spmm_out, x)
                 dropout_output, mask = torch.ops.aten.native_dropout(
                     add_out, 0.5, True)
-                return dropout_output, mask, add_out
+                bias = torch.ops.aten.sum(dropout_output, [0], dtype=torch.float32)
+                return dropout_output, mask, add_out, bias
         
         ## module instances
         module = Spmm(csr=csr)
@@ -77,19 +78,24 @@ class SpmmTestSm80(unittest.TestCase):
         # self.assertTrue(torch.allclose(out, ref_out, atol=1))
         # end test add
 
-        ref_dp_out, ref_mask, ref_spmm_out = module_reference(input)
-        dp_out, mask, spmm_out = symbolic_traced(input)
+        ref_dp_out, ref_mask, ref_spmm_out, ref_bias = module_reference(input)
+        dp_out, mask, spmm_out, bias = symbolic_traced(input)
         
         dp_out_ref = ref_spmm_out * mask.to(torch.float16)/0.5
         
         print(dp_out)
         print(dp_out_ref)
-        self.assertTrue(torch.allclose(dp_out, dp_out_ref, atol=1))
+        self.assertTrue(torch.allclose(dp_out, dp_out_ref, atol=0.1))
 
+        print(torch.sum(torch.isclose(dp_out, dp_out_ref, rtol=1e-2)) / dp_out.numel())
         print(torch.sum(mask) / mask.numel())
         self.assertTrue( 
             torch.allclose(torch.sum(mask) / mask.numel(), torch.Tensor([0.5]).to("cuda"), atol=0.05)
         )
+
+        print(ref_bias)
+        print(bias)
+        self.assertTrue(torch.allclose(bias, ref_bias, atol=1.))
 
         # for i in range(40):
         #     with nvtx.annotate("torch"):

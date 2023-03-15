@@ -158,7 +158,7 @@ class SpmmOperation:
     CUTLASS Spmm Operation
     """
     def __init__(
-        self, threadblock_tile: 'list[int]', 
+        self, tile_description: TileDescription, 
         element_input, element_accumulator, 
         alignment_emb, alignment_nnz, epilogue_functor) -> None:
         #
@@ -168,8 +168,10 @@ class SpmmOperation:
         self.alignment_nnz = alignment_nnz
         self.epilogue_functor = epilogue_functor
 
-        self.threadblock_row = threadblock_tile[0]
-        self.threadblock_column = threadblock_tile[1]
+        self.tile_description = tile_description
+
+        self.threadblock_row = tile_description.threadblock_shape[0]
+        self.threadblock_column = tile_description.threadblock_shape[1]
 
         self.num_threads = self.threadblock_row * self.threadblock_column // self.alignment_emb
 
@@ -224,7 +226,7 @@ using ${operation_name}_default =
         cutlass::MatrixShape<${threadblock_row}, ${threadblock_column}>
     >;
 
-// debug194
+// debug199
 
 ${epilogue_visitor}
 

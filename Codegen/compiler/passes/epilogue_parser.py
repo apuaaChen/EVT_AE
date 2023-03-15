@@ -789,20 +789,23 @@ class EpilogueASTDAG:
                         raise NotImplementedError("unkown data type")
                     # case 1: for GEMM kernels
                     if self.anchor.target in [torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten.convolution, torch.nn.grad.conv2d_input, torch.nn.grad.conv2d_weight]:
+                        # TODO: this is not necessarily true. We can enable reduction in sparse mm
+                        if not self.anchor.meta["sparse"]:
                         # create reduction node
-                        if reduction_type == "row_reduction":
-                            reduction_node = RowReductionNodeDAG(
-                                self.element_accumulator, self.element_output,
-                                self.element_accumulator, user_node
-                            )
-                        elif reduction_type == "column_reduction":
-                            reduction_node = ColumnReductionNodeDAG(
-                                self.element_accumulator, el_reduction,
-                                self.element_accumulator, user_node
-                            )
-                        else:
-                            raise NotImplementedError()
-                        self.outputs.append(user_node)
+                            # Determine the reduction type here
+                            if reduction_type == "row_reduction":
+                                reduction_node = RowReductionNodeDAG(
+                                    self.element_accumulator, self.element_output,
+                                    self.element_accumulator, user_node
+                                )
+                            elif reduction_type == "column_reduction":
+                                reduction_node = ColumnReductionNodeDAG(
+                                    self.element_accumulator, el_reduction,
+                                    self.element_accumulator, user_node
+                                )
+                            else:
+                                raise NotImplementedError()
+                            self.outputs.append(user_node)
         
         if reduction_node is not None:
             self.epilogue_tree.create_node(reduction_node.tag, reduction_node.id, parent=self.stack[-1], data=reduction_node)

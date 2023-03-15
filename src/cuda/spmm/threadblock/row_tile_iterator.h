@@ -40,6 +40,8 @@ public:
         ThreadblockShape::kColumn / kElementsPerAccess
     >;
 
+    static const int kThreads = ShapeVec::kRow * ShapeVec::kColumn;
+
     // number of iterations
     using Iterations = cutlass::MatrixShape<
         ThreadblockShape::kRow / Shape::kRow,

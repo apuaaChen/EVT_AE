@@ -30,6 +30,7 @@ from .spmm_operator import SpmmOperation, SpmmArguments
 from autotuner.design_space_descriptor import GemmConfigDescriptor, BatchedGemmConfigDescriptor
 from nodes import *
 from tqdm import tqdm
+import logging
 
 def get_priority(node):
     if len(node.users) > 1:
@@ -302,7 +303,7 @@ class FusedGEMM:
         )
         best_config = autotuner(self.gemm_descriptor)
         
-        print(best_config)
+        logging.debug(f"{best_config}")
 
         threadblock_shape = [
             best_config['block_x'], best_config['block_y'], best_config['block_z']]
@@ -370,84 +371,91 @@ class FusedGEMM:
             lhs = args[-2]
             rhs = args[-1]
             with nvtx.annotate("cutlass_gemm"):
-                if self.lhs_layout == cutlass.RowMajor:
-                    M, K = lhs.size()
-                else:
-                    K, M = lhs.size()
-                if self.rhs_layout == cutlass.RowMajor:
-                    N = rhs.size(-1)
-                else:
-                    N = rhs.size(-2)
-                lhs = lhs.contiguous()
-                rhs = rhs.contiguous()
-                problem_size = cutlass.gemm.GemmCoord(M, N, K)
-                kwargs = {"problem_size": [M, N]}
-                for output_node in self.kernel_outputs:
-                    if output_node.target in [torch.ops.aten.sum]:
-                        kwargs["output_" + output_node.name] = torch.zeros(
-                            size=output_node.meta['tensor_meta'].shape,
-                            dtype=output_node.meta['tensor_meta'].dtype,
-                            device="cuda"
-                        )
-                    else:
-                        kwargs["output_" + output_node.name] = torch.empty(
-                            size=output_node.meta['tensor_meta'].shape,
-                            dtype=output_node.meta['tensor_meta'].dtype,
-                            device="cuda"
-                        )
-
-                for idx, epilogue_arg in enumerate(self.epilogue_functor.args):
-                    kwargs[epilogue_arg.name] = args[idx]
-
                 if self.is_direct_output:
-                    output_tensor = None
-                    for key in kwargs.keys():
-                        if "output" in key:
-                            output_tensor = kwargs[key]
-                    output_op = self.operation.epilogue_type(1.0, 0.0)
-                    if self.split_k_mode in ["None", "Serial"]:
-                        gemm_mode=cutlass.gemm.Mode.Gemm
-                    elif self.split_k_mode == "Parallel":
-                        gemm_mode= cutlass.gemm.Mode.GemmSplitKParallel
+                    if self.lhs_layout == cutlass.ColumnMajor:
+                        lhs = torch.transpose(lhs, -1, -2)
+                    if self.rhs_layout == cutlass.ColumnMajor:
+                        rhs = torch.transpose(rhs, -1, -2)
+                    results = [torch.matmul(lhs, rhs),]
+                else:
+                    if self.lhs_layout == cutlass.RowMajor:
+                        M, K = lhs.size()
                     else:
-                        raise NotImplementedError
-                    arguments = GemmArguments(
-                        operation=self.operation, problem_size=problem_size,
-                        A=lhs, B=rhs, C=output_tensor, D=output_tensor,
-                        output_op=output_op, gemm_mode=gemm_mode,
-                        split_k_slices=self.split_k_slices
-                    )
-                    # the code below is no longer required.
-                    # as we allocate the workspace under the same stream
-                    # of the kernel
-                    # if hasattr(arguments, "workspace_buffer"):
-                    #     self.workspace_buffer = arguments.workspace_buffer
-                else:
-                    output_op = self.operation.epilogue_type(**kwargs)
-                    arguments = GemmArguments(
-                        operation=self.operation, problem_size=problem_size,
-                        A=lhs, B=rhs, C=lhs, D=lhs,
-                        output_op=output_op, gemm_mode=cutlass.gemm.Mode.Gemm
-                    )
-                if self.stream is None: 
-                    self.operation.run(arguments, stream=torch.cuda.current_stream().cuda_stream)
-                    stream = torch.cuda.current_stream().cuda_stream
-                else:
-                    self.operation.run(arguments, stream=self.stream.cuda_stream)
-                    stream = self.stream.cuda_stream
-                
-                if self.split_k_mode == "Parallel":
-                    reduction_arguments = ReductionArguments(
-                        operation=self.reduction_operation,
-                        problem_size=[M, N], partitions=self.split_k_slices,
-                        workspace=arguments.ptr_D, destination=output_tensor,
-                        source=output_tensor, output_op=output_op)
-                    self.reduction_operation.run(reduction_arguments, stream=stream)
+                        K, M = lhs.size()
+                    if self.rhs_layout == cutlass.RowMajor:
+                        N = rhs.size(-1)
+                    else:
+                        N = rhs.size(-2)
+                    lhs = lhs.contiguous()
+                    rhs = rhs.contiguous()
+                    problem_size = cutlass.gemm.GemmCoord(M, N, K)
+                    kwargs = {"problem_size": [M, N]}
+                    for output_node in self.kernel_outputs:
+                        if output_node.target in [torch.ops.aten.sum]:
+                            kwargs["output_" + output_node.name] = torch.zeros(
+                                size=output_node.meta['tensor_meta'].shape,
+                                dtype=output_node.meta['tensor_meta'].dtype,
+                                device="cuda"
+                            )
+                        else:
+                            kwargs["output_" + output_node.name] = torch.empty(
+                                size=output_node.meta['tensor_meta'].shape,
+                                dtype=output_node.meta['tensor_meta'].dtype,
+                                device="cuda"
+                            )
 
-                results = []
-                for output_node in self.outputs:
-                    results.append(kwargs["output_" + self.output_2_kernel_output[output_node].name].view(output_node.meta["tensor_meta"].shape))
-                
+                    for idx, epilogue_arg in enumerate(self.epilogue_functor.args):
+                        kwargs[epilogue_arg.name] = args[idx]
+
+                    if self.is_direct_output:
+                        output_tensor = None
+                        for key in kwargs.keys():
+                            if "output" in key:
+                                output_tensor = kwargs[key]
+                        output_op = self.operation.epilogue_type(1.0, 0.0)
+                        if self.split_k_mode in ["None", "Serial"]:
+                            gemm_mode=cutlass.gemm.Mode.Gemm
+                        elif self.split_k_mode == "Parallel":
+                            gemm_mode= cutlass.gemm.Mode.GemmSplitKParallel
+                        else:
+                            raise NotImplementedError
+                        arguments = GemmArguments(
+                            operation=self.operation, problem_size=problem_size,
+                            A=lhs, B=rhs, C=output_tensor, D=output_tensor,
+                            output_op=output_op, gemm_mode=gemm_mode,
+                            split_k_slices=self.split_k_slices
+                        )
+                        # the code below is no longer required.
+                        # as we allocate the workspace under the same stream
+                        # of the kernel
+                        # if hasattr(arguments, "workspace_buffer"):
+                        #     self.workspace_buffer = arguments.workspace_buffer
+                    else:
+                        output_op = self.operation.epilogue_type(**kwargs)
+                        arguments = GemmArguments(
+                            operation=self.operation, problem_size=problem_size,
+                            A=lhs, B=rhs, C=lhs, D=lhs,
+                            output_op=output_op, gemm_mode=cutlass.gemm.Mode.Gemm
+                        )
+                    if self.stream is None: 
+                        self.operation.run(arguments, stream=torch.cuda.current_stream().cuda_stream)
+                        stream = torch.cuda.current_stream().cuda_stream
+                    else:
+                        self.operation.run(arguments, stream=self.stream.cuda_stream)
+                        stream = self.stream.cuda_stream
+                    
+                    if self.split_k_mode == "Parallel":
+                        reduction_arguments = ReductionArguments(
+                            operation=self.reduction_operation,
+                            problem_size=[M, N], partitions=self.split_k_slices,
+                            workspace=arguments.ptr_D, destination=output_tensor,
+                            source=output_tensor, output_op=output_op)
+                        self.reduction_operation.run(reduction_arguments, stream=stream)
+
+                    results = []
+                    for output_node in self.outputs:
+                        results.append(kwargs["output_" + self.output_2_kernel_output[output_node].name].view(output_node.meta["tensor_meta"].shape))
+                    
                 if self.stream is not None:
                     # without the code below, the caching allocator might reuse
                     # the memory unexpectedly
@@ -1080,9 +1088,7 @@ def pass_gemm_fusion(module, graph, verbose=True, disabled_ops=[]):
         if node.op == "call_function":
             if node.target in disabled_ops: continue
             if node.target == torch.ops.aten.mm:
-                if verbose:
-                    print("=============================================")
-                    print(node)
+                logging.debug(f"====================={node}======================")
                 update_topological_index(graph)
                 # check for spmm case
                 # currently, we use a simple heuristic that constant tensor
@@ -1117,9 +1123,7 @@ def pass_gemm_fusion(module, graph, verbose=True, disabled_ops=[]):
                     erase_node_recursive(graph, output_node)
 
             elif node.target == torch.ops.aten.bmm:
-                if verbose:
-                    print("=============================================")
-                    print(node)
+                logging.debug(f"====================={node}======================")
                 update_topological_index(graph)
                 node.meta["sparse"] = False
                 fused_bmm = FusedBMM(node)
@@ -1148,9 +1152,7 @@ def pass_gemm_fusion(module, graph, verbose=True, disabled_ops=[]):
                     erase_node_recursive(graph, output_node)
 
             elif node.target == torch.ops.aten._softmax:
-                if verbose:
-                    print("=============================================")
-                    print(node)
+                logging.debug(f"====================={node}======================")
                 update_topological_index(graph)
                 fused_softmax = FusedSoftmax(node)
                 inserting_point = fused_softmax.epilogue_functor.root
@@ -1177,9 +1179,7 @@ def pass_gemm_fusion(module, graph, verbose=True, disabled_ops=[]):
                     erase_node_recursive(graph, output_node)
             
             elif node.target == torch.ops.aten._softmax_backward_data:
-                if verbose:
-                    print("=============================================")
-                    print(node)
+                logging.debug(f"====================={node}======================")
                 update_topological_index(graph)
                 fused_softmax = FusedSoftmaxBackward(node)
                 inserting_point = fused_softmax.epilogue_functor.root
@@ -1206,9 +1206,7 @@ def pass_gemm_fusion(module, graph, verbose=True, disabled_ops=[]):
                     erase_node_recursive(graph, output_node)
             
             elif node.target == torch.ops.aten.native_layer_norm:
-                if verbose:
-                    print("=============================================")
-                    print(node)
+                logging.debug(f"====================={node}======================")
                 update_topological_index(graph)
                 fused_layernorm = FusedLayerNormForward(node)
                 inserting_point = fused_layernorm.epilogue_functor.root
@@ -1236,9 +1234,7 @@ def pass_gemm_fusion(module, graph, verbose=True, disabled_ops=[]):
             elif node.target == torch.ops.aten.native_layer_norm_backward:
                 if "unfusible" in node.meta.keys():
                     continue
-                if verbose:
-                    print("=============================================")
-                    print(node)
+                logging.debug(f"====================={node}======================")
                 update_topological_index(graph)
 
                 fused_layernorm = FusedLayerNormBackward(node)

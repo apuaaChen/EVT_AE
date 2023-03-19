@@ -19,3 +19,9 @@
 [submodule "/workspace/sparseTraining/thirdparty/SSGC"]
 	path = /workspace/sparseTraining/thirdparty/SSGC
 	url = https://github.com/allenhaozhu/SSGC.git
+[submodule "thirdparty/raf"]
+	path = thirdparty/raf
+	url = https://github.com/awslabs/raf
+[submodule "/workspace/sparseTraining/thirdparty/tvm"]
+	path = /workspace/sparseTraining/thirdparty/tvm
+	url = https://github.com/apache/tvm

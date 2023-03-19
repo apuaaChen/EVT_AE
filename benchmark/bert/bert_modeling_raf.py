@@ -6,6 +6,7 @@ from modeling import BertForPreTraining, BertPreTrainingHeads, BertModel, \
 from typing import Final
 from amp_helper import scale_loss
 from functorch.compile import aot_module
+from raf._op import sym
 
 
 class BertModelExcludeEmbedding(BertModel):
@@ -55,14 +56,23 @@ class BertForPreTrainingExcludeEmbedding(BertForPreTraining):
         self.cls = BertPreTrainingHeads(config, word_embeddings_weight, sequence_output_is_dense)
         self.apply(self.init_bert_weights)
 
-    def forward(self, input_ids, embedding_output, attention_mask, masked_lm_labels):
+    def forward(self, input_ids, embedding_output, attention_mask):
         # if self.distillation:
         #     self.bert(input_ids, token_type_ids, attention_mask)
         # else:
         encoded_layers, pooled_output = self.bert(input_ids,embedding_output, attention_mask)
         sequence_output = encoded_layers[-1]
-        prediction_scores, seq_relationship_score = self.cls(sequence_output, pooled_output, masked_lm_labels)
+        prediction_scores, seq_relationship_score = self.cls(sequence_output, pooled_output, None)
         return prediction_scores, seq_relationship_score
+
+class CrossEntropyLoss(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+    
+    def forward(self, x, y):
+        y_pred = sym.log_softmax(x)
+        loss = sym.nll_loss(y, y_pred)
+        return loss
 
 
 class BertPretrainingCriterion(torch.nn.Module):
@@ -71,7 +81,8 @@ class BertPretrainingCriterion(torch.nn.Module):
 
     def __init__(self, vocab_size, sequence_output_is_dense=False):
         super(BertPretrainingCriterion, self).__init__()
-        self.loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-1, reduction='sum')
+        # self.loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-1, reduction='sum')
+        self.loss_fn = CrossEntropyLoss()
         self.vocab_size = vocab_size
         self.sequence_output_is_dense = sequence_output_is_dense
 
@@ -91,12 +102,12 @@ class BertExcludeEmbedding(torch.nn.Module):
     def __init__(self, config, word_embedding_weight, sequence_output_is_dense) -> None:
         super().__init__()
         self.model = BertForPreTrainingExcludeEmbedding(config, word_embedding_weight, sequence_output_is_dense)
-        self.criterion = BertPretrainingCriterion(config.vocab_size, sequence_output_is_dense=sequence_output_is_dense)
+        # self.criterion = BertPretrainingCriterion(config.vocab_size, sequence_output_is_dense=sequence_output_is_dense)
     
-    def forward(self, input_ids, embedding_output, attention_mask, masked_lm_labels, labels, next_sentence_labels):
-        prediction_scores, seq_relationship_score = self.model(input_ids, embedding_output, attention_mask, masked_lm_labels)
-        loss = self.criterion(prediction_scores, seq_relationship_score, labels, next_sentence_labels)
-        return loss
+    def forward(self, input_ids, embedding_output, attention_mask):
+        prediction_scores, seq_relationship_score = self.model(input_ids, embedding_output, attention_mask)
+        # loss = self.criterion(prediction_scores, seq_relationship_score, labels, next_sentence_labels)
+        return prediction_scores, seq_relationship_score
     
     def checkpoint_activations(self, check):
         self.model.checkpoint_activations(check)
@@ -106,23 +117,18 @@ class Bert(torch.nn.Module):
         super().__init__()
         self.config = config
         self.embedding = BertEmbeddings(config)
+        print(self.embedding.word_embeddings.weight.size())
         self.encoder = BertExcludeEmbedding(config, self.embedding.word_embeddings.weight, sequence_output_is_dense)
     
-    def forward(self, input_ids, token_type_ids, attention_mask, masked_lm_labels, labels, next_sentence_labels):
+    def forward(self, input_ids, token_type_ids, attention_mask):
         embedding_output = self.embedding(input_ids, token_type_ids)
-        loss_sum = self.encoder(input_ids, embedding_output, attention_mask, masked_lm_labels, labels, next_sentence_labels)
-        valid_labels = torch.sum(torch.ne(labels, -1))
-        return loss_sum / valid_labels
+        prediction_scores, seq_relationship_score = self.encoder(input_ids, embedding_output, attention_mask)
+        return prediction_scores.view(-1, self.config.vocab_size)#, seq_relationship_score
     
-    def aot_optimize(self, fw_compiler, bw_compiler, partition_fn=None):
-        if partition_fn is None:
-            self.encoder = aot_module(
-                self.encoder, fw_compiler=fw_compiler, 
-                bw_compiler=bw_compiler)
-        else:
-            self.encoder = aot_module(
-                self.encoder, fw_compiler=fw_compiler, 
-                bw_compiler=bw_compiler, partition_fn=partition_fn)
+    def aot_optimize(self, fw_compiler, bw_compiler, partition_fn):
+        self.encoder = aot_module(
+            self.encoder, fw_compiler=fw_compiler, 
+            bw_compiler=bw_compiler, partition_fn=partition_fn)
     
     def capture_graph(self, batch, sequence_length, optimizer, warmup_iteration=3):
         device = next(self.parameters()).device

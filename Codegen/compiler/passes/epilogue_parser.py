@@ -24,6 +24,7 @@ from passes.iterator_v3 import *
 import operator
 import philox
 import treelib
+import logging
 
 torch_2_cutlass_type = {
     torch.float32: cutlass.float32,
@@ -47,8 +48,7 @@ def dfs(node, target):
                     if dfs(user, target): return True
                 return False
         except:
-            print("DFS Error!!!!")
-            print(node)
+            logging.error(f"[Runtime Error] DFS Error at {node}")
 
 ################################################################################
 # Epilogue nodes
@@ -68,8 +68,7 @@ class TensorOutputNodeDAG(TensorOutputNode):
         elif self.permute in [[0, 2, 1], [2, 0, 1], [1, 0]]:
             self.layout = cutlass.ColumnMajor
         else:
-            print(node)
-            print(self.permute)
+            logging.error(f"[Not Implemented] Unsupported permutation {self.permute} at {node}")
             raise NotImplementedError()
     
     def get_argument(self, visitor_args, kwargs):
@@ -96,7 +95,7 @@ class TensorOutputNodeDAG(TensorOutputNode):
                 ldt = kwargs["problem_size"][1] * batch_size
                 batch_stride = kwargs["problem_size"][1]
             else:
-                print(self.permute)
+                logging.error(f"[Not Implemented] Unsupported permutation {self.permute}")
                 raise NotImplementedError("Unsupported output permutation")
         else:
             ldt = kwargs["problem_size"][1]
@@ -120,7 +119,7 @@ class RowReductionNodeDAG(RowReductionNode):
                 raise NotImplementedError
         else:
             self.factor, self.mod = factor_mode
-        print("factor: %d, mod: %d" % (self.factor, self.mod))
+        logging.debug(f"factor: {self.factor}, mod: {self.mod}")
     
     def get_argument(self, visitor_args, kwargs):
         self.argument = self.epilogue_node.argument_type(kwargs[self.id + "_ptr"], *visitor_args, self.get_batch_stride(kwargs["problem_size"]), self.factor, self.mod)
@@ -139,7 +138,7 @@ class ColumnReductionNodeDAG(ColumnReductionNode):
                 raise NotImplementedError
         else:
             self.factor, self.mod = factor_mode
-        print("factor: %d, mod: %d" % (self.factor, self.mod))
+        logging.debug(f"factor: {self.factor}, mod: {self.mod}")
     
     def get_argument(self, visitor_args, kwargs):
         self.argument = self.epilogue_node.argument_type(kwargs[self.id + '_ptr'], *visitor_args, self.get_batch_stride(kwargs["problem_size"]), self.factor, self.mod)
@@ -542,7 +541,7 @@ class EpilogueASTDAG:
                     self.root_candidates[node] = []
                     continue
                 except:
-                    print(usr)
+                    logging.error(f"[Runtime Error] Error handling user node {usr}")
                     assert 0
                 if usr.target in [torch.ops.aten.sum]:
                     self.root_candidates[node] = [usr]
@@ -735,8 +734,7 @@ class EpilogueASTDAG:
         else:
             raise NotImplementedError
         
-        print("Root Candidates:")
-        print(self.root_candidates)## A new filter node to ensure fusion is in topological order
+        logging.debug(f"Root Candidates: {self.root_candidates}")
         
         # get the root with lowest cost
         max_cost = -1
@@ -752,8 +750,7 @@ class EpilogueASTDAG:
             elif cost == max_cost and root.meta['topo_idx'] > self.root.meta['topo_idx']:
                 max_cost = cost
                 self.root = root
-        print("Root:")
-        print(self.root)
+        logging.debug(f"Root: {self.root}")
         # TODO: handle the case that cost of two graphs is the same
 
     def visit(self, node):
@@ -991,7 +988,7 @@ class EpilogueASTDAG:
                 else:
                     raise NotImplementedError()
                 
-                print(tensor_type)
+                logging.debug(f"Tensor Type: {tensor_type}")
             else:
                 raise NotImplementedError("Anchor type %s is not supported" % str(self.anchor.target))
                 
@@ -1087,7 +1084,7 @@ using ${operation_name}_EpilogueVisitor = cutlass::epilogue::threadblock::Epilog
         # tree = self.tree
         function = self.function
 
-        self.tree.show()
+        logging.debug(f"{self.tree.show(stdout=False)}")
 
         if self.function.anchor.target in [torch.ops.aten.mm, torch.ops.aten.bmm]:
             function.pass_column_major_output_correction(self.tree, self.tree.root, self.output_layout)
@@ -1101,7 +1098,7 @@ using ${operation_name}_EpilogueVisitor = cutlass::epilogue::threadblock::Epilog
         self.kernel_outputs = function.kernel_outputs
         self.output_2_kernel_output = function.output_2_kernel_output
         # if function.anchor.target == torch.ops.aten._softmax:
-        self.tree.show()
+        logging.debug(f"{self.tree.show(stdout=False)}")
         tree = self.tree
         
         # create argument data type

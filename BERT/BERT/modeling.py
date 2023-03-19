@@ -307,6 +307,7 @@ class BertEmbeddings(nn.Module):
 class BertSelfAttention(nn.Module):
     distillation : Final[bool]
     def __init__(self, config):
+        self.config = config
         super(BertSelfAttention, self).__init__()
         if config.hidden_size % config.num_attention_heads != 0:
             raise ValueError(
@@ -665,7 +666,7 @@ class BertPreTrainingHeads(nn.Module):
         self.seq_relationship = nn.Linear(config.hidden_size, 2)
         self.sequence_output_is_dense = sequence_output_is_dense
 
-    def forward(self, sequence_output, pooled_output, masked_lm_labels):
+    def forward(self, sequence_output, pooled_output, masked_lm_labels=None):
         if self.sequence_output_is_dense:
             # We are masking out elements that won't contribute to loss because of masked lm labels
             sequence_flattened = torch.index_select(sequence_output.view(-1,sequence_output.shape[-1]), 0, torch.nonzero(masked_lm_labels.view(-1) != -1).squeeze())

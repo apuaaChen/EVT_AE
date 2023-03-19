@@ -3,8 +3,9 @@ import sys
 sys.path.append("/workspace/sparseTraining/Codegen/compiler")
 from passes import *
 from nodes import *
+import logging
 
-def pre_partition_optimization(joint_module):
+def pre_partition_optimization(joint_module, enabled_passes=["fusion", "uturn", "stream"]):
     # get graph
     graph = joint_module.graph
 
@@ -16,9 +17,11 @@ def pre_partition_optimization(joint_module):
         [torch.ops.aten.detach,]
     )
 
+    logging.info("[PASS] Loss Elimination")
     # pass: loss elimination
     pass_loss_elimination(joint_module, graph)
 
+    logging.info("[PASS] Composed Op Breaking down & Constant Folding")
     # # pass: composed op breakdown
     pass_composed_op_breakdown(joint_module, graph)
  
@@ -34,9 +37,9 @@ def pre_partition_optimization(joint_module):
     # pass: constant reduction
     pass_constant_folding(joint_module, graph)
 
+    logging.info("[PASS] Permute Preprocessing")
     # pass: replace tranpose 3D with permute
     pass_trans_2_permute(joint_module, graph)
-
 
     # pass: update attributes
     pass_update_attributes(joint_module, graph)
@@ -47,18 +50,18 @@ def pre_partition_optimization(joint_module):
     # pass: mark permutation in epilogue
     pass_mark_epilogue_permutations(joint_module, graph)
 
+    logging.info("[PASS] Layernorm Preprocessing")
     # pass: preprocess layernorm
     pass_layernorm_preprocessing(joint_module, graph)
 
+    logging.info("[PASS] Fusion")
     # # pass: gemm fusion
     pass_gemm_fusion(joint_module, graph)
 
-
-    # pass: assign stream
-    pass_assign_stream(joint_module, graph)
-
-    # reorder the instructions
-    # pass_instruction_reorder(joint_module, graph)
+    if "stream" in enabled_passes:
+        logging.info("[PASS] Multi-Stream Pass")
+        # pass: assign stream
+        pass_assign_stream(joint_module, graph)
 
     # pass weight grad tuner
     pass_weight_gradient_tuner(joint_module, graph)

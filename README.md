@@ -88,6 +88,7 @@ pip install 'git+https://github.com/NVIDIA/dllogger'
 pip install subword-nmt
 pip install pytablewriter
 pip install einops
+pip install deepspeed
 ```
 
 ```shell

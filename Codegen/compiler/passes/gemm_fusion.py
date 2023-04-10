@@ -376,7 +376,8 @@ class FusedGEMM:
                         lhs = torch.transpose(lhs, -1, -2)
                     if self.rhs_layout == cutlass.ColumnMajor:
                         rhs = torch.transpose(rhs, -1, -2)
-                    results = [torch.matmul(lhs, rhs),]
+                    # it may still contain some reshaping
+                    results = [torch.matmul(lhs, rhs).view(self.kernel_outputs[0].meta['tensor_meta'].shape),]
                 else:
                     if self.lhs_layout == cutlass.RowMajor:
                         M, K = lhs.size()

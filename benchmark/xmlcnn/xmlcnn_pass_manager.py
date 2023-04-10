@@ -3,8 +3,9 @@ import sys
 sys.path.append("/workspace/sparseTraining/Codegen/compiler")
 from passes import *
 from nodes import *
+import logging
 
-def pre_partition_optimization(joint_module):
+def pre_partition_optimization(joint_module, enabled_passes=["fusion", "uturn", "stream"]):
     # get graph
     graph = joint_module.graph
 
@@ -13,8 +14,17 @@ def pre_partition_optimization(joint_module):
     # pass: loss elimination
     pass_loss_elimination(joint_module, graph)
 
+    if "uturn" in enabled_passes:
+        disabled_list = [torch.ops.aten.convolution_backward,]
+    else:
+        disabled_list = [
+            torch.ops.aten.convolution_backward,
+            torch.ops.aten._log_softmax,
+            torch.ops.aten.nll_loss_backward,
+            torch.ops.aten._log_softmax_backward_data
+        ]
     # pass: composed op breakdown
-    pass_composed_op_breakdown(joint_module, graph, disabled_list=[torch.ops.aten.convolution_backward,])
+    pass_composed_op_breakdown(joint_module, graph, disabled_list=disabled_list)
 
     # pass: eliminate expand
     pass_eliminate_transparent_node(
@@ -32,8 +42,10 @@ def pre_partition_optimization(joint_module):
     # pass gemm fusion
     pass_gemm_fusion(joint_module, graph)
 
-    # pass: assign stream
-    pass_assign_stream(joint_module, graph, 1)
+    if "stream" in enabled_passes:
+        logging.info("[PASS] Multi-Stream Pass")
+        # pass: assign stream
+        pass_assign_stream(joint_module, graph, 1)
 
     # recompile graph
     joint_module.recompile()

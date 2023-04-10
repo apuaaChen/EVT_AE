@@ -5,10 +5,11 @@ from functorch._src.partitioners import _is_primal, _extract_fwd_bwd_outputs, \
     _extract_fwd_bwd_modules
 from passes import *
 from xmlcnn_pass_manager import *
+import logging
 
 
-def partition_func(joint_module: fx.GraphModule, _joint_inputs):
-    pre_partition_optimization(joint_module)
+def partition_func(joint_module: fx.GraphModule, _joint_inputs, enabled_passes=["fusion", "uturn", "stream"]):
+    pre_partition_optimization(joint_module, enabled_passes)
 
     primal_inputs = list(filter(_is_primal, joint_module.graph.nodes))
     fwd_outputs, bwd_outputs = _extract_fwd_bwd_outputs(joint_module)
@@ -22,5 +23,6 @@ def partition_func(joint_module: fx.GraphModule, _joint_inputs):
     return _extract_fwd_bwd_modules(joint_module, saved_values)
 
 def compiler_fn(fx_module: torch.fx.GraphModule, _):
-    print(fx_module.code)
+    logging.debug("============Optimized Source Code============")
+    logging.debug(fx_module.code)
     return fx_module

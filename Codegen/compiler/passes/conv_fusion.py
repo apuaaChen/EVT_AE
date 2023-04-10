@@ -24,6 +24,7 @@ from passes import autotuner
 from autotuner.design_space_descriptor import ConvConfigDescriptor
 from passes.nvfuser_parser import NvfuserParser
 import nvtx
+import logging
 
 
 def get_alignment(dim):
@@ -106,10 +107,6 @@ class FusedConv2d:
         align_b = get_alignment(C)
         align_c = get_alignment(K)
 
-        print(align_a)
-        print(align_b)
-        print(align_c)
-
         A = TensorDescription(
             element_a, layout_a, align_a
         )
@@ -157,7 +154,7 @@ class FusedConv2d:
 
         best_config = autotuner(self.conv_descriptor)
 
-        print(best_config)
+        logging.debug(f"{best_config}")
 
         threadblock_shape = [
             best_config['block_x'], best_config['block_y'], best_config['block_z']]
@@ -348,7 +345,7 @@ class FusedConv2dDgrad:
 
         best_config = autotuner(self.conv_descriptor)
 
-        print(best_config)
+        logging.debug(f"{best_config}")
 
         threadblock_shape = [
             best_config['block_x'], best_config['block_y'], best_config['block_z']]
@@ -531,7 +528,7 @@ class FusedConv2dWgrad:
 
         best_config = autotuner(self.conv_descriptor)
 
-        print(best_config)
+        logging.debug(f"{best_config}")
 
         threadblock_shape = [
             best_config['block_x'], best_config['block_y'], best_config['block_z']]
@@ -665,7 +662,6 @@ class FusedBNBackward:
                 permuted_outputs.append(output.permute(0, 3, 1, 2))
             else:
                 permuted_outputs.append(output)
-        # print(permuted_outputs[0].contiguous().view(-1))
         # return [torch.ops.aten.native_batch_norm_backward(args[0], args[1], args[2], args[3], args[4], args[5], args[6], True, 1e-5, [True, True, True])[0].contiguous(), permuted_outputs[1], permuted_outputs[2]]
         return permuted_outputs
 
@@ -716,7 +712,7 @@ def pass_conv_fusion(module, graph, verbose=True):
     for node in tqdm(graph.nodes):
         if node.op == "call_function":
             if node.target == torch.ops.aten.convolution:
-
+                # if conv_idx >=4: continue
                 update_topological_index(graph)
                 node.meta["sparse"] = False
                 fused_conv = FusedConv2d(node)
@@ -749,6 +745,7 @@ def pass_conv_fusion(module, graph, verbose=True):
                 conv_idx += 1
             
             elif node.target == torch.nn.grad.conv2d_input:
+                # if conv_dgrad_idx >= 0: continue
                 update_topological_index(graph)
                 node.meta["sparse"] = False
                 fused_conv_dgrad = FusedConv2dDgrad(node)
@@ -797,8 +794,8 @@ def pass_conv_fusion(module, graph, verbose=True):
 
             
             elif node.target == torch.ops.aten.native_batch_norm.default:
-                print("=========================================================")
-                print(node)
+                # if bn_fp_idx >= 4: continue
+                logging.debug(f"====================={node}======================")
 
                 update_topological_index(graph)
                 fused_bn_fp = FusedBNForward(node, module)
@@ -833,8 +830,8 @@ def pass_conv_fusion(module, graph, verbose=True):
                 bn_fp_idx += 1
             
             elif node.target == torch.ops.aten.native_batch_norm_backward:
-                print("=========================================================")
-                print(node)
+                # if bn_bp_idx >= 0: continue
+                logging.debug(f"====================={node}======================")
 
                 update_topological_index(graph)
                 fused_bn_bp = FusedBNBackward(node, module)
@@ -862,8 +859,9 @@ def pass_conv_fusion(module, graph, verbose=True):
                 bn_bp_idx += 1
             
             elif node.target in [torch.ops.aten.expand, torch.ops.aten.max_pool2d_with_indices_backward]:
-                print("=================================================")
-                print("Elementwise")
+                # if el_idx >= 3: continue
+                logging.debug(f"====================={node}======================")
+
                 update_topological_index(graph)
                 fused_elementwise = FusedElementwise(node, module)
 

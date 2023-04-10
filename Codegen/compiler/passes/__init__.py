@@ -39,3 +39,4 @@ from passes.conv_fusion import pass_conv_fusion
 from passes.batch_norm_preprocessing import pass_batchnorm_preprocessing
 from passes.layout_transform import pass_nchw_to_nhwc
 from passes.fix_permute_issue import pass_permute_view_fix
+from passes.tvm_preprocess import pass_tvm_preprocessing

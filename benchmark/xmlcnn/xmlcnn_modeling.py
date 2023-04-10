@@ -97,10 +97,15 @@ class xmlCNN(nn.Module):
     def forward(self, e_emb, batch_y):
         return self.model(e_emb, batch_y)
     
-    def aot_optimize(self, fw_compiler, bw_compiler, partition_fn):
-        self.model = aot_module(
-            self.model, fw_compiler=fw_compiler, 
-            bw_compiler=bw_compiler, partition_fn=partition_fn)
+    def aot_optimize(self, fw_compiler, bw_compiler, partition_fn=None):
+        if partition_fn is None:
+            self.model = aot_module(
+                self.model, fw_compiler=fw_compiler, 
+                bw_compiler=bw_compiler)
+        else:
+            self.model = aot_module(
+                self.model, fw_compiler=fw_compiler, 
+                bw_compiler=bw_compiler, partition_fn=partition_fn)
     
     def capture_graph(self, batch_size, sequence_length, embedding_dim, y_dim, optimizer, warmup_iteration=3):
         device = next(self.parameters()).device

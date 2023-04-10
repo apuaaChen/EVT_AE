@@ -1,0 +1,9 @@
+{
+    "pytorch": 47456.3,
+    "pytorch+nvfusor": 56822.8,
+    "lightseq2": 53868.2,
+    "slapo": 63740.3,
+    "ours \\w fusion": 62273.5,
+    "ours \\w fusion+uturn": 62948.0,
+    "ours \\w fusion+uturn+stream": 64771.6
+}

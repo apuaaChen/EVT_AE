@@ -305,10 +305,15 @@ class ResNet(nn.Module):
                 weight_shape = m.weight.data.size()
                 m.weight.data = m.weight.data.permute(0, 2, 3, 1).contiguous().view(weight_shape)#.permute(0, 3, 1, 2)
     
-    def aot_optimize(self, fw_compiler, bw_compiler, partition_fn):
-        self.model = aot_module(
-            self.model, fw_compiler=fw_compiler, 
-            bw_compiler=bw_compiler, partition_fn=partition_fn)
+    def aot_optimize(self, fw_compiler, bw_compiler, partition_fn=None):
+        if partition_fn is None:
+            self.model = aot_module(
+                self.model, fw_compiler=fw_compiler, 
+                bw_compiler=bw_compiler)
+        else:
+            self.model = aot_module(
+                self.model, fw_compiler=fw_compiler, 
+                bw_compiler=bw_compiler, partition_fn=partition_fn)
     
     def forward(self, x, y):
         return self.model(x, y)

@@ -134,6 +134,9 @@ def pass_using_lightseq2_embedding(sch):
         else:
             pass_using_flash_attention(sch[subsch])
 
+# pass 3: fuse bias gelu:
+# can use nvfuser to process
+
 pass_using_flash_attention(sch)
 pass_using_lightseq2_embedding(sch)
 

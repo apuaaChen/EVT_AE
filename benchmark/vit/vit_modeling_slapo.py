@@ -92,11 +92,11 @@ class LSBertLayer(nn.Module):
             local_rank=0
         )
         self.encoder_layer = LSTransformerEncoderLayer(encoder_config)
+        self.attention_mask = torch.ones(size=[128, config.max_position_embeddings], dtype=torch.float16, device="cuda")
     
-    def forward(self, hidden_states, attention_mask):
+    def forward(self, hidden_states):
         hidden_states = hidden_states.permute([1, 0, 2])
-        attention_mask = attention_mask.squeeze()
-        return self.encoder_layer(hidden_states, attention_mask).permute([1, 0, 2])
+        return self.encoder_layer(hidden_states, self.attention_mask).permute([1, 0, 2])
 
 
 ################################################################################

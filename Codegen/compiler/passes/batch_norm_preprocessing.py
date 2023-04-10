@@ -15,6 +15,7 @@
 ################################################################################
 import torch
 from nodes import *
+import logging
 
 
 ################################################################################
@@ -27,10 +28,7 @@ def pass_batchnorm_preprocessing(module, graph):
         if node.op == "call_function":
             if node.target == torch.ops.aten.native_batch_norm:
                 # if batch_norm_idx >=4: continue
-                print("=========================================================")
-                print(node)
-
-                
+                logging.debug(f"====================={node}======================")
 
                 ################################################################
                 # inject the epilogue nodes for reduction fusion
@@ -60,7 +58,7 @@ def pass_batchnorm_preprocessing(module, graph):
                 batch_norm_idx += 1
             # for batch norm backward
             elif node.target == torch.ops.aten.native_batch_norm_backward:
-                # print(node.args)
+                logging.debug(f"====================={node}======================")
                 # if batch_norm_backward_idx >= 0: continue
 
                 # inject the epilogue nodes for reduction fusion

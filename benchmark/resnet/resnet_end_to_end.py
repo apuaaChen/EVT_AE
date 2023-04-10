@@ -82,6 +82,8 @@ model_fused, optimizer_fused = amp.initialize(
 model_fused.train()
 model_fused.to_channels_last()
 model_fused.aot_optimize(compiler_fn, compiler_fn, partition_func)
+# loss = model_fused(x, y) * 1e+2
+# loss.backward()
 # 
 model_fused.capture_graph((batch_size, 4, 224, 224), optimizer_fused)
 
@@ -103,8 +105,8 @@ if args.mode == "verify":
             assert torch.sum(torch.isclose(grad_origin, grad_fused, rtol=3e-1)) / grad_origin.numel() > 0.7
         except:
             print(param1[0])
-            print(grad_origin.contiguous().view(-1))
-            print(grad_fused.contiguous().view(-1))
+            # print(grad_origin.contiguous().view(-1))
+            # print(grad_fused.contiguous().view(-1))
 
 # for profiling
 if args.mode == "profile":

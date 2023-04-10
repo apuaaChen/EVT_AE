@@ -22,8 +22,16 @@ def pre_partition_optimization(joint_module, enabled_passes=["fusion", "uturn", 
     pass_loss_elimination(joint_module, graph)
 
     logging.info("[PASS] Composed Op Breaking down & Constant Folding")
+    if "uturn" in enabled_passes:
+        disabled_list = []
+    else:
+        disabled_list = [
+            torch.ops.aten._log_softmax,
+            torch.ops.aten.nll_loss_backward,
+            torch.ops.aten._log_softmax_backward_data
+        ]
     # # pass: composed op breakdown
-    pass_composed_op_breakdown(joint_module, graph)
+    pass_composed_op_breakdown(joint_module, graph, disabled_list)
  
     # pass: remove duplicated nodes
     pass_remove_duplicated_node(joint_module, graph)

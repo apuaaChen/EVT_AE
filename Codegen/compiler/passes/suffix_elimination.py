@@ -16,6 +16,7 @@
 import torch
 from nodes import *
 import operator
+import logging
 
 ################################################################################
 # Graph-level pass to eliminate suffix
@@ -96,7 +97,8 @@ def pass_suffix_elimination(module, graph):
                 if node.target == torch.ops.aten.native_dropout:
                     node.meta["tensor_meta"] = node.args[0].meta["tensor_meta"]._replace()
             except:
-                print(node.target)
+                # pass
+                logging.debug(f"{node.target}")
     
     # insert constant as attribute tensors
     name_idx = 0

@@ -26,9 +26,6 @@ class NvfuserParser:
             self.update_sum_nodes(node)
         self.get_all_input_nodes()
 
-        print(self.fused_nodes)
-        print(self.input_nodes)
-        print(self.outputs)
         # self.get_all_inputs()
     
     def dfs(self, node):
@@ -182,7 +179,6 @@ class NvfuserParser:
 
         subgraph = _extract_graph_with_inputs_outputs(module.graph, self.input_nodes, self.outputs)
         fused_module = torch.fx.GraphModule(module, subgraph)
-        print(fused_module)
 
         return torch.jit.script(fused_module)
         # Note: it is quite strange that the torchscript here returns nan

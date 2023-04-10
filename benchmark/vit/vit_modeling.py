@@ -88,20 +88,34 @@ class Attention(nn.Module):
         out = out.view(seq_length, batch_size, self.dim)
         # out = rearrange(out, 'b h n d -> b n (h d)')
         return self.to_out(out)
+    
+class TransformerLayer(nn.Module):
+    def __init__(self, dim, heads, dim_head, mlp_dim, dropout = 0.):
+        super().__init__()
+        self.attention = PreNorm(dim, Attention(dim, heads = heads, dim_head = dim_head, dropout = dropout))
+        self.ff = PreNorm(dim, FeedForward(dim, mlp_dim, dropout = dropout))
+    
+    def forward(self, x):
+        x = self.attention(x) + x
+        x = self.ff(x) + x
+        return x
 
 class Transformer(nn.Module):
     def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout = 0.):
         super().__init__()
         self.layers = nn.ModuleList([])
         for _ in range(depth):
-            self.layers.append(nn.ModuleList([
-                PreNorm(dim, Attention(dim, heads = heads, dim_head = dim_head, dropout = dropout)),
-                PreNorm(dim, FeedForward(dim, mlp_dim, dropout = dropout))
-            ]))
+            # self.layers.append(nn.ModuleList([
+            #     PreNorm(dim, Attention(dim, heads = heads, dim_head = dim_head, dropout = dropout)),
+            #     PreNorm(dim, FeedForward(dim, mlp_dim, dropout = dropout))
+            # ]))
+            self.layers.append(TransformerLayer(dim, heads, dim_head, mlp_dim, dropout))
     def forward(self, x):
-        for attn, ff in self.layers:
-            x = attn(x) + x
-            x = ff(x) + x
+        # for attn, ff in self.layers:
+        #     x = attn(x) + x
+        #     x = ff(x) + x
+        for layer in self.layers:
+            x = layer(x)
         return x
 
 class ViT_(nn.Module):
@@ -186,10 +200,15 @@ class ViT(nn.Module):
     def forward(self, img, y):
         return self.model(img, y)
 
-    def aot_optimize(self, fw_compiler, bw_compiler, partition_fn):
-        self.model = aot_module(
-            self.model, fw_compiler=fw_compiler, 
-            bw_compiler=bw_compiler, partition_fn=partition_fn)
+    def aot_optimize(self, fw_compiler, bw_compiler, partition_fn=None):
+        if partition_fn is None:
+            self.model = aot_module(
+                self.model, fw_compiler=fw_compiler, 
+                bw_compiler=bw_compiler)
+        else:
+            self.model = aot_module(
+                self.model, fw_compiler=fw_compiler, 
+                bw_compiler=bw_compiler, partition_fn=partition_fn)
 
     def capture_graph(self, input_size, optimizer, warmup_iteration=3):
         # self.model = self.model.to(memory_format=torch.channels_last)

@@ -1,5 +1,7 @@
 {
     "pytorch": 16800.93,
     "pytorch+nvfusor": 18328.99,
-    "ours \\w fusion+uturn+stream": 46035.64 
+    "ours \\w uturn": 37438.055,
+    "ours \\w fusion+uturn": 46050.31,
+    "ours \\w fusion+uturn+stream": 46058.43 
 }

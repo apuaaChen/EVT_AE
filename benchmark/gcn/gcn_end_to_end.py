@@ -1,7 +1,7 @@
 import torch
 from ogb.nodeproppred import DglNodePropPredDataset
 import dgl
-from gat_modeling import GCN
+from gcn_modeling import GCN
 import torch.nn.functional as F
 from tqdm import tqdm
 import nvtx

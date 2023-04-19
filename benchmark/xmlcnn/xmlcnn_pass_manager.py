@@ -15,6 +15,7 @@ def pre_partition_optimization(joint_module, enabled_passes=["fusion", "uturn", 
     pass_loss_elimination(joint_module, graph)
 
     if "uturn" in enabled_passes:
+        logging.info("[PASS] Uturn Pass")
         disabled_list = [torch.ops.aten.convolution_backward,]
     else:
         disabled_list = [
@@ -38,9 +39,10 @@ def pre_partition_optimization(joint_module, enabled_passes=["fusion", "uturn", 
     # pass: strength reduction
     pass_stength_reduction(joint_module, graph)
     
-
-    # pass gemm fusion
-    pass_gemm_fusion(joint_module, graph)
+    if "fusion" in enabled_passes:
+        logging.info("[PASS] Fusion Pass")
+        # pass gemm fusion
+        pass_gemm_fusion(joint_module, graph)
 
     if "stream" in enabled_passes:
         logging.info("[PASS] Multi-Stream Pass")

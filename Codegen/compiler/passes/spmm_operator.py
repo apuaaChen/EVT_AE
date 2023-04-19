@@ -267,7 +267,5 @@ struct ${operation_name}${operation_suffix} :
         values['epilogue_visitor'] = operation.epilogue_functor.emit(operation)
         
         code =  SubstituteTemplate(self.cutlass_template_visitor, values)
-
-        print(code)
-
+        
         return code

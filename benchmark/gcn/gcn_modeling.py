@@ -1,11 +1,83 @@
 from dgl.nn.pytorch import GATConv, edge_softmax
 from dgl import function as fn
+import dgl
 import dgl.ops as F
 import torch
 from torch.fx._symbolic_trace import _create_wrapped_func
 import torch.nn as nn
 import nvtx
 from functorch.compile import aot_module
+from apex.contrib.xentropy import SoftmaxCrossEntropyLoss
+
+
+################################################################################
+# DGL GCN
+class DGLGraphConv(nn.Module):
+    def __init__(self, in_dim, out_dim, activation=None) -> None:
+        super(DGLGraphConv, self).__init__()
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+        self.activation = activation
+        self.weight = nn.Parameter(torch.Tensor(in_dim, out_dim))
+        self.bias = nn.Parameter(torch.Tensor(out_dim))
+        nn.init.xavier_normal_(self.weight)
+        nn.init.zeros_(self.bias)
+    
+    def forward(self, graph, feat):
+        with graph.local_scope():
+            # graph.ndata["ci"] = torch.pow(
+            #     graph.out_degrees().clamp(min=1).to(torch.float16), -0.5
+            # )
+            # graph.ndata["cj"] = torch.pow(
+            #     graph.in_degrees().clamp(min=1).to(torch.float16), -0.5
+            # )
+            graph.ndata["h"] = feat
+            # graph.update_all(self.mfunc, self.rfunc)
+            graph.update_all(fn.u_mul_e('h', 'w', 'm'), fn.sum('m', 'h'))
+            h = graph.ndata["h"]
+            h = torch.matmul(h, self.weight) + self.bias
+            if self.activation is not None:
+                h = self.activation(h)
+            return h
+
+    def mfunc(self, edges):
+        return {"m": edges.src["h"], "ci": edges.src["ci"]}
+
+    def rfunc(self, nodes):
+        ci = nodes.mailbox["ci"].unsqueeze(2)
+        newh = (nodes.mailbox["m"] * ci).sum(1) * nodes.data["cj"].unsqueeze(1)
+        return {"h": newh}
+
+class DGLGCN_(nn.Module):
+    def __init__(
+        self, in_feats, n_hidden, n_classes, n_layers, activation, dropout
+    ):
+        super(DGLGCN_, self).__init__()
+        self.layers = nn.ModuleList()
+        # input layer
+        self.layers.append(DGLGraphConv(in_feats, n_hidden, activation=activation))
+        # self.layers.append(dgl.nn.GraphConv(in_feats, n_hidden, activation=activation))
+        # hidden layers
+        for i in range(n_layers - 1):
+            self.layers.append(
+                DGLGraphConv(n_hidden, n_hidden, activation=activation)
+            )
+            # self.layers.append(dgl.nn.GraphConv(in_feats, n_hidden, activation=activation))
+        # output layer
+        self.layers.append(DGLGraphConv(n_hidden, n_classes))
+        # self.layers.append(dgl.nn.GraphConv(n_hidden, n_classes))
+        self.dropout = nn.Dropout(p=dropout)
+        self.loss = torch.nn.CrossEntropyLoss()
+
+    def forward(self, g, features, labels):
+        h = features
+        for i, layer in enumerate(self.layers):
+            if i != 0:
+                h = self.dropout(h)
+            h = layer(g, h)
+        return self.loss(h, labels)
+
+################################################################################
 
 
 class myGATConv(GATConv):
@@ -87,7 +159,7 @@ class GraphConv(nn.Module):
 
 class GCN_(nn.Module):
     def __init__(
-        self, in_feats, n_hidden, n_classes, n_layers, activation, dropout, f32_loss
+        self, in_feats, n_hidden, n_classes, n_layers, activation, dropout, f32_loss, apex_loss
     ):
         super(GCN_, self).__init__()
         self.layers = nn.ModuleList()
@@ -102,6 +174,7 @@ class GCN_(nn.Module):
         self.layers.append(GraphConv(n_hidden, n_classes))
         self.dropout = nn.Dropout(p=dropout)
         self.loss_fcn = torch.nn.CrossEntropyLoss()
+        self.apex_loss = apex_loss
         self.f32_loss = f32_loss
     
     def set_graph(self, graph):
@@ -116,16 +189,20 @@ class GCN_(nn.Module):
             h = layer(h)
         # return self.loss_fcn(h[mask], labels[mask])
         # issue: inf loss!!
-        if self.f32_loss:
-            h = h.to(torch.float32)
-        return self.loss_fcn(h, labels)
+        if not self.apex_loss:
+            if self.f32_loss:
+                h = h.to(torch.float32)
+            return self.loss_fcn(h, labels)
+        else:
+            loss = SoftmaxCrossEntropyLoss.apply(h, labels, 0.0, 0, True).mean()
+            return loss
 
 class GCN(nn.Module):
     def __init__(
-        self, in_feats, n_hidden, n_classes, n_layers, activation, dropout, f32_loss=True
+        self, in_feats, n_hidden, n_classes, n_layers, activation, dropout, f32_loss=True, apex_loss=False
     ):
         super(GCN, self).__init__()
-        self.model = GCN_(in_feats, n_hidden, n_classes, n_layers, activation, dropout, f32_loss)
+        self.model = GCN_(in_feats, n_hidden, n_classes, n_layers, activation, dropout, f32_loss, apex_loss)
 
     def forward(self, features, labels):
         return self.model(features, labels)
@@ -134,10 +211,15 @@ class GCN(nn.Module):
         for layer in self.model.layers:
             layer.set_graph(graph)
     
-    def aot_optimize(self, fw_compiler, bw_compiler, partition_fn):
-        self.model = aot_module(
-            self.model, fw_compiler=fw_compiler, 
-            bw_compiler=bw_compiler, partition_fn=partition_fn)
+    def aot_optimize(self, fw_compiler, bw_compiler, partition_fn=None):
+        if partition_fn is None:
+            self.model = aot_module(
+                self.model, fw_compiler=fw_compiler, 
+                bw_compiler=bw_compiler)
+        else:
+            self.model = aot_module(
+                self.model, fw_compiler=fw_compiler, 
+                bw_compiler=bw_compiler, partition_fn=partition_fn)
     
     def capture_graph(self, features, labels, optimizer, warmup_iteration=3):
         self.static_features = torch.randn_like(features)

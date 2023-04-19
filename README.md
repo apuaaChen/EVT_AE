@@ -3,7 +3,7 @@
 ## Launch docker
 
 ```shell
-ocker run --gpus all --name zdchen_nv_torch_4 -v /data:/data -v ~/projects:/workspace -it -p 8125:22 nvcr.io/nvidia/pytorch:22.08-py3
+ocker run --gpus all --name ***_nv_torch_4 -v /data:/data -v ~/projects:/workspace -it -p 8125:22 nvcr.io/nvidia/pytorch:22.08-py3
 ```
 
 We use NGC pytorch::22.08-py3 and functorch 0.3.0a0+f4a3d5a.
@@ -13,7 +13,7 @@ We use NGC pytorch::22.08-py3 and functorch 0.3.0a0+f4a3d5a.
 **Add a user name to the container**
 
 ```shell
-adduser --home /home/chenzd15thu chenzd15thu
+adduser --home /home/*** ***
 ```
 
 and then follow the instructions.
@@ -66,7 +66,7 @@ pip install git+https://github.com/pytorch/functorch.git@f4a3d5af55897914d516b13
 **Install sparseTraining**
 
 ```
-git clone --recursive https://github.com/apuaaChen/sparseTraining.git
+git clone --recursive https://github.com/***/sparseTraining.git
 ```
 
 **Fix the missing header in pytorch**
@@ -97,7 +97,7 @@ cd $CUTLASS_PATH/tools/library/scripts/pycutlass && bash build.sh
 
 ```
 groupadd docker
-usermod -a -G docker chenzd15thu
+usermod -a -G docker ***
 chgrp -R docker /workspace/bert/
 chmod -R g+rwx /workspace/bert/
 ```

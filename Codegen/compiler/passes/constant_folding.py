@@ -15,7 +15,7 @@
 ################################################################################
 import torch
 from nodes import *
-from functorch._src.partitioners import _is_primal, _is_tangent, _extract_graph_with_inputs_outputs
+from torch._functorch.partitioners import _is_primal, _is_tangent, _extract_graph_with_inputs_outputs
 from passes.print_graph import pass_print_graph
 from passes.extract_common_factor import extract_factor
 import operator

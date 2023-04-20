@@ -10,18 +10,18 @@
 [submodule "thirdparty/AITemplate"]
 	path = thirdparty/AITemplate
 	url = https://github.com/facebookincubator/AITemplate.git
-[submodule "/workspace/sparseTraining/thirdparty/FlexFlow"]
-	path = /workspace/sparseTraining/thirdparty/FlexFlow
+[submodule "thirdparty/FlexFlow"]
+	path = thirdparty/FlexFlow
 	url = https://github.com/flexflow/FlexFlow.git
-[submodule "/workspace/sparseTraining/thirdparty/DeepLearningExample"]
-	path = /workspace/sparseTraining/thirdparty/DeepLearningExample
+[submodule "thirdparty/DeepLearningExample"]
+	path = thirdparty/DeepLearningExample
 	url = https://github.com/NVIDIA/DeepLearningExamples.git
-[submodule "/workspace/sparseTraining/thirdparty/SSGC"]
-	path = /workspace/sparseTraining/thirdparty/SSGC
+[submodule "thirdparty/SSGC"]
+	path = thirdparty/SSGC
 	url = https://github.com/allenhaozhu/SSGC.git
 [submodule "thirdparty/raf"]
 	path = thirdparty/raf
 	url = https://github.com/awslabs/raf
-[submodule "/workspace/sparseTraining/thirdparty/tvm"]
-	path = /workspace/sparseTraining/thirdparty/tvm
+[submodule "thirdparty/tvm"]
+	path = thirdparty/tvm
 	url = https://github.com/apache/tvm

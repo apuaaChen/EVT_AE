@@ -1,10 +1,10 @@
 import torch
 import sys
-sys.path.append("/workspace/bert")
+sys.path.append("/workspace/gtl/sparseTraining/thirdparty/DeepLearningExample/PyTorch/LanguageModeling/BERT")
 from modeling import BertSelfAttention, BertConfig
 from torch.fx import symbolic_trace
 from torch.fx.passes.shape_prop import ShapeProp
-sys.path.append("/workspace/sparseTraining/Codegen/compiler")
+sys.path.append("/workspace/gtl/sparseTraining/Codegen/compiler")
 from passes import *
 from functorch.compile import aot_module
 import logging

@@ -5,6 +5,8 @@ from pycutlass import *
 import pycutlass
 from pycutlass.test.profiler import GpuTimer
 
+from torch.utils._python_dispatch import _pop_mode_temporarily
+
 class ConfigDescriptor:
     def __init__(self, autotuning_rounds=15) -> None:
         self.autotuning_rounds = autotuning_rounds
@@ -252,39 +254,42 @@ class GemmConfigDescriptor(ConfigDescriptor):
         ## Profile
         M, N, K = self.problem_description["problem_size"]
 
-        tensor_A = torch.empty(size=(M * K,), dtype=torch.float16, device="cuda")
-        tensor_B = torch.empty(size=(N * K,), dtype=torch.float16, device="cuda")
-        tensor_C = torch.empty(size=(M * N,), dtype=torch.float16, device="cuda")
+        # necessary! otherwise, the functorch sets mode to fake tensor mode
+        # and there will be illegal memory access during the tuning
+        with _pop_mode_temporarily():
+            tensor_A = torch.empty(size=(M * K,), dtype=torch.float16, device="cuda")
+            tensor_B = torch.empty(size=(N * K,), dtype=torch.float16, device="cuda")
+            tensor_C = torch.empty(size=(M * N,), dtype=torch.float16, device="cuda")
 
-        split_k_slices = config["split_k_slices"]
+            split_k_slices = config["split_k_slices"]
 
-        if self.problem_description['split_k_mode'] in ["None", "Serial"]:
-            arguments = GemmArguments(
-                operation=operation, problem_size=cutlass.gemm.GemmCoord(M, N, K),
-                A=tensor_A, B=tensor_B, C=tensor_C, D=tensor_C, 
-                output_op = operation.epilogue_type(1.0, 0.0),
-                gemm_mode=cutlass.gemm.Mode.Gemm, split_k_slices=split_k_slices
-            )
-        else:
-            arguments = GemmArguments(
-                operation=operation, problem_size=cutlass.gemm.GemmCoord(M, N, K),
-                A=tensor_A, B=tensor_B, C=tensor_C, D=tensor_C,
-                output_op = operation.epilogue_type(1.0, 0.0),
-                gemm_mode=cutlass.gemm.Mode.GemmSplitKParallel,
-                split_k_slices=split_k_slices
-            )
+            if self.problem_description['split_k_mode'] in ["None", "Serial"]:
+                arguments = GemmArguments(
+                    operation=operation, problem_size=cutlass.gemm.GemmCoord(M, N, K),
+                    A=tensor_A, B=tensor_B, C=tensor_C, D=tensor_C, 
+                    output_op = operation.epilogue_type(1.0, 0.0),
+                    gemm_mode=cutlass.gemm.Mode.Gemm, split_k_slices=split_k_slices
+                )
+            else:
+                arguments = GemmArguments(
+                    operation=operation, problem_size=cutlass.gemm.GemmCoord(M, N, K),
+                    A=tensor_A, B=tensor_B, C=tensor_C, D=tensor_C,
+                    output_op = operation.epilogue_type(1.0, 0.0),
+                    gemm_mode=cutlass.gemm.Mode.GemmSplitKParallel,
+                    split_k_slices=split_k_slices
+                )
 
-        # warmup iterations
-        for _ in range(200):
-            operation.run(arguments)
-        
-        timer = GpuTimer()
+            # warmup iterations
+            for _ in range(200):
+                operation.run(arguments)
+            
+            timer = GpuTimer()
 
-        # profiling iterations
-        timer.start()
-        for _ in range(200):
-            operation.run(arguments)
-        timer.stop_and_wait()
+            # profiling iterations
+            timer.start()
+            for _ in range(200):
+                operation.run(arguments)
+            timer.stop_and_wait()
 
         return timer.duration(200)
     
@@ -430,31 +435,33 @@ class BatchedGemmConfigDescriptor(ConfigDescriptor):
 
         ## Profile
         B, M, N, K = self.problem_description["problem_size"]
+        # necessary! otherwise, the functorch sets mode to fake tensor mode
+        # and there will be illegal memory access during the tuning
+        with _pop_mode_temporarily():
+            tensor_A = torch.empty(size=(B * M * K,), dtype=torch.float16, device="cuda")
+            tensor_B = torch.empty(size=(B * N * K,), dtype=torch.float16, device="cuda")
+            tensor_C = torch.empty(size=(B * M * N,), dtype=torch.float16, device="cuda")
 
-        tensor_A = torch.empty(size=(B * M * K,), dtype=torch.float16, device="cuda")
-        tensor_B = torch.empty(size=(B * N * K,), dtype=torch.float16, device="cuda")
-        tensor_C = torch.empty(size=(B * M * N,), dtype=torch.float16, device="cuda")
+            arguments = BatchedGemmPermutedArguments(
+                operation=operation, problem_size=cutlass.gemm.GemmCoord(M, N, K),
+                A=tensor_A, B=tensor_B, C=tensor_C, D=tensor_C, 
+                output_op = operation.epilogue_type(1.0, 0.0),
+                gemm_mode=cutlass.gemm.Mode.Batched, batch=B,
+                permute_A=self.problem_description["permute_a"],
+                permute_B=self.problem_description["permute_b"]
+            )
 
-        arguments = BatchedGemmPermutedArguments(
-            operation=operation, problem_size=cutlass.gemm.GemmCoord(M, N, K),
-            A=tensor_A, B=tensor_B, C=tensor_C, D=tensor_C, 
-            output_op = operation.epilogue_type(1.0, 0.0),
-            gemm_mode=cutlass.gemm.Mode.Batched, batch=B,
-            permute_A=self.problem_description["permute_a"],
-            permute_B=self.problem_description["permute_b"]
-        )
+            # warmup iterations
+            for _ in range(200):
+                operation.run(arguments)
+            
+            timer = GpuTimer()
 
-        # warmup iterations
-        for _ in range(200):
-            operation.run(arguments)
-        
-        timer = GpuTimer()
-
-        # profiling iterations
-        timer.start()
-        for _ in range(200):
-            operation.run(arguments)
-        timer.stop_and_wait()
+            # profiling iterations
+            timer.start()
+            for _ in range(200):
+                operation.run(arguments)
+            timer.stop_and_wait()
 
         return timer.duration(200)
 
@@ -663,31 +670,33 @@ class ConvConfigDescriptor(ConfigDescriptor):
         tensor_C_size = cutlass.conv.implicit_gemm_tensor_c_size(
             self.conv_kind, self.problem_size
         )
+        # necessary! otherwise, the functorch sets mode to fake tensor mode
+        # and there will be illegal memory access during the tuning
+        with _pop_mode_temporarily():
+            tensor_A = torch.empty(size=(tensor_A_size,), dtype=torch.float16, device="cuda")
+            tensor_B = torch.empty(size=(tensor_B_size,), dtype=torch.float16, device="cuda")
+            tensor_C = torch.empty(size=(tensor_C_size,), dtype=torch.float16, device="cuda")
 
-        tensor_A = torch.empty(size=(tensor_A_size,), dtype=torch.float16, device="cuda")
-        tensor_B = torch.empty(size=(tensor_B_size,), dtype=torch.float16, device="cuda")
-        tensor_C = torch.empty(size=(tensor_C_size,), dtype=torch.float16, device="cuda")
+            self.problem_size.split_k_slices = config["split_k_slices"]
 
-        self.problem_size.split_k_slices = config["split_k_slices"]
+            arguments = Conv2dArguments(
+                operation, self.problem_size,
+                A=tensor_A, B=tensor_B, C=tensor_C, D=tensor_C,
+                output_op=operation.epilogue_type(1.0, 0.0),
+                split_k_mode=cutlass.conv.SplitKMode.Serial,
+                split_k_slices=config["split_k_slices"]
+            )
 
-        arguments = Conv2dArguments(
-            operation, self.problem_size,
-            A=tensor_A, B=tensor_B, C=tensor_C, D=tensor_C,
-            output_op=operation.epilogue_type(1.0, 0.0),
-            split_k_mode=cutlass.conv.SplitKMode.Serial,
-            split_k_slices=config["split_k_slices"]
-        )
+            # warmup iterations
+            for _ in range(200):
+                operation.run(arguments)
+            
+            timer = GpuTimer()
 
-        # warmup iterations
-        for _ in range(200):
-            operation.run(arguments)
-        
-        timer = GpuTimer()
-
-        # profiling iterations
-        timer.start()
-        for _ in range(200):
-            operation.run(arguments)
-        timer.stop_and_wait()
+            # profiling iterations
+            timer.start()
+            for _ in range(200):
+                operation.run(arguments)
+            timer.stop_and_wait()
 
         return timer.duration(200)

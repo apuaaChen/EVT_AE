@@ -72,7 +72,7 @@ def pre_partition_optimization(joint_module, enabled_passes=["fusion", "uturn", 
         pass_assign_stream(joint_module, graph)
 
     # pass weight grad tuner
-    pass_weight_gradient_tuner(joint_module, graph)
+    # pass_weight_gradient_tuner(joint_module, graph)
 
     # recompile graph
     joint_module.recompile()

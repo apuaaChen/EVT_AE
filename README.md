@@ -1,4 +1,11 @@
-# sparseTraining
+# Grafted TMP-Loop Based Compiler
+
+## Torch 2.0 update
+
+```bash
+# dependency
+pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118 # Due to the old driver version
+```
 
 ## Launch docker
 
@@ -100,4 +107,9 @@ groupadd docker
 usermod -a -G docker ***
 chgrp -R docker /workspace/bert/
 chmod -R g+rwx /workspace/bert/
+```
+
+## install GTL
+```bash
+cd python && python -m pip install ./
 ```

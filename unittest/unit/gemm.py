@@ -2,7 +2,7 @@ import torch
 from torch.fx import symbolic_trace
 from torch.fx.passes.shape_prop import ShapeProp
 import sys
-sys.path.append("/workspace/sparseTraining/Codegen/compiler")
+sys.path.append("/workspace/gtl/sparseTraining/Codegen/compiler")
 from passes import pass_gemm_fusion, pass_print_graph
 import unittest
 import pycutlass

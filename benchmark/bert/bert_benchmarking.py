@@ -3,16 +3,17 @@
 ################################################################################
 # Dependencies
 import sys
-sys.path.append("/workspace/sparseTraining/Codegen/compiler")
+sys.path.append("/workspace/gtl/sparseTraining/Codegen/compiler")
 sys.path.append("/workspace/bert")
 import torch
 import bert_modeling
 import modeling
 from apex import amp
-from lamb_amp_opt.fused_lamb import FusedLAMBAMP
+import functorch
+# from lamb_amp_opt.fused_lamb import FusedLAMBAMP
 from amp_helper import scale_loss
 from aot_helper import compiler_fn, partition_func
-from functorch._src.compilers import ts_compile, tensorexpr_compile, tvm_compile
+from functorch.compile import ts_compile
 import pycutlass
 from pycutlass import *
 pycutlass.get_memory_pool(manager="torch")
@@ -89,8 +90,9 @@ def prepare_model_and_optimizer(device, sequence_output_is_dense, reference=None
         {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
         {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}]
 
-    optimizer = FusedLAMBAMP(optimizer_grouped_parameters,
-                             lr=learning_rate)
+    # optimizer = FusedLAMBAMP(optimizer_grouped_parameters,
+    #                          lr=learning_rate)
+    optimizer = torch.optim.SGD(optimizer_grouped_parameters, learning_rate)
 
     model.checkpoint_activations(False)
 

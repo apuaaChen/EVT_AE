@@ -1,17 +1,17 @@
 import sys
-sys.path.append("/workspace/bert")
+sys.path.append("/workspace/gtl/sparseTraining/thirdparty/DeepLearningExample/PyTorch/LanguageModeling/BERT")
 import torch
 from modeling import BertForPreTraining, BertPreTrainingHeads, BertModel, \
     BertEncoder, BertPooler, BertEmbeddings
 from typing import Final
-from amp_helper import scale_loss
+# from amp_helper import scale_loss
 from functorch.compile import aot_module
 
 
 class BertModelExcludeEmbedding(BertModel):
     def __init__(self, config, word_embeddings_weight) -> None:
         super(BertModel, self).__init__(config)
-        self.word_embeddings_weight = word_embeddings_weight
+        # self.word_embeddings_weight = word_embeddings_weight
         self.encoder = BertEncoder(config)
         self.pooler = BertPooler(config)
         self.apply(self.init_bert_weights)
@@ -34,7 +34,7 @@ class BertModelExcludeEmbedding(BertModel):
         # positions we want to attend and -10000.0 for masked positions.
         # Since we are adding it to the raw scores before the softmax, this is
         # effectively the same as removing these entirely.
-        extended_attention_mask = extended_attention_mask.to(dtype=self.word_embeddings_weight.dtype) # fp16 compatibility
+        extended_attention_mask = extended_attention_mask.to(dtype=torch.float16) # fp16 compatibility
         extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
 
         # embedding_output = self.embeddings(input_ids, token_type_ids)
@@ -107,6 +107,7 @@ class Bert(torch.nn.Module):
         self.config = config
         self.embedding = BertEmbeddings(config)
         self.encoder = BertExcludeEmbedding(config, self.embedding.word_embeddings.weight, sequence_output_is_dense)
+        self.scaler = torch.cuda.amp.GradScaler()
     
     def forward(self, input_ids, token_type_ids, attention_mask, masked_lm_labels, labels, next_sentence_labels):
         embedding_output = self.embedding(input_ids, token_type_ids)
@@ -145,8 +146,7 @@ class Bert(torch.nn.Module):
                     self.static_labels, self.static_next_sentence_labels)
                 valid_labels = torch.sum(torch.ne(self.static_labels, -1))
                 loss = loss_sum / valid_labels
-                with scale_loss(loss, optimizer) as scaled_loss:
-                    scaled_loss.backward()
+                self.scaler.scale(loss).backward()
         
         torch.cuda.current_stream().wait_stream(s)
 
@@ -168,11 +168,10 @@ class Bert(torch.nn.Module):
                 self.static_labels, self.static_next_sentence_labels)
             valid_labels = torch.sum(torch.ne(self.static_labels, -1))
             loss = loss_sum / valid_labels
-            with scale_loss(loss, optimizer) as scaled_loss:
-                scaled_loss.backward()
+            self.scaler.scale(loss).backward()
             torch.cuda.current_stream().wait_stream(s)
     
-    def training_with_graph(self, input_ids, token_type_ids, attention_mask, masked_lm_labels, labels, next_sentence_labels):
+    def train_with_graph(self, input_ids, token_type_ids, attention_mask, masked_lm_labels, labels, next_sentence_labels):
         self.static_input_ids.copy_(input_ids)
         self.static_attention_mask.copy_(attention_mask)
         self.static_labels.copy_(labels)

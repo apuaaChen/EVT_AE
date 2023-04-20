@@ -1,7 +1,7 @@
 import torch
 import operator
 import torch.fx as fx
-from functorch._src.partitioners import _extract_graph_with_inputs_outputs
+from torch._functorch.partitioners import _extract_graph_with_inputs_outputs
 from typing import List
 
 

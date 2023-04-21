@@ -3,13 +3,13 @@
 ################################################################################
 # Dependencies
 import sys
-sys.path.append("/workspace/sparseTraining/Codegen/compiler")
+sys.path.append("/workspace/gtl/sparseTraining/Codegen/compiler")
 sys.path.append("/workspace/bert")
 import torch
 from resnet_modeling import ResNet, BasicBlock, Bottleneck
 from apex import amp
-from lamb_amp_opt.fused_lamb import FusedLAMBAMP
-from aot_helper import compiler_fn, partition_func
+# from lamb_amp_opt.fused_lamb import FusedLAMBAMP
+# from aot_helper import compiler_fn, partition_func
 import pycutlass
 from pycutlass import *
 pycutlass.get_memory_pool(manager="torch")
@@ -20,7 +20,9 @@ import logging
 from pycutlass.test.profiler import GpuTimer
 from functools import partial
 import unittest
-from functorch._src.compilers import ts_compile, tensorexpr_compile, tvm_compile
+from functorch.compile import ts_compile#, tensorexpr_compile, tvm_compile
+from resnet_pass_manager import pre_partition_optimization
+from gtl.helper import compiler_fn, partition_func, GTLProfiler, BaseTestCase, apex_autocast
 
 import argparse
 parser = argparse.ArgumentParser(description="ResNet End-to-End Training with CUDA Graph")
@@ -79,10 +81,11 @@ def prepare_model_and_optimizer(device, depth, reference=None):
         {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.0},
         {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}]
 
-    optimizer = FusedLAMBAMP(optimizer_grouped_parameters,
-                             lr=learning_rate)
+    optimizer = torch.optim.SGD(optimizer_grouped_parameters, learning_rate)
+    # optimizer = FusedLAMBAMP(optimizer_grouped_parameters,
+    #                          lr=learning_rate)
     
-    optimizer.setup_fp32_params()
+    # optimizer.setup_fp32_params()
 
     return model, optimizer
 
@@ -107,51 +110,70 @@ def benchmarking():
     model.train()
 
     if args.method == "east":
-        model.aot_optimize(compiler_fn, compiler_fn, partial(partition_func, enabled_passes=args.passes))
+        model.aot_optimize(
+            compiler_fn, compiler_fn, 
+            partial(
+                partition_func, 
+                joint_compiler=partial(
+                    pre_partition_optimization,
+                    enabled_passes=args.passes
+                )
+            )
+        )
     elif args.method == "nvfuser":
         model.aot_optimize(ts_compile, ts_compile)
-    elif args.method == "tvm":
-        raise NotImplementedError("TVM has issue supporting various ops like layernorm_backward. Additional effort is required to register it to relay")
-        tvm_compiler = tvm_compile(target="cuda -arch=sm_80", use_ansor_tuning=True, tuning_logfile="./tuning_log")
-        model.aot_optimize(tvm_compiler, tvm_compiler)
+    # elif args.method == "tvm":
+    #     raise NotImplementedError("TVM has issue supporting various ops like layernorm_backward. Additional effort is required to register it to relay")
+    #     tvm_compiler = tvm_compile(target="cuda -arch=sm_80", use_ansor_tuning=True, tuning_logfile="./tuning_log")
+    #     model.aot_optimize(tvm_compiler, tvm_compiler)
     
-    timer = GpuTimer()
+    # timer = GpuTimer()
     if args.cuda_graph:
         model.capture_graph((args.batch_size, 4, 224, 224), optimizer)
     
-
     ## profiling
-    s = torch.cuda.Stream(priority=-1)
-    s.wait_stream(torch.cuda.current_stream())
-    with torch.cuda.stream(s):
-        if args.cuda_graph:
-            for i in range(10):
-                model.train_with_graph(x, y)
-            torch.cuda.synchronize()
-            timer.start(stream=s.cuda_stream)
-            with nvtx.annotate("40 iter"):
-                for i in range(args.iter):
-                    with nvtx.annotate("1 iter"):
-                        model.train_with_graph(x, y)
-            timer.stop_and_wait(stream=s.cuda_stream)
-        else:
-            for i in range(10):
-                loss = model(x, y) * 1e+2
-                loss.backward()
-            # torch.cuda.synchronize()
-            s.synchronize()
-            timer.start(stream=s.cuda_stream)
-            with nvtx.annotate("40 iter"):
-                for i in range(args.iter):
-                    with nvtx.annotate("1 iter"):
-                        loss = model(x, y) * 1e+2
-                        loss.backward()
-            timer.stop_and_wait(stream=s.cuda_stream)
+    profiler = GTLProfiler(
+        model, label=args.method, use_cuda_graph=args.cuda_graph
+    )
+
+    profiler.profile(
+        [x, y], 
+        ("image", args.batch_size)
+    )
+    
+
+    # ## profiling
+    # s = torch.cuda.Stream(priority=-1)
+    # s.wait_stream(torch.cuda.current_stream())
+    # with torch.cuda.stream(s):
+    #     if args.cuda_graph:
+    #         for i in range(10):
+    #             model.train_with_graph(x, y)
+    #         torch.cuda.synchronize()
+    #         timer.start(stream=s.cuda_stream)
+    #         with nvtx.annotate("40 iter"):
+    #             for i in range(args.iter):
+    #                 with nvtx.annotate("1 iter"):
+    #                     model.train_with_graph(x, y)
+    #         timer.stop_and_wait(stream=s.cuda_stream)
+    #     else:
+    #         for i in range(10):
+    #             loss = model(x, y) * 1e+2
+    #             loss.backward()
+    #         # torch.cuda.synchronize()
+    #         s.synchronize()
+    #         timer.start(stream=s.cuda_stream)
+    #         with nvtx.annotate("40 iter"):
+    #             for i in range(args.iter):
+    #                 with nvtx.annotate("1 iter"):
+    #                     loss = model(x, y) * 1e+2
+    #                     loss.backward()
+    #         timer.stop_and_wait(stream=s.cuda_stream)
 
 
-    iter_time = timer.duration(args.iter)
-    throughput = args.batch_size / iter_time * 1000
-    logging.info(f"Throughput: {throughput} img/sec, Iter time: {iter_time} ms")
+    # iter_time = timer.duration(args.iter)
+    # throughput = args.batch_size / iter_time * 1000
+    # logging.info(f"Throughput: {throughput} img/sec, Iter time: {iter_time} ms")
 
 
 class ResNetTest(unittest.TestCase):

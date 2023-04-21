@@ -26,7 +26,8 @@ def pass_batchnorm_preprocessing(module, graph):
     batch_norm_backward_idx = 0
     for node in graph.nodes:
         if node.op == "call_function":
-            if node.target == torch.ops.aten.native_batch_norm:
+            if node.target == torch.ops.aten._native_batch_norm_legit_functional:
+                if "splitted" in node.meta.keys(): continue
                 # if batch_norm_idx >=4: continue
                 logging.debug(f"====================={node}======================")
 
@@ -43,14 +44,18 @@ def pass_batchnorm_preprocessing(module, graph):
                 mean_x2_node = inject_sum(mul_node, graph, mul_node, [0, 2, 3], dtype=torch.float32)
 
                 graph.inserting_after(node)
-                bn_splitted = graph.call_function(torch.ops.aten.native_batch_norm.default, args=(*node.args, mean_x_node, mean_x2_node))
+                bn_splitted = graph.call_function(torch.ops.aten._native_batch_norm_legit_functional, args=(*node.args, mean_x_node, mean_x2_node))
+                bn_splitted.meta["splitted"] = True
 
                 # bn_splitted.meta["tensor_meta"] = node.meta["tensor_meta"]._replace()
                 node.replace_all_uses_with(bn_splitted)
                 graph.erase_node(node)
 
                 # update the meta data of output saved mean & std
-                _, saved_mean, saved_invstd = list(bn_splitted.users.keys())
+                # print(list(bn_splitted.users.keys()))
+                # _, saved_mean, saved_invstd = list(bn_splitted.users.keys())
+                saved_mean = list(bn_splitted.users.keys())[1]
+                saved_invstd = list(bn_splitted.users.keys())[2]
 
                 saved_mean.meta["tensor_meta"] = saved_mean.meta["tensor_meta"]._replace(shape=(1, K, 1, 1))
                 saved_invstd.meta["tensor_meta"] = saved_invstd.meta["tensor_meta"]._replace(shape=(1, K, 1, 1))

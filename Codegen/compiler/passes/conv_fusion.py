@@ -602,7 +602,7 @@ class FusedConv2dWgrad:
 class FusedBNForward:
     __name__ = "nvfuser_bn_fp"
     def __init__(self, node, module) -> None:
-        assert node.target == torch.ops.aten.native_batch_norm.default
+        assert node.target == torch.ops.aten._native_batch_norm_legit_functional
         self.node = node
 
         self.nvfuser_parser = NvfuserParser(self.node)
@@ -719,11 +719,18 @@ def pass_conv_fusion(module, graph, verbose=True):
                 inserting_point = fused_conv.epilogue_functor.root
                 inserting_idx = get_topological_index(graph, inserting_point)
 
-                for output in fused_conv.outputs:
-                    idx = get_topological_index(graph, output)
-                    if idx < inserting_idx:
+                inserting_idx = 0
+                for input in fused_conv.args:
+                    idx = get_topological_index(graph, input)
+                    if idx is not None and idx > inserting_idx:
                         inserting_idx = idx
-                        inserting_point = output
+                        inserting_point = input
+
+                # for output in fused_conv.outputs:
+                #     idx = get_topological_index(graph, output)
+                #     if idx < inserting_idx:
+                #         inserting_idx = idx
+                #         inserting_point = output
 
                 graph.inserting_after(inserting_point)
                 fused_node = graph.call_function(fused_conv, args=tuple(fused_conv.args))
@@ -793,7 +800,7 @@ def pass_conv_fusion(module, graph, verbose=True):
             #     conv_wgrad_idx += 1
 
             
-            elif node.target == torch.ops.aten.native_batch_norm.default:
+            elif node.target == torch.ops.aten._native_batch_norm_legit_functional:
                 # if bn_fp_idx >= 4: continue
                 logging.debug(f"====================={node}======================")
 
@@ -809,7 +816,7 @@ def pass_conv_fusion(module, graph, verbose=True):
                 inserting_idx = 0
                 for input in fused_bn_fp.args:
                     idx = get_topological_index(graph, input)
-                    if idx > inserting_idx:
+                    if idx is not None and idx > inserting_idx:
                         inserting_idx = idx
                         inserting_point = input
 

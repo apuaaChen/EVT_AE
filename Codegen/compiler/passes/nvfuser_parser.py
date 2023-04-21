@@ -44,7 +44,7 @@ class NvfuserParser:
         # a node is fusible if and only if it satisfies the following condition
         # * it's target belong's to the fusible list
         # * all its inputs are fusible or already fused or is a tensor input does not depend on the fused nodes
-        if node.target in [operator.getitem, torch.ops.aten.relu, torch.ops.aten.add, torch.ops.aten.mean, torch.ops.aten.view, torch.ops.aten.mul, torch.ops.aten.sum, torch.ops.aten.sub, torch.ops.aten.ne, torch.ops.aten.to]:
+        if node.target in [operator.getitem, torch.ops.aten.relu, torch.ops.aten.add, torch.ops.aten.mean, torch.ops.aten.view, torch.ops.aten.mul, torch.ops.aten.sum, torch.ops.aten.sub, torch.ops.aten.ne, torch.ops.aten.to, torch.ops.aten._to_copy]:
             input_list = list(node.all_input_nodes)
             for input in input_list:
                 if (
@@ -104,7 +104,7 @@ class NvfuserParser:
     
     def extract_sub_module(self, module):
 
-        if self.node.target == torch.ops.aten.native_batch_norm.default:
+        if self.node.target == torch.ops.aten._native_batch_norm_legit_functional:
             # replace batch norm 
             def splitted_batch_norm(
                 input: torch.Tensor,
@@ -124,7 +124,7 @@ class NvfuserParser:
                 running_mean = (1-momentum) * running_mean + momentum * mean
                 running_var = (1-momentum) * running_var + momentum * var
 
-                return output.to(torch.float16), mean, invstd
+                return output.to(torch.float16), mean, invstd, running_mean, running_var
             
             self.node.target = splitted_batch_norm
 
@@ -175,7 +175,6 @@ class NvfuserParser:
             
             self.node.target = channel_last_max_pool2d_backward
 
-        
 
         subgraph = _extract_graph_with_inputs_outputs(module.graph, self.input_nodes, self.outputs)
         fused_module = torch.fx.GraphModule(module, subgraph)
@@ -185,4 +184,3 @@ class NvfuserParser:
         # in the batch norm forward. uncomment it fix this issue
         # not sure why it happends
         # return fused_module
-

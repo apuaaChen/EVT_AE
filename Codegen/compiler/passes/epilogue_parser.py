@@ -68,8 +68,9 @@ class TensorOutputNodeDAG(TensorOutputNode):
         elif self.permute in [[0, 2, 1], [2, 0, 1], [1, 0]]:
             self.layout = cutlass.ColumnMajor
         else:
-            logging.error(f"[Not Implemented] Unsupported permutation {self.permute} at {node}")
-            raise NotImplementedError()
+            msg = f"[Not Implemented] Unsupported permutation {self.permute} at {node}"
+            logging.error(msg)
+            raise NotImplementedError(msg)
     
     def get_argument(self, visitor_args, kwargs):
         if len(self.permute) == 3:

@@ -21,10 +21,11 @@ import logging
 class BaseTestCase(unittest.TestCase):
     @staticmethod
     def run_reference_model(model, optimizer, sample_inputs, loss_scale):
+        scaler = torch.cuda.amp.GradScaler(init_scale=loss_scale)
         model.train()
         optimizer.zero_grad()
-        loss = model(*sample_inputs) * loss_scale
-        loss.backward()
+        loss = model(*sample_inputs)
+        scaler.scale(loss).backward()
     
     @staticmethod
     def run_target_model(model, optimizer, sample_inputs):

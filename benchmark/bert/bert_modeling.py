@@ -107,7 +107,7 @@ class Bert(torch.nn.Module):
         self.config = config
         self.embedding = BertEmbeddings(config)
         self.encoder = BertExcludeEmbedding(config, self.embedding.word_embeddings.weight, sequence_output_is_dense)
-        self.scaler = torch.cuda.amp.GradScaler()
+        self.scaler = torch.cuda.amp.GradScaler(init_scale=4096)
     
     def forward(self, input_ids, token_type_ids, attention_mask, masked_lm_labels, labels, next_sentence_labels):
         embedding_output = self.embedding(input_ids, token_type_ids)

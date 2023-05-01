@@ -154,7 +154,7 @@ class ResNetTest(BaseTestCase):
         model_fused.capture_graph((args.batch_size, 4, 224, 224), optimizer_fused)
         self.run_target_model(model_fused, optimizer_fused, sample_inputs)
 
-        self.verify(model, model_fused, verbose=1, rtol=3e-1)
+        self.verify(model, model_fused, verbose=0, rtol=3e-1)
     
     def grad_preprocess(self, grad):
         if len(grad.size()) == 4:

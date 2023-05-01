@@ -20,7 +20,7 @@ import argparse
 import logging
 # from pycutlass.test.profiler import GpuTimer
 from functools import partial
-# import unittest
+import unittest
 from gtl.helper import compiler_fn, partition_func, GTLProfiler, BaseTestCase, apex_autocast
 from xmlcnn_pass_manager import pre_partition_optimization
 
@@ -131,11 +131,37 @@ def benchmarking():
         [e_emb, y], ("seq", params.batch_size)
     )
 
+class XMLCNNTest(BaseTestCase):
+    def test_xmlcnn(self):
+        sample_inputs = [e_emb, y]
+
+        model, optimizer = prepare_model_and_optimizer(params, "cuda")
+        model, optimizer = apex_autocast(model, optimizer, False)
+
+        self.run_reference_model(model, optimizer, sample_inputs, 1)
+
+        model_fused, optimizer_fused = prepare_model_and_optimizer(
+            params, "cuda", reference=model)
+        model_fused, optimizer_fused = apex_autocast(
+            model_fused, optimizer_fused, False)
+        
+        model_fused.capture_graph(
+            params.batch_size, params.sequence_length, params.embedding_dim, 
+            params.y_dim, optimizer=optimizer_fused)
+
+        self.run_target_model(model_fused, optimizer_fused, sample_inputs)
+
+        self.verify(model, model_fused, verbose=0)
+    
+    def is_close(self, grad1, grad2):
+        return torch.sum(
+            torch.isclose(grad1, grad2, rtol=1e-1)) / grad1.numel() > 0.9
+
+
 if __name__ == '__main__':
     if args.unittest: 
-        # runner = unittest.TextTestRunner()
-        # itersuite = unittest.TestLoader().loadTestsFromTestCase(VitTest)
-        # runner.run(itersuite)
-        pass
+        runner = unittest.TextTestRunner()
+        itersuite = unittest.TestLoader().loadTestsFromTestCase(XMLCNNTest)
+        runner.run(itersuite)
     else: 
         benchmarking()

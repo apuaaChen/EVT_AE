@@ -154,7 +154,7 @@ def benchmarking():
 
 class XmlCnnTest(unittest.TestCase):
     def test_xml_cnn(self):
-        model, optimizer = prepare_model_and_optimizer(params, "cuda")
+        model, optimizer = prepare_model_andexpor_optimizer(params, "cuda")
         model, optimizer = amp.initialize(
             model, optimizer, 
             cast_model_outputs=torch.float16, 

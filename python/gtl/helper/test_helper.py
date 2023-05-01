@@ -33,20 +33,25 @@ class BaseTestCase(unittest.TestCase):
         optimizer.zero_grad()
         model.train_with_graph(*sample_inputs)
     
-    def verify(self, reference, target, verbose=0):
+    def grad_preprocess(self, grad):
+        return grad
+    
+    def verify(self, reference, target, verbose=0, rtol=1e-1):
         for (param_ref, param_target) in zip(
             list(reference.named_parameters()),
             list(target.named_parameters())
         ):
+            grad_ref = param_ref[1].grad.to(torch.float16)
+            grad_target = self.grad_preprocess(param_target[1].grad).to(torch.float16)
             if verbose == 1:
                 close_ratio = torch.sum(
                         torch.isclose(
-                            param_ref[1].grad, param_target[1].grad, rtol=1e-1
+                            grad_ref, grad_target, rtol=rtol
                         )
-                    ) / param_ref[1].grad.numel()
+                    ) / grad_ref.numel()
                 print(f"{param_ref[0]}: close ratio: {close_ratio.item()}")
             self.assertTrue(
-                self.is_close(param_ref[1].grad, param_target[1].grad))
+                self.is_close(grad_ref, grad_target))
 
     def is_close(self, *args, **kwargs):
         raise NotImplementedError(

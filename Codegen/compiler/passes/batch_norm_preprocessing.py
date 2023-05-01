@@ -26,7 +26,7 @@ def pass_batchnorm_preprocessing(module, graph):
     batch_norm_backward_idx = 0
     for node in graph.nodes:
         if node.op == "call_function":
-            if node.target == torch.ops.aten._native_batch_norm_legit_functional:
+            if node.target == torch.ops.aten._native_batch_norm_legit.no_stats:
                 if "splitted" in node.meta.keys(): continue
                 # if batch_norm_idx >=4: continue
                 logging.debug(f"====================={node}======================")
@@ -44,7 +44,7 @@ def pass_batchnorm_preprocessing(module, graph):
                 mean_x2_node = inject_sum(mul_node, graph, mul_node, [0, 2, 3], dtype=torch.float32)
 
                 graph.inserting_after(node)
-                bn_splitted = graph.call_function(torch.ops.aten._native_batch_norm_legit_functional, args=(*node.args, mean_x_node, mean_x2_node))
+                bn_splitted = graph.call_function(torch.ops.aten._native_batch_norm_legit.no_stats, args=(*node.args, mean_x_node, mean_x2_node))
                 bn_splitted.meta["splitted"] = True
 
                 # bn_splitted.meta["tensor_meta"] = node.meta["tensor_meta"]._replace()

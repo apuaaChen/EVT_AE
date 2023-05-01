@@ -104,14 +104,12 @@ class NvfuserParser:
     
     def extract_sub_module(self, module):
 
-        if self.node.target == torch.ops.aten._native_batch_norm_legit_functional:
+        if self.node.target == torch.ops.aten._native_batch_norm_legit.no_stats:
             # replace batch norm 
             def splitted_batch_norm(
                 input: torch.Tensor,
                 gamma: torch.Tensor,
                 beta: torch.Tensor,
-                running_mean: torch.Tensor,
-                running_var: torch.Tensor,
                 is_training: bool,
                 momentum: float,
                 eps: float, 
@@ -121,10 +119,8 @@ class NvfuserParser:
                 var = D - mean * mean
                 invstd = 1./torch.sqrt(var + eps)
                 output = (input - mean) * invstd * gamma + beta
-                running_mean = (1-momentum) * running_mean + momentum * mean
-                running_var = (1-momentum) * running_var + momentum * var
 
-                return output.to(torch.float16), mean, invstd, running_mean, running_var
+                return output.to(torch.float16), mean, invstd
             
             self.node.target = splitted_batch_norm
 
@@ -134,8 +130,8 @@ class NvfuserParser:
                 y_grad: torch.Tensor,
                 x: torch.Tensor,
                 gamma: torch.Tensor,
-                running_mean: torch.Tensor,
-                running_var: torch.Tensor,
+                running_mean: None,
+                running_var: None,
                 saved_mean: torch.Tensor,
                 saved_invstd: torch.Tensor,
                 is_training: bool,

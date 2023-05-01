@@ -81,7 +81,6 @@ suffix_dict = {
     torch.ops.aten.convolution.default: torch.ops.aten.convolution,
     torch.ops.aten.native_batch_norm_backward.default: torch.ops.aten.native_batch_norm_backward,
     torch.ops.aten.native_batch_norm.default: torch.ops.aten.native_batch_norm,
-    torch.ops.aten._native_batch_norm_legit_functional.default: torch.ops.aten._native_batch_norm_legit_functional,
     torch.ops.aten.relu_.default: torch.ops.aten.relu,
     torch.ops.aten.add_.Tensor: torch.ops.aten.add,
     torch.ops.aten.mean.dim: torch.ops.aten.mean,

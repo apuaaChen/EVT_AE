@@ -66,8 +66,7 @@ class BasicBlock(nn.Module):
         norm_layer: Optional[Callable[..., nn.Module]] = None,
     ) -> None:
         super().__init__()
-        if norm_layer is None:
-            norm_layer = nn.BatchNorm2d
+        norm_layer = partial(nn.BatchNorm2d, track_running_stats=False)
         if groups != 1 or base_width != 64:
             raise ValueError("BasicBlock only supports groups=1 and base_width=64")
         if dilation > 1:
@@ -171,9 +170,8 @@ class ResNet_(nn.Module):
         norm_layer: Optional[Callable[..., nn.Module]] = None,
     ) -> None:
         super().__init__()
-        if norm_layer is None:
-            norm_layer = nn.BatchNorm2d
-        self._norm_layer = norm_layer
+        self._norm_layer = partial(nn.BatchNorm2d, track_running_stats=False)
+        norm_layer = self._norm_layer
 
         self.inplanes = 64
         self.dilation = 1

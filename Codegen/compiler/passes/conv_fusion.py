@@ -602,7 +602,7 @@ class FusedConv2dWgrad:
 class FusedBNForward:
     __name__ = "nvfuser_bn_fp"
     def __init__(self, node, module) -> None:
-        assert node.target == torch.ops.aten._native_batch_norm_legit_functional
+        assert node.target == torch.ops.aten._native_batch_norm_legit.no_stats
         self.node = node
 
         self.nvfuser_parser = NvfuserParser(self.node)
@@ -800,7 +800,7 @@ def pass_conv_fusion(module, graph, verbose=True):
             #     conv_wgrad_idx += 1
 
             
-            elif node.target == torch.ops.aten._native_batch_norm_legit_functional:
+            elif node.target == torch.ops.aten._native_batch_norm_legit.no_stats:
                 # if bn_fp_idx >= 4: continue
                 logging.debug(f"====================={node}======================")
 

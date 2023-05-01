@@ -139,7 +139,7 @@ class xmlCNN(nn.Module):
                 loss.backward()
         torch.cuda.current_stream().wait_stream(s)
     
-    def training_with_graph(self, e_emb, y):
+    def train_with_graph(self, e_emb, y):
         self.static_e_emb.copy_(e_emb)
         self.static_y.copy_(y)
         self.model_graph.replay()

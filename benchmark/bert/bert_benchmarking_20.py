@@ -3,7 +3,6 @@
 ################################################################################
 # Dependencies
 import sys
-sys.path.append("/workspace/gtl/sparseTraining/Codegen/compiler")
 sys.path.append("/workspace/bert")
 import torch
 import bert_modeling
@@ -174,6 +173,14 @@ class BertTest(BaseTestCase):
             "cuda", sequence_output_is_dense=False, reference=model)
         model_fused, optimizer_fused = apex_autocast(
             model_fused, optimizer_fused, False)
+        
+        model_fused.aot_optimize(
+            compiler_fn, compiler_fn, 
+            partial(
+                partition_func, 
+                joint_compiler=pre_partition_optimization
+            )
+        )
 
         model_fused.capture_graph(
             batch=args.batch_size, 

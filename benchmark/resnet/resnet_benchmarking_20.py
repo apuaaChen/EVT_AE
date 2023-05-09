@@ -145,12 +145,10 @@ class ResNetTest(BaseTestCase):
             compiler_fn, compiler_fn, 
             partial(
                 partition_func, 
-                joint_compiler=partial(
-                    pre_partition_optimization, 
-                    enabled_passes=args.passes
-                )
+                joint_compiler=pre_partition_optimization
             )
         )
+
         model_fused.capture_graph((args.batch_size, 4, 224, 224), optimizer_fused)
         self.run_target_model(model_fused, optimizer_fused, sample_inputs)
 

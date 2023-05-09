@@ -140,14 +140,14 @@ class GraphConv(nn.Module):
         # self.weight = nn.Parameter(torch.Tensor(in_dim, out_dim))
         # self.bias = nn.Parameter(torch.Tensor(out_dim))
 
-    def forward(self, h):
+    def forward(self, csr, csc, h):
         if self.out_dim > self.in_dim:
             # h = torch.matmul(self.graph, h) + h
-            h = Aggregate.apply(self.graph[0], self.graph[1], h)
+            h = Aggregate.apply(csr, csc, h)
             h = self.linear(h)
         else:
             h = self.linear(h)
-            h = Aggregate.apply(self.graph[0], self.graph[1], h)
+            h = Aggregate.apply(csr, csc, h)
         # h = F.u_mul_e_sum(self.graph, h, e) + h
         if self.activation is not None:
             h = self.activation(h)
@@ -181,12 +181,12 @@ class GCN_(nn.Module):
         for layer in self.layers:
             layer.set_graph(graph)
 
-    def forward(self, features, labels, mask=None):
+    def forward(self, csr, csc, features, labels, mask=None):
         h = features
         for i, layer in enumerate(self.layers):
             if i != 0:
                 h = self.dropout(h)
-            h = layer(h)
+            h = layer(csr, csc, h)
         # return self.loss_fcn(h[mask], labels[mask])
         # issue: inf loss!!
         if not self.apex_loss:
@@ -204,8 +204,8 @@ class GCN(nn.Module):
         super(GCN, self).__init__()
         self.model = GCN_(in_feats, n_hidden, n_classes, n_layers, activation, dropout, f32_loss, apex_loss)
 
-    def forward(self, features, labels):
-        return self.model(features, labels)
+    def forward(self, csr, csc, features, labels):
+        return self.model(csr, csc, features, labels)
 
     def set_graph(self, graph):
         for layer in self.model.layers:
@@ -221,9 +221,11 @@ class GCN(nn.Module):
                 self.model, fw_compiler=fw_compiler, 
                 bw_compiler=bw_compiler, partition_fn=partition_fn)
     
-    def capture_graph(self, features, labels, optimizer, warmup_iteration=3):
+    def capture_graph(self, csr, csc, features, labels, optimizer, warmup_iteration=3):
         self.static_features = torch.randn_like(features)
         self.static_labels = torch.ones_like(labels)
+        self.static_csr = csr
+        self.static_csc = csc
         # self.static_mask = torch.ones_like(mask)
 
         # warmup iterations
@@ -232,7 +234,7 @@ class GCN(nn.Module):
         with torch.cuda.stream(s):
             for _ in range(warmup_iteration):
                 optimizer.zero_grad()
-                loss = self.model(self.static_features, self.static_labels) * 1e+3
+                loss = self.model(self.static_csr, self.static_csc, self.static_features, self.static_labels) * 1e+3
                 loss.backward()
         torch.cuda.current_stream().wait_stream(s)
 
@@ -247,7 +249,7 @@ class GCN(nn.Module):
         s.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(s):
             with torch.cuda.graph(self.encoder_graph):
-                loss = self.model(self.static_features, self.static_labels) * 1e+3
+                loss = self.model(self.static_csr, self.static_csc, self.static_features, self.static_labels) * 1e+3
                 loss.backward()
         
         torch.cuda.current_stream().wait_stream(s)

@@ -1,13 +1,14 @@
 import torch
-import sys
-sys.path.append("/workspace/sparseTraining/Codegen/compiler")
-from passes import *
-from nodes import *
+from gtl.compiler.passes import *
+from gtl.compiler.nodes import *
 import logging
 
 def pre_partition_optimization(joint_module, enabled_passes=["fusion", "uturn", "stream"]):
     # get graph
     graph = joint_module.graph
+
+    # frontend = GTLFrontend()
+    # frontend(joint_module)
 
     pass_suffix_elimination(joint_module, graph)
 

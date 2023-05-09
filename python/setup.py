@@ -7,6 +7,8 @@ setup(
     author='Zhaodong Chen',
     author_email='chenzd15thu@ucsb.edu',
     package_dir={"": "."},
-    packages=["gtl", "gtl.helper"]
+    packages=[
+        "gtl", "gtl.helper", "gtl.compiler", 
+        "gtl.compiler.passes", "gtl.compiler.autotuner"]
     # install_requires=['torch']
 )

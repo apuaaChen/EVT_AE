@@ -81,6 +81,7 @@ Add the following file to `/opt/conda/lib/python3.8/site-packages/torch/include/
 **Install graphviz**
 ```
 apt install graphviz
+pip install pydot
 ```
 
 **Install TASO**: 

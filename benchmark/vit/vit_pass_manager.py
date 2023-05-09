@@ -1,8 +1,6 @@
 import torch
-import sys
-sys.path.append("/workspace/gtl/sparseTraining/Codegen/compiler")
-from passes import *
-from nodes import *
+from gtl.compiler.passes import *
+from gtl.compiler.nodes import *
 import logging
 
 

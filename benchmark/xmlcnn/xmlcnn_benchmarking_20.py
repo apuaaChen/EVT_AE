@@ -145,6 +145,14 @@ class XMLCNNTest(BaseTestCase):
         model_fused, optimizer_fused = apex_autocast(
             model_fused, optimizer_fused, False)
         
+        model_fused.aot_optimize(
+            compiler_fn, compiler_fn, 
+            partial(
+                partition_func, 
+                joint_compiler=pre_partition_optimization
+            )
+        )
+        
         model_fused.capture_graph(
             params.batch_size, params.sequence_length, params.embedding_dim, 
             params.y_dim, optimizer=optimizer_fused)

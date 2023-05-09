@@ -1,58 +1,69 @@
 ### DGL GCN implementation
 
-Note: we modified the pytorch source code to make GCN traceable. In 
-`/opt/conda/lib/python3.8/site-packages/torch/fx/experimental/proxy_tensor.py`
-line 108 - 122, originally, it is
-```python
-r = torch.Tensor._make_wrapper_subclass(  # type: ignore[attr-defined]
-    cls,
-    elem.shape, dtype=elem.dtype, layout=elem.layout, device=elem.device,
-    requires_grad=requires_grad if requires_grad is not None else False, strides=elem.stride(),
-    storage_offset=elem.storage_offset()
-)
-```
-We update it to 
-```python
-try:
-    r = torch.Tensor._make_wrapper_subclass(  # type: ignore[attr-defined]
-        cls,
-        elem.shape, dtype=elem.dtype, layout=elem.layout, device=elem.device,
-        requires_grad=requires_grad if requires_grad is not None else False, strides=elem.stride(),
-        storage_offset=elem.storage_offset()
-    )
-except:
-    r = torch.Tensor._make_wrapper_subclass(  # type: ignore[attr-defined]
-        cls,
-        elem.shape, dtype=elem.dtype, layout=elem.layout, device=elem.device,
-        requires_grad=requires_grad if requires_grad is not None else False, strides=(0, 0),
-        storage_offset=elem.storage_offset()
-    )
-```
+Note: we modified the pytorch source code to make GCN traceable. 
 
-Also, in `/opt/conda/lib/python3.8/site-packages/torch/fx/passes/shape_prop.py` line 34, it is
+In `/usr/local/lib/python3.8/dist-packages/torch/_subclasses/meta_utils.py` line 468 & 469 are commented, otherwise it raises FakeTensorError.
 ```python
-stride = result.stride()
+if any(
+    [
+        # t.is_sparse_csr,  # line 468
+        # t.layout in [torch.sparse_csc, torch.sparse_bsr, torch.sparse_bsc] # line 469
 ```
-We update it to
+Also, in line 253, we add additional logic to avoid it from accessing the underlying storage
 ```python
-try:
-    stride = result.stride()
-except:
-    stride = (0, 0)
+# new logic
+elif t.is_sparse_csr:
+    is_leaf = safe_is_leaf(t)
+    sizes, strides, storage_offset = sym_sizes_strides_storage_offset(t)
+    r = callback(
+        lambda: torch.empty_strided(
+            sizes, strides, dtype=t.dtype, device="meta"
+        )
+    )
+    assert safe_is_leaf(r), "the callback you passed in dosen't detach"
+# end new logic
+elif t.is_mkldnn:
+    is_leaf = safe_is_leaf(t)
+    sizes, strides, _storage_offset = sym_sizes_strides_storage_offset(
+        t
+    )
+    r = callback(
+        lambda: torch.empty_strided(
+            sizes, strides, dtype=t.dtype, device="meta"
+        )
+    )
+    assert safe_is_leaf(r), "the callback you passed in doesn't detach"
+    if t.requires_grad:
+        r.requires_grad = True
+    if t.requires_grad and not is_leaf:
+        with torch.enable_grad():
+            r = r.clone()
 ```
-line 48
+Besides, at line 213, we add stride (0, 0) as sparse tensors have no stride
 ```python
-if result.is_contiguous(memory_format=query_format):
-    memory_format = query_format
-    break
+def sym_sizes_strides_storage_offset(t):
+    if make_symbolic:
+        return shape_env.create_symbolic_sizes_strides_storage_offset(t, source)
+    return (t.size(), t.stride(), t.storage_offset())
+```
+is changed to 
+```python
+def sym_sizes_strides_storage_offset(t):
+    if make_symbolic:
+        return shape_env.create_symbolic_sizes_strides_storage_offset(t, source)
+    try:
+        return (t.size(), t.stride(), t.storage_offset())
+    except:
+        return (t.size(), (0, 0), t.storage_offset())
+```
+Last, at line 112, we update 
+```python
+if t.is_sparse or t.is_mkldnn:
+    weak_st = None
 ```
 to
 ```python
-try:
-    if result.is_contiguous(memory_format=query_format):
-        memory_format = query_format
-        break
-except:
-    memory_format=torch.contiguous_format
+if t.is_sparse or t.is_mkldnn or t.is_sparse_csr:
+    weak_st = None
 ```
-otherwise the `elem.stride()` would raise `RuntimeError: Tensors of type SparseTensorImpl do not have strides`
+

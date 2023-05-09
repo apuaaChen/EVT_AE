@@ -1,14 +1,18 @@
 import torch
-import sys
-sys.path.append("/workspace/sparseTraining/Codegen/compiler")
-from passes import *
-from nodes import *
+from gtl.compiler.passes import *
+from gtl.compiler.nodes import *
+# import sys
+# sys.path.append("/workspace/sparseTraining/Codegen/compiler")
+# from passes import *
+# from nodes import *
 import logging
 
 
 def pre_partition_optimization(joint_module, enabled_passes=["fusion", "uturn", "stream"]):
     # get graph
     graph = joint_module.graph
+    pass_print_graph(joint_module, "./gcn_origin.svg")
+
     pass_suffix_elimination(joint_module, graph)
     pass_eliminate_transparent_node(
         joint_module, graph, 

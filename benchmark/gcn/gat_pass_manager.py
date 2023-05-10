@@ -9,11 +9,16 @@ import logging
 
 
 def pre_partition_optimization(joint_module, enabled_passes=["fusion", "uturn", "stream"]):
-    # get graph
-    graph = joint_module.graph
-    pass_print_graph(joint_module, "./gcn_origin.svg")
 
-    pass_suffix_elimination(joint_module, graph)
+    frontend = GTLFrontend()
+    joint_module, modified = frontend(joint_module)
+
+    graph = joint_module.graph
+
+    # joint_module.recompile()
+    # print(joint_module.code)
+    # exit()
+
     pass_eliminate_transparent_node(
         joint_module, graph, 
         [torch.ops.aten.detach, torch.ops.aten.expand]

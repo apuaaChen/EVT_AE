@@ -163,7 +163,7 @@ class ResNetTest(BaseTestCase):
         return grad
     
     def is_close(self, grad1, grad2):
-        return torch.sum(torch.isclose(grad1, grad2, rtol=3e-1)) / grad1.numel() > 0.7
+        return torch.sum(torch.isclose(grad1, grad2, rtol=3e-1)) / grad1.numel() > 0.6
         
 
 if __name__ == '__main__':

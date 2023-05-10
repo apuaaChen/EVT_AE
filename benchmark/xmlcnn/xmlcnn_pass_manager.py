@@ -4,10 +4,14 @@ from gtl.compiler.nodes import *
 import logging
 
 def pre_partition_optimization(joint_module, enabled_passes=["fusion", "uturn", "stream"]):
-    # get graph
+    frontend = GTLFrontend()
+    joint_module, modified = frontend(joint_module)
+
     graph = joint_module.graph
 
-    pass_suffix_elimination(joint_module, graph)
+    # joint_module.recompile()
+    # print(joint_module.code)
+    # exit()
 
     # pass: loss elimination
     pass_loss_elimination(joint_module, graph)

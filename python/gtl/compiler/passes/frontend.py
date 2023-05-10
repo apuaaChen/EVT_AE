@@ -46,19 +46,48 @@ class GTLFrontend(PassBase):
         graph = graph_module.graph
         for node in graph.nodes:
             self.visit(node)
+
+        graph = graph_module.graph
+        pass_suffix_elimination_(graph_module, graph)
         graph_module.recompile()
 
         return PassResult(graph_module, self.modified)
+    
     def visit(self, node: torch.fx.Node):
         # step 1: eliminate surffix
-        target_name = str(node.target)
-        suffix = target_name.split(sep='.')[-1]
+        target_name = str(node.target).split(sep='.')
+        # this pass is designed specifically for aten operations
+        if target_name[0] != "aten": return
+        suffix = target_name[-1]
         if suffix in ["default", "Scalar", "Tensor", "dim_IntList", "int", "dim"]:
-            target_name_wo_suffix = target_name[:-len(suffix) - 1]
-            target_wo_suffix = getattr(ops, target_name_wo_suffix)
-            node.target = target_wo_suffix
-            self.modified = True
+            op_name = target_name[-2]
+            try:
+                target_wo_suffix = getattr(torch.ops.aten, op_name)
+                assert callable(target_wo_suffix), \
+                    f"{target_wo_suffix} is not callable"
+                node.target = target_wo_suffix
+                self.modified = True
+            except AttributeError:
+                logging.debug(
+                    f"torch.ops has no operator {op_name}")
+        # now it is assumed that no operation bear a suffix
 
+        # step 2: eliminate the inplace suffix "_" in operation name 
+        target_name = str(node.target).split(sep=".")
+        op_name = target_name[1]
+
+        if op_name[-1] == "_":
+            target_name_wo_op_suffix = target_name[:-2]
+            try:
+                target_wo_op_suffix = getattr(
+                    torch.ops.aten, target_name_wo_op_suffix)
+                assert callable(target_wo_suffix), \
+                    f"{target_wo_op_suffix} is not callable"
+                node.target = target_name_wo_op_suffix
+                self.modified = True
+            except AttributeError:
+                logging.debug(
+                    f"torch.ops has no operator {target_wo_op_suffix}")
     
     def requires(self, graph_module: GraphModule) -> None:
         return super().requires(graph_module)
@@ -66,13 +95,83 @@ class GTLFrontend(PassBase):
     def ensures(self, graph_module: GraphModule) -> None:
         return super().ensures(graph_module)
 
-################################################################################
-# Registered mapping between targets and gtl-registered targets
-################################################################################
 
-# suffix_dict = {
-#     aten.div_.Scalar: aten.div_,
-#     aten.rsub.Scalar: aten.sub,
-#     aten.relu_.default: aten.relu,
-#     aten.add_.Tensor: aten.add,
-# }
+################################################################################
+# Unoptimized node
+################################################################################
+from gtl.compiler.nodes import *
+
+suffix_dict = {
+    torch.ops.aten.rsub: torch.ops.aten.sub,
+}
+
+
+def pass_suffix_elimination_(module, graph):
+    for node in graph.nodes:
+        if node.op == "call_function":
+            try:
+                node.target = suffix_dict[node.target]
+                if node.target == torch.ops.aten.native_dropout:
+                    node.meta["tensor_meta"] = node.args[0].meta["tensor_meta"]._replace()
+            except:
+                # pass
+                logging.debug(f"Unknown suffix: {node.target}")
+    
+    # insert constant as attribute tensors
+    name_idx = 0
+    for node in graph.nodes:
+        if node.target in [torch.ops.aten.mul, torch.ops.aten.add]:
+            if len(node.all_input_nodes) == 1:
+                input_node = node.all_input_nodes[0]
+                # get the constant value
+                constant_value = None
+                constant_idx = None
+                for idx, arg in enumerate(node.args):
+                    if arg != input_node:
+                        constant_value = arg
+                        constant_idx = idx
+                constant_node = inject_get_attr(
+                    input_node, module, graph,
+                    torch.Tensor([constant_value,]).to("cuda").to(torch.float16),
+                    "const_scalar%d" % name_idx
+                )
+                name_idx += 1
+                graph.inserting_after(constant_node)
+                scalar_node = graph.call_function(node.target, args=(input_node, constant_node))
+                scalar_node.meta = {}
+                scalar_node.meta['tensor_meta'] = node.meta['tensor_meta']._replace()
+                node.replace_all_uses_with(scalar_node)
+        elif node.target in [torch.ops.aten.sub, torch.ops.aten.div]:
+            if len(node.all_input_nodes) == 1:
+                if node.args[0] in node.all_input_nodes:
+                    constant_node = inject_get_attr(
+                        node.args[0], module, graph,
+                        torch.Tensor([node.args[1],]).to("cuda").to(torch.float16),
+                        "const_scalar%d" % name_idx
+                    )
+                    name_idx += 1
+                    graph.inserting_after(constant_node)
+                    scalar_node = graph.call_function(node.target, args=(node.args[0], constant_node))
+                    scalar_node.meta = {}
+                    scalar_node.meta['tensor_meta'] = node.meta['tensor_meta']._replace()
+                    node.replace_all_uses_with(scalar_node)
+                elif node.args[1] in node.all_input_nodes:
+                    constant_node = inject_get_attr(
+                        node.args[1], module, graph,
+                        torch.Tensor([node.args[0],]).to("cuda").to(torch.float16),
+                        "const_scalar%d" % name_idx
+                    )
+                    name_idx += 1
+                    graph.inserting_after(constant_node)
+                    scalar_node = graph.call_function(node.target, args=(constant_node, node.args[1]))
+                    scalar_node.meta = {}
+                    scalar_node.meta['tensor_meta'] = node.meta['tensor_meta']._replace()
+                    node.replace_all_uses_with(scalar_node)
+        elif node.target == torch.ops.aten.addmm:
+            bias, lhs, rhs = node.args
+            mm_node = inject_mm(node, graph, lhs, rhs)
+            add_node = inject_add(mm_node, graph, mm_node, bias)
+            node.replace_all_uses_with(add_node)
+
+    graph.eliminate_dead_code()
+    graph.lint()

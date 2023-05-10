@@ -5,12 +5,14 @@ import logging
 
 def pre_partition_optimization(joint_module, enabled_passes=["fusion", "uturn", "stream"]):
     # get graph
+    frontend = GTLFrontend()
+    joint_module, modified = frontend(joint_module)
+
     graph = joint_module.graph
 
-    # frontend = GTLFrontend()
-    # frontend(joint_module)
-
-    pass_suffix_elimination(joint_module, graph)
+    # joint_module.recompile()
+    # print(joint_module.code)
+    # exit()
 
     # pass: eliminate expand
     pass_eliminate_transparent_node(

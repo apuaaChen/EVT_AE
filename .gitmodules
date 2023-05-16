@@ -1,13 +1,3 @@
-[submodule "thirdparty/cutlass"]
-	path = thirdparty/cutlass
-	url = https://github.com/apuaaChen/cutlass.git
-	branch = feature/2.x/epilogue_visitor
-[submodule "Codegen/compiler/asmjit"]
-	path = Codegen/compiler/asmjit
-	url = https://github.com/asmjit/asmjit.git
-[submodule "Codegen/compiler/pybind11"]
-	path = Codegen/compiler/pybind11
-	url = https://github.com/pybind/pybind11.git
 [submodule "thirdparty/AITemplate"]
 	path = thirdparty/AITemplate
 	url = https://github.com/facebookincubator/AITemplate.git
@@ -29,3 +19,6 @@
 [submodule "thirdparty/dgl"]
 	path = thirdparty/dgl
 	url = https://github.com/dmlc/dgl.git
+[submodule "thirdparty/cutlass"]
+	path = thirdparty/cutlass
+	url = https://github.com/apuaaChen/cutlass.git

@@ -22,3 +22,4 @@
 [submodule "thirdparty/cutlass"]
 	path = thirdparty/cutlass
 	url = https://github.com/apuaaChen/cutlass.git
+	branch = feature/2.x/epilogue_visitor

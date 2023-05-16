@@ -19,7 +19,7 @@ RUN pip install pydot
 # build dgl from source
 RUN mkdir dgl
 WORKDIR /workspace/dgl
-COPY ${MLCOMPILER_DIR}/thirdparty/dgl .
+COPY ../../thirdparty/dgl .
 ENV DGL_HOME /workspace/dgl
 RUN bash script/build_dgl.sh -g
 WORKDIR /workspace/dgl/python

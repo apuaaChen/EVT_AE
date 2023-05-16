@@ -1,3 +1,26 @@
+# SEAL-PICASSO ML Compiler
+
+This repo is a collection of ML compiler projects from SEAL and PICASSO lab 
+targeting single-GPU & distributed training & inference of Deep Learning Models.
+
+## Performance
+
+## Compatibility
+
+## Getting Started
+
+We recommend using the docker image located in the `./script/docker/` directory.
+
+## Project Structure
+
+## Benchmarking & Unittest
+
+## Contributors
+
+## Citations
+
+****
+
 # Grafted TMP-Loop Based Compiler
 
 ## Torch 2.0 update

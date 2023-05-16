@@ -9,7 +9,15 @@ targeting single-GPU & distributed training & inference of Deep Learning Models.
 
 ## Getting Started
 
-We recommend using the docker image located in the `./script/docker/` directory.
+We recommend using the docker image:
+```bash
+git clone https://github.com/apuaaChen/SEAL-PICASSO-ML-Compiler.git
+git checkout torch_2_0
+git submodule update --init --recursive
+export MLCOMPILER_DIR=</path/to/your/SEAL-PICASSO-ML-Compiler/clone>
+cd $MLCOMPILER_DIR
+bash build.sh <image_name>
+```
 
 ## Project Structure
 

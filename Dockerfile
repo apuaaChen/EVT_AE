@@ -17,11 +17,11 @@ RUN apt install -y graphviz
 RUN pip install pydot
 
 # build dgl from source
-# RUN mkdir dgl
-# WORKDIR /workspace/dgl
-# COPY ./thirdparty/dgl .
-# ENV DGL_HOME /workspace/dgl
-# RUN bash script/build_dgl.sh -g
-# WORKDIR /workspace/dgl/python
-# RUN python setup.py install
-# RUN python setup.py build_ext --inplace
+RUN mkdir dgl
+WORKDIR /workspace/dgl
+COPY ./thirdparty/dgl .
+ENV DGL_HOME /workspace/dgl
+RUN bash script/build_dgl.sh -g
+WORKDIR /workspace/dgl/python
+RUN python setup.py install
+RUN python setup.py build_ext --inplace

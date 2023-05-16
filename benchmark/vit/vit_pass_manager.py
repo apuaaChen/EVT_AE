@@ -15,10 +15,10 @@ def pre_partition_optimization(joint_module, enabled_passes=["fusion", "uturn", 
     # exit()
 
     # pass: eliminate expand
-    pass_eliminate_transparent_node(
-        joint_module, graph, 
-        [torch.ops.aten.detach, torch.ops.aten.expand]
-    )
+    # pass_eliminate_transparent_node(
+    #     joint_module, graph, 
+    #     [torch.ops.aten.detach, torch.ops.aten.expand]
+    # )
 
     # pass: loss elimination
     pass_loss_elimination(joint_module, graph)

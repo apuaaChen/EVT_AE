@@ -30,10 +30,10 @@ def pre_partition_optimization(joint_module, enabled_passes=["fusion", "uturn", 
     pass_composed_op_breakdown(joint_module, graph, disabled_list=disabled_list)
 
     # pass: eliminate expand
-    pass_eliminate_transparent_node(
-        joint_module, graph, 
-        [torch.ops.aten.detach,]
-    )
+    # pass_eliminate_transparent_node(
+    #     joint_module, graph, 
+    #     [torch.ops.aten.detach,]
+    # )
 
     # pass: constant reduction
     pass_constant_folding(joint_module, graph)

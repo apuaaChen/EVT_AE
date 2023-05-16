@@ -13,7 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 ################################################################################
+from typing import Optional
 import torch
+from torch.fx.graph_module import GraphModule
 from gtl.compiler.nodes import *
 
 ################################################################################
@@ -252,6 +254,90 @@ def add_factor(node, graph, factors, inject_op, tmp_node):
                 injecting_node.replace_all_uses_with(mul_node)
                 mul_node.replace_input_with(tmp_node, injecting_node)
                 injecting_node = mul_node
+
+from torch.fx.passes.infra.pass_base import PassBase, PassResult
+
+class CFEAbstractValue:
+    def __init__(self, numerators, denominators) -> None:
+        pass
+
+class CommonFactorExtraction(PassBase):
+    """
+    GTL pass that extract the common factor of the lhs & rhs operands of add &
+    sub operators
+
+    Method:
+        The abstract value of each node is its factorization numerator & denominator. 
+        e.g. n: a * b, abstract value: (a, b), ()
+             n: a / b, abstract value: (a), (b)
+             n: sin(a), abstract value sin(a)
+    """
+    def __init__(self) -> None:
+        super().__init__()
+        self.modified = False
+
+        # mapping between nodes to factors
+        # the factor is described as a (factor, func introduces it) 
+        self.node2factors = {}
+    
+    def call(self, graph_module: GraphModule) -> PassResult:
+        graph = graph_module.graph
+
+        self.modified = False
+
+        for node in graph.nodes:
+            if node.op in ["placeholder", "get_attr"]:
+                self.node2factors[node] = CFEAbstractValue([node,],[])
+            elif node.op == "call_fucntion":
+                target = str(node.target).split(sep='.')[-1]
+                if hasattr(self, target):
+                    self.node2factors[node] = getattr(self, target)(node)
+
+    def get_abstract_value(self, arg):
+        if isinstance(arg, torch.fx.Node):
+            return self.node2factors[arg]
+        elif isinstance(arg, float) or isinstance(arg, int):
+            return CFEAbstractValue([arg,], [])
+        else:
+            return None
+        
+    def mul(self, node: torch.fx.Node):
+        lhs, rhs = node.args
+        abv_lhs = self.get_abstract_value(lhs)
+        abv_rhs = self.get_abstract_value(rhs)
+        abv_out = abv_lhs * abv_rhs
+        self.node2factors[node] = abv_out
+    
+    def div(self, node: torch.fx.Node):
+        lhs, rhs = node.args
+        abv_lhs = self.get_abstract_value(lhs)
+        abv_rhs = self.get_abstract_value(rhs)
+        abv_out = abv_lhs / abv_rhs
+        self.node2factors[node] = abv_out
+    
+    def neg(self, node: torch.fx.Node):
+        abv_lhs = node.args[0]
+        abv_rhs = CFEAbstractValue([-1], [])
+        abv_out = abv_lhs * abv_rhs
+        self.node2factors[node] = abv_out
+    
+    def view(self, node: torch.fx.Node):
+        raise NotImplementedError()
+    
+    def unsqueeze(self, node: torch.fx.Node):
+        raise NotImplementedError()
+    
+    def sum(self, node: torch.fx.Node):
+        raise NotImplementedError()
+    
+    def add(self, node: torch.fx.Node):
+        raise NotImplementedError()
+    
+    def sub(self, node: torch.fx.Node):
+        raise NotImplementedError()
+
+
+        
 
 def pass_merge_common_factor(module, graph):
     """

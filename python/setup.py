@@ -9,6 +9,7 @@ setup(
     package_dir={"": "."},
     packages=[
         "gtl", "gtl.helper", "gtl.compiler", 
-        "gtl.compiler.passes", "gtl.compiler.autotuner"]
+        "gtl.compiler.passes", "gtl.compiler.autotuner",
+        "gtl.compiler.passes.utils"]
     # install_requires=['torch']
 )

@@ -17,14 +17,6 @@ def pre_partition_optimization(joint_module, enabled_passes=["fusion", "uturn", 
     # pass: loss elimination
     pass_loss_elimination(joint_module, graph)
 
-    # # pass: composed op breakdown
-    # pass_composed_op_breakdown(joint_module, graph)
-
-    # # pass: eliminate expand
-    pass_eliminate_transparent_node(
-        joint_module, graph, 
-        [torch.ops.aten.detach, torch.ops.aten.as_strided_.default]
-    )
 
     if "uturn" in enabled_passes:
         disabled_list = []

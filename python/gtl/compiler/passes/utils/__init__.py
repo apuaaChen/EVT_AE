@@ -1,0 +1,1 @@
+from gtl.compiler.passes.utils.subgraph_rewriter import replace_pattern

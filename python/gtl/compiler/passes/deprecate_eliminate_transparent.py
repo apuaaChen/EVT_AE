@@ -13,12 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 ################################################################################
-
+import warnings
 ################################################################################
 # Graph-level pass to elmininate transparent nodes
 ################################################################################
 
 def pass_eliminate_transparent_node(module, graph, transparent_nodes):
+    warnings.warn(
+        "pass_eliminate_transparent_node is deprecated",
+        DeprecationWarning,
+        stacklevel=2
+    )
     for node in graph.nodes:
         if node.op == "call_function":
             if node.target in transparent_nodes:

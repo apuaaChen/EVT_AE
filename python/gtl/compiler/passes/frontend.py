@@ -34,6 +34,11 @@ class GTLFrontend(PassBase):
     def __init__(self) -> None:
         # flag tracking if the module is updated
         self.modified = False
+        # List of nodes that can be safely removed without consequences
+        self.transparent_nodes = [
+            torch.ops.aten.detach,
+            torch.ops.aten.expand,  # usually handled by broadcast directly
+        ]
         super().__init__()
     
     def call(self, graph_module: GraphModule) -> Optional[PassResult]:
@@ -49,11 +54,17 @@ class GTLFrontend(PassBase):
 
         graph = graph_module.graph
         pass_suffix_elimination_(graph_module, graph)
+        graph.eliminate_dead_code()
+        graph.lint()
         graph_module.recompile()
 
         return PassResult(graph_module, self.modified)
     
     def visit(self, node: torch.fx.Node):
+        if node.op == "call_function" and node.target in self.transparent_nodes:
+            node.replace_all_uses_with(node.args[0])
+            return
+
         # step 1: eliminate surffix
         target_name = str(node.target).split(sep='.')
         # this pass is designed specifically for aten operations
@@ -101,21 +112,11 @@ class GTLFrontend(PassBase):
 ################################################################################
 from gtl.compiler.nodes import *
 
-suffix_dict = {
-    torch.ops.aten.rsub: torch.ops.aten.sub,
-}
-
-
 def pass_suffix_elimination_(module, graph):
     for node in graph.nodes:
         if node.op == "call_function":
-            try:
-                node.target = suffix_dict[node.target]
-                if node.target == torch.ops.aten.native_dropout:
-                    node.meta["tensor_meta"] = node.args[0].meta["tensor_meta"]._replace()
-            except:
-                # pass
-                logging.debug(f"Unknown suffix: {node.target}")
+            if node.target == torch.ops.aten.native_dropout:
+                node.meta["tensor_meta"] = node.args[0].meta["tensor_meta"]._replace()
     
     # insert constant as attribute tensors
     name_idx = 0
@@ -141,7 +142,7 @@ def pass_suffix_elimination_(module, graph):
                 scalar_node.meta = {}
                 scalar_node.meta['tensor_meta'] = node.meta['tensor_meta']._replace()
                 node.replace_all_uses_with(scalar_node)
-        elif node.target in [torch.ops.aten.sub, torch.ops.aten.div]:
+        elif node.target in [torch.ops.aten.sub, torch.ops.aten.div, torch.ops.aten.rsub]:
             if len(node.all_input_nodes) == 1:
                 if node.args[0] in node.all_input_nodes:
                     constant_node = inject_get_attr(
@@ -167,11 +168,6 @@ def pass_suffix_elimination_(module, graph):
                     scalar_node.meta = {}
                     scalar_node.meta['tensor_meta'] = node.meta['tensor_meta']._replace()
                     node.replace_all_uses_with(scalar_node)
-        elif node.target == torch.ops.aten.addmm:
-            bias, lhs, rhs = node.args
-            mm_node = inject_mm(node, graph, lhs, rhs)
-            add_node = inject_add(mm_node, graph, mm_node, bias)
-            node.replace_all_uses_with(add_node)
 
     graph.eliminate_dead_code()
     graph.lint()

@@ -13,5 +13,5 @@ RUN apt install -y --no-install-recommends openssh-server
 RUN service ssh start
 
 # required for fx.graph visualization
-apt install graphviz
+apt-get install graphviz
 pip install pydot

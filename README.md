@@ -37,7 +37,7 @@ bash launch.sh <container_name> <port>
 
 Inside the docker container, to install gtl library:
 ```
-cd /workspace/SEAL-PICASO-ML-Compiler/python && bash install.sh
+cd /workspace/SEAL-PICASSO-ML-Compiler/python && bash install.sh
 ```
 
 ## Project Structure

@@ -13,7 +13,7 @@ RUN apt install -y --no-install-recommends openssh-server
 RUN service ssh start
 
 # tmux
-RUN apt install tmux
+RUN apt install -y tmux
 
 # required for fx.graph visualization
 RUN apt install -y graphviz

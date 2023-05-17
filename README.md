@@ -19,6 +19,12 @@ cd ./thirdparty/cutlass && git checkout feature/2.x/epilogue_visitor && cd ../..
 export MLCOMPILER_DIR=</path/to/your/SEAL-PICASSO-ML-Compiler/clone>
 cd $MLCOMPILER_DIR
 bash build.sh <image_name>
+bash launch.sh <container_name> <port>
+```
+
+Inside the docker container, to install gtl library:
+```
+cd /workspace/SEAL-PICASO-ML-Compiler/python && bash install.sh
 ```
 
 ## Project Structure

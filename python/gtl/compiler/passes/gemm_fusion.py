@@ -124,13 +124,15 @@ class FusedSpmm:
         assert cutlass_path is not None, "Environment variable 'CUTLASS_PATH' is not defined."
         cuda_install_path = os.getenv('CUDA_INSTALL_PATH')
         assert cuda_install_path is not None, "Environment variable 'CUDA_INSTALL_PATH' is not defined."
+        mlcompiler_path = os.getenv('MLCOMPILER_PATH')
+        assert mlcompiler_path is not None, "Environment variable 'CUDA_INSTALL_PATH' is not defined."
         include_paths = [
             cuda_install_path + '/include',
             cutlass_path + '/include',
             cutlass_path + '/tools/util/include',
             cutlass_path + '/tools/library/scripts/pycutlass/src/cpp/include',
             '/opt/conda/lib/python3.8/site-packages/torch/include/',
-            '/workspace/sparseTraining/src/cuda/'
+            mlcompiler_path + '/src/cuda/'
         ]
         compile_options = CompilationOptions(
             ['-std=c++14'], [80, ], include_paths=include_paths
@@ -749,13 +751,15 @@ class FusedSoftmax(FusedReduceApply):
         assert cutlass_path is not None, "Environment variable 'CUTLASS_PATH' is not defined."
         cuda_install_path = os.getenv('CUDA_INSTALL_PATH')
         assert cuda_install_path is not None, "Environment variable 'CUDA_INSTALL_PATH' is not defined."
+        mlcompiler_path = os.getenv('MLCOMPILER_PATH')
+        assert mlcompiler_path is not None, "Environment variable 'CUDA_INSTALL_PATH' is not defined."
         include_paths = [
             cuda_install_path + '/include',
             cutlass_path + '/include',
             cutlass_path + '/tools/util/include',
             cutlass_path + '/tools/library/scripts/pycutlass/src/cpp/include',
             '/opt/conda/lib/python3.8/site-packages/torch/include/',
-            '/workspace/sparseTraining/src/cuda/'
+            mlcompiler_path + '/src/cuda/'
         ]
         compile_options = CompilationOptions(
             ['-std=c++14'], [80, ], include_paths=include_paths
@@ -818,13 +822,15 @@ class FusedSoftmaxBackward(FusedReduceApply):
         assert cutlass_path is not None, "Environment variable 'CUTLASS_PATH' is not defined."
         cuda_install_path = os.getenv('CUDA_INSTALL_PATH')
         assert cuda_install_path is not None, "Environment variable 'CUDA_INSTALL_PATH' is not defined."
+        mlcompiler_path = os.getenv('MLCOMPILER_PATH')
+        assert mlcompiler_path is not None, "Environment variable 'CUDA_INSTALL_PATH' is not defined."
         include_paths = [
             cuda_install_path + '/include',
             cutlass_path + '/include',
             cutlass_path + '/tools/util/include',
             cutlass_path + '/tools/library/scripts/pycutlass/src/cpp/include',
             '/opt/conda/lib/python3.8/site-packages/torch/include/',
-            '/workspace/sparseTraining/src/cuda/'
+            mlcompiler_path + '/src/cuda/'
         ]
         compile_options = CompilationOptions(
             ['-std=c++14'], [80, ], include_paths=include_paths
@@ -887,13 +893,15 @@ class FusedLayerNormForward(FusedReduceApply):
         assert cutlass_path is not None, "Environment variable 'CUTLASS_PATH' is not defined."
         cuda_install_path = os.getenv('CUDA_INSTALL_PATH')
         assert cuda_install_path is not None, "Environment variable 'CUDA_INSTALL_PATH' is not defined."
+        mlcompiler_path = os.getenv('MLCOMPILER_PATH')
+        assert mlcompiler_path is not None, "Environment variable 'CUDA_INSTALL_PATH' is not defined."
         include_paths = [
             cuda_install_path + '/include',
             cutlass_path + '/include',
             cutlass_path + '/tools/util/include',
             cutlass_path + '/tools/library/scripts/pycutlass/src/cpp/include',
             '/opt/conda/lib/python3.8/site-packages/torch/include/',
-            '/workspace/sparseTraining/src/cuda/'
+            mlcompiler_path + '/src/cuda/'
         ]
         compile_options = CompilationOptions(
             ['-std=c++14'], [80, ], include_paths=include_paths
@@ -978,13 +986,15 @@ class FusedLayerNormBackward(FusedReduceApply):
         assert cutlass_path is not None, "Environment variable 'CUTLASS_PATH' is not defined."
         cuda_install_path = os.getenv('CUDA_INSTALL_PATH')
         assert cuda_install_path is not None, "Environment variable 'CUDA_INSTALL_PATH' is not defined."
+        mlcompiler_path = os.getenv('MLCOMPILER_PATH')
+        assert mlcompiler_path is not None, "Environment variable 'CUDA_INSTALL_PATH' is not defined."
         include_paths = [
             cuda_install_path + '/include',
             cutlass_path + '/include',
             cutlass_path + '/tools/util/include',
             cutlass_path + '/tools/library/scripts/pycutlass/src/cpp/include',
             '/opt/conda/lib/python3.8/site-packages/torch/include/',
-            '/workspace/sparseTraining/src/cuda/'
+            mlcompiler_path + '/src/cuda/'
         ]
         compile_options = CompilationOptions(
             ['-std=c++14'], [80, ], include_paths=include_paths

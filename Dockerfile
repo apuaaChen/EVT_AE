@@ -42,3 +42,10 @@ RUN bash build.sh
 
 # go back to root directory
 WORKDIR /workspace
+
+################################################################################
+# benchmark dependencies
+################################################################################
+
+# for GCN dataset
+RUN pip install ogb

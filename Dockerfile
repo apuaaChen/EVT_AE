@@ -41,6 +41,7 @@ WORKDIR /workspace/cutlass/tools/library/scripts/pycutlass
 RUN bash build.sh
 
 # go back to root directory
+ENV MLCOMPILER_PATH /workspace/SEAL-PICASO-ML-Compiler/
 WORKDIR /workspace
 
 ################################################################################

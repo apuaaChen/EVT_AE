@@ -125,7 +125,7 @@ class FusedSpmm:
         cuda_install_path = os.getenv('CUDA_INSTALL_PATH')
         assert cuda_install_path is not None, "Environment variable 'CUDA_INSTALL_PATH' is not defined."
         mlcompiler_path = os.getenv('MLCOMPILER_PATH')
-        assert mlcompiler_path is not None, "Environment variable 'CUDA_INSTALL_PATH' is not defined."
+        assert mlcompiler_path is not None, "Environment variable 'MLCOMPILER_PATH_PATH' is not defined."
         include_paths = [
             cuda_install_path + '/include',
             cutlass_path + '/include',
@@ -759,7 +759,7 @@ class FusedSoftmax(FusedReduceApply):
             cutlass_path + '/tools/util/include',
             cutlass_path + '/tools/library/scripts/pycutlass/src/cpp/include',
             '/opt/conda/lib/python3.8/site-packages/torch/include/',
-            mlcompiler_path + '/src/cuda/'
+            mlcompiler_path + '/src/cuda'
         ]
         compile_options = CompilationOptions(
             ['-std=c++14'], [80, ], include_paths=include_paths

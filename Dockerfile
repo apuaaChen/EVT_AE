@@ -48,5 +48,13 @@ WORKDIR /workspace
 # benchmark dependencies
 ################################################################################
 
+# BERT
+COPY ./thirdparty/DeepLearningExample/PyTorch/LanguageModeling/BERT /workspace/bert
+RUN pip install boto3
+# s: substitute; g: make as many substitutions as possible
+# This is used to fix the inconsistancy between torch 1.x & 2.0 API
+RUN sed -i 's/approximate=True/approximate="tanh"/g' /workspace/bert/modeling.py
 # for GCN dataset
 RUN pip install ogb
+# fix the issue that sparse tensors in torch do not have fake mode
+COPY ./python/torch_src/meta_utils.py /usr/local/lib/python3.8/dist-packages/torch/_subclasses/meta_utils.py

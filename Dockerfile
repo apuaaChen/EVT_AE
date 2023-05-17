@@ -12,6 +12,9 @@ RUN apt update
 RUN apt install -y --no-install-recommends openssh-server
 RUN service ssh start
 
+# tmux
+RUN apt install tmux
+
 # required for fx.graph visualization
 RUN apt install -y graphviz
 RUN pip install pydot

@@ -28,7 +28,6 @@ We recommend using the docker image:
 ```bash
 git clone https://github.com/apuaaChen/SEAL-PICASSO-ML-Compiler.git
 cd SEAL-PICASSO-ML-Compiler
-git checkout torch_2_0
 git submodule update --init --recursive
 cd ./thirdparty/cutlass && git checkout feature/2.x/epilogue_visitor && cd ../../
 export MLCOMPILER_DIR=</path/to/your/SEAL-PICASSO-ML-Compiler/clone>

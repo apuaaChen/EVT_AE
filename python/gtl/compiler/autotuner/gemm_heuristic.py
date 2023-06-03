@@ -1,4 +1,4 @@
-import cutlass
+import cutlass_bindings
 from math import floor, log2
 import random
 import numpy as np
@@ -23,10 +23,10 @@ a100_metafile = {
 }
 
 element_size = {
-    cutlass.float16: 2,
-    cutlass.bfloat16: 2,
-    cutlass.float32: 4,
-    cutlass.float64: 8
+    cutlass_bindings.float16: 2,
+    cutlass_bindings.bfloat16: 2,
+    cutlass_bindings.float32: 4,
+    cutlass_bindings.float64: 8
 }
 
 # Heuristics helps to autotuning an operator implementation.
@@ -342,7 +342,7 @@ class DefaultMmaCore:
         num_threads = (M // Mw) * (N // Nw) * (K // Kw) * 32
         access_size_in_bits = 128
 
-        if layout_A == cutlass.RowMajor:
+        if layout_A == cutlass_bindings.RowMajor:
             self.smem_layout_A = RowMajorTensorOpMultiplicandCrosswise(
                 8 * element_size[element_A], K
             )
@@ -358,7 +358,7 @@ class DefaultMmaCore:
                 MatrixShape(M, K), element_A, self.smem_layout_A, 0, self.iterator_threadmap_A, crosswise=K
             )
 
-        elif layout_A == cutlass.ColumnMajor:
+        elif layout_A == cutlass_bindings.ColumnMajor:
             self.smem_layout_A = ColumnMajorTensorOpMultiplicandCongruous(
                 8 * element_size[element_A], 128 // element_size[element_A]
             )
@@ -370,7 +370,7 @@ class DefaultMmaCore:
                 MatrixShape(M, K), element_A, self.smem_layout_A, 1, self.iterator_threadmap_A
             )
         
-        if layout_B == cutlass.RowMajor:
+        if layout_B == cutlass_bindings.RowMajor:
             self.smem_layout_B = RowMajorTensorOpMultiplicandCongruous(
                 8 * element_size[element_B], 128 // element_size[element_B]
             )
@@ -381,7 +381,7 @@ class DefaultMmaCore:
             self.smem_iterator_B = RegularTileAccessIterator(
                 MatrixShape(K, N), element_B, self.smem_layout_B, 0, self.iterator_threadmap_B
             )
-        elif layout_B == cutlass.ColumnMajor:
+        elif layout_B == cutlass_bindings.ColumnMajor:
             self.smem_layout_B = ColumnMajorTensorOpMultiplicandCrosswise(
                 8 * element_size[element_B], K
             )
@@ -401,7 +401,7 @@ class DefaultMmaCore:
         #     WarpShape, InstructionShape, ElementA, SmemLayoutA, ElementB, SmemLayoutB,
         #     ElementC, LayoutC, Operator, WarpCount::kK>::Type;
         mma_tensor_op = DefaultMmaTensorOp(
-            warp_shape, instruction_shape, element_A, self.smem_layout_A, element_B, self.smem_layout_B, element_accumulator, cutlass.RowMajor, K // Kw
+            warp_shape, instruction_shape, element_A, self.smem_layout_A, element_B, self.smem_layout_B, element_accumulator, cutlass_bindings.RowMajor, K // Kw
         ).type
         
         # policy
@@ -417,7 +417,7 @@ class MmaPolicy:
 class DefaultMmaTensorOp:
     def __init__(self, warp_shape, instruction_shape, element_A, layout_A, element_B, layout_B, element_C, Layout_C, partition_k) -> None:
         self.policy = MmaTensorOpPolicy(
-            Mma(instruction_shape, 32, element_A, cutlass.RowMajor, element_B, cutlass.ColumnMajor, element_C, cutlass.RowMajor),
+            Mma(instruction_shape, 32, element_A, cutlass_bindings.RowMajor, element_B, cutlass_bindings.ColumnMajor, element_C, cutlass_bindings.RowMajor),
             MatrixShape(1, 1)
         )
         self.type = MmaTensorOp(
@@ -719,9 +719,9 @@ class PredicatedTileAccessIteratorColumnMajor(PredicatedTileAccessIteratorPitchL
 
 class PredicatedTileAccessIterator:
     def __init__(self, threadblock_shape, element, layout, advance_rank, threadmap, access_type) -> None:
-        if layout == cutlass.RowMajor:
+        if layout == cutlass_bindings.RowMajor:
             PredicatedTileAccessIteratorRowMajor(threadblock_shape, element, advance_rank, threadmap, access_type)
-        elif layout == cutlass.ColumnMajor:
+        elif layout == cutlass_bindings.ColumnMajor:
             PredicatedTileAccessIteratorColumnMajor(threadblock_shape, element, advance_rank, threadmap, access_type)
 
 
@@ -888,10 +888,10 @@ class EpilogueWithVisitor:
 if __name__ == "__main__":
 
     rule = GemmUniversalRule(
-        cutlass.float16, cutlass.RowMajor, 8,
-        cutlass.float16, cutlass.ColumnMajor, 8,
-        cutlass.float16, 8,
-        cutlass.float32, [1, 128, 64], [64, 64, 64],
+        cutlass_bindings.float16, cutlass_bindings.RowMajor, 8,
+        cutlass_bindings.float16, cutlass_bindings.ColumnMajor, 8,
+        cutlass_bindings.float16, 8,
+        cutlass_bindings.float32, [1, 128, 64], [64, 64, 64],
         [16, 8, 16], 2
     )
     print(rule)

@@ -13,9 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 ################################################################################
-import pycutlass
-from pycutlass import *
-import cutlass
+import cutlass.backend
+from cutlass.backend import *
+import cutlass_bindings
 import torch.fx as fx
 from treelib import Tree
 from gtl.compiler.nodes import *
@@ -27,11 +27,11 @@ import treelib
 import logging
 
 torch_2_cutlass_type = {
-    torch.float32: cutlass.float32,
-    torch.float16: cutlass.float16,
-    torch.int64: cutlass.int64,
-    torch.int32: cutlass.int32,
-    torch.bool: cutlass.int8
+    torch.float32: cutlass_bindings.float32,
+    torch.float16: cutlass_bindings.float16,
+    torch.int64: cutlass_bindings.int64,
+    torch.int32: cutlass_bindings.int32,
+    torch.bool: cutlass_bindings.int8
 }
 
 def dfs(node, target):
@@ -64,9 +64,9 @@ class TensorOutputNodeDAG(TensorOutputNode):
         self.permute = node.meta['tensor'].get_permutation()
         # an attribute to track the layout of 
         if self.permute in [[0, 1, 2], [1, 0, 2], [0, 1]]:
-            self.layout = cutlass.RowMajor
+            self.layout = cutlass_bindings.RowMajor
         elif self.permute in [[0, 2, 1], [2, 0, 1], [1, 0]]:
-            self.layout = cutlass.ColumnMajor
+            self.layout = cutlass_bindings.ColumnMajor
         else:
             msg = f"[Not Implemented] Unsupported permutation {self.permute} at {node}"
             logging.error(msg)
@@ -180,7 +180,7 @@ class UnaryNodeDAG(UnaryNode):
 
         self.type = "tensor"
 
-        self.epilogue_op = getattr(pycutlass, self.op)(element_compute)
+        self.epilogue_op = getattr(cutlass.backend, self.op)(element_compute)
 
         # data types
         self.element_accumulator = element_accumulator
@@ -221,7 +221,7 @@ class BinOpNodeDAG(BinOpNode):
 
         self.type = "tensor"
 
-        self.epilogue_op = getattr(pycutlass, "Vector"+self.op)(element_compute)
+        self.epilogue_op = getattr(cutlass.backend, "Vector"+self.op)(element_compute)
 
         # data types
         self.element_accumulator = element_accumulator
@@ -456,7 +456,7 @@ class EpilogueASTDAG:
     
     # pass 2: correct the row & column when the output layout is in column major
     def pass_column_major_output_correction(self, tree, nid, output_layout):
-        if output_layout in [cutlass.RowMajor]: return
+        if output_layout in [cutlass_bindings.RowMajor]: return
         node = tree.get_node(nid)
         if isinstance(node.data, RowReductionNodeDAG):
             node.data = ColumnReductionNodeDAG(
@@ -780,9 +780,9 @@ class EpilogueASTDAG:
                     # get reduction data type
                     element_reduction = user_node.meta["tensor_meta"].dtype
                     if element_reduction == torch.float16:
-                        el_reduction = cutlass.float16
+                        el_reduction = cutlass_bindings.float16
                     elif element_reduction == torch.float32:
-                        el_reduction = cutlass.float32
+                        el_reduction = cutlass_bindings.float32
                     else:
                         raise NotImplementedError("unkown data type")
                     # case 1: for GEMM kernels

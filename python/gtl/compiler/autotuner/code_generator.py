@@ -1,6 +1,6 @@
 # Generate the code from parameter.
-import pycutlass
-from pycutlass import *
+import cutlass.backend
+from cutlass.backend import *
 import cutlass
 
 
@@ -52,14 +52,14 @@ def generate_code(
 
     # print(operation.rt_module.emit())
 
-    pycutlass.compiler.add_module([operation])
+    cutlass.backend.compiler.add_module([operation])
 
     return operation
 
 # for test only
 if __name__ == "__main__":
-    pycutlass.get_memory_pool(init_pool_size=2**10, max_pool_size=2**32)
-    pycutlass.compiler.nvcc()
+    cutlass.backend.get_memory_pool(init_pool_size=2**10, max_pool_size=2**32)
+    cutlass.backend.compiler.nvcc()
     # Generate configuration code
     operation = generate_code(
         parameter=[128, 16, 64, 64, 16, 64, 2, 3], element_a=cutlass.float16,

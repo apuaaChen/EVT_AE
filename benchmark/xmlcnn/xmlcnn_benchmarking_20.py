@@ -11,10 +11,10 @@ from xmlcnn_modeling import xmlCNN, Params
 # from amp_helper import scale_loss
 # from aot_helper import compiler_fn, partition_func
 # from functorch._src.compilers import ts_compile, tensorexpr_compile, tvm_compile
-import pycutlass
-from pycutlass import *
-pycutlass.get_memory_pool(manager="torch")
-pycutlass.compiler.nvcc()
+import cutlass.backend
+from cutlass.backend import *
+cutlass.backend.get_memory_pool(manager="torch")
+cutlass.backend.compiler.nvcc()
 # import nvtx
 import argparse
 import logging

@@ -1,6 +1,6 @@
 import numpy as np
 import xgboost as xgb
-from pycutlass import *
+from cutlass.backend import *
 import cutlass
 from gtl.compiler.autotuner.design_space_descriptor import GemmConfigDescriptor
 
@@ -264,8 +264,8 @@ class Autotuner:
 
 # for test only
 if __name__ == "__main__":
-    pycutlass.get_memory_pool(init_pool_size=2**10, max_pool_size=2**32)
-    pycutlass.compiler.nvcc()
+    cutlass.backend.get_memory_pool(init_pool_size=2**10, max_pool_size=2**32)
+    cutlass.backend.compiler.nvcc()
     input_shape = [1024, 1024, 16384]
     autotuner = Autotuner(verbose=True)
     gemm_descriptor = GemmConfigDescriptor(

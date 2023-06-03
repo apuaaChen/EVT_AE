@@ -23,3 +23,9 @@
 	path = thirdparty/cutlass
 	url = https://github.com/apuaaChen/cutlass.git
 	branch = feature/2.x/epilogue_visitor
+[submodule "thirdparty/torch-mlir"]
+	path = thirdparty/torch-mlir
+	url = https://github.com/llvm/torch-mlir.git
+[submodule "thirdparty/llvm-project"]
+	path = thirdparty/llvm-project
+	url = https://github.com/llvm/llvm-project.git

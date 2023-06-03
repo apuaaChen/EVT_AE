@@ -10,14 +10,14 @@ from resnet_modeling import ResNet, BasicBlock, Bottleneck
 from apex import amp
 # from lamb_amp_opt.fused_lamb import FusedLAMBAMP
 # from aot_helper import compiler_fn, partition_func
-import pycutlass
-from pycutlass import *
-pycutlass.get_memory_pool(manager="torch")
-pycutlass.compiler.nvcc()
+import cutlass.backend
+from cutlass.backend import *
+cutlass.backend.get_memory_pool(manager="torch")
+cutlass.backend.compiler.nvcc()
 import nvtx
 import argparse
 import logging
-from pycutlass.test.profiler import GpuTimer
+from cutlass.backend.test.profiler import GpuTimer
 from functools import partial
 import unittest
 from functorch.compile import ts_compile#, tensorexpr_compile, tvm_compile

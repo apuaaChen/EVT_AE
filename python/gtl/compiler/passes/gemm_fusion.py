@@ -13,9 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 ################################################################################
-import pycutlass
-from pycutlass import *
-import cutlass
+import cutlass.backend
+from cutlass.backend import *
+import cutlass_bindings
 import torch
 import torch.nn.functional as F
 from gtl.compiler.passes.epilogue_parser import EpilogueVisitTreeDAG, TensorOutputNodeDAG, AccumulatorNodeDAG
@@ -86,7 +86,7 @@ class FusedSpmm:
 
         align_emb = get_alignment(N)
 
-        self.Output = TensorDescription(cutlass.float16, cutlass.RowMajor, align_emb)
+        self.Output = TensorDescription(cutlass_bindings.float16, cutlass_bindings.RowMajor, align_emb)
 
         tile_num_row = 32
         num_warp = tile_num_row * N // align_emb // 32
@@ -99,15 +99,15 @@ class FusedSpmm:
         epilogue_functor = LinearCombination(
             element_output=self.Output.element,
             epilogue_vector_length=self.Output.alignment,
-            element_accumulator=cutlass.float32,
-            element_epilogue=cutlass.float32
+            element_accumulator=cutlass_bindings.float32,
+            element_epilogue=cutlass_bindings.float32
         )
 
         self.epilogue_functor = EpilogueVisitTreeDAG(
             elementwise_functor=epilogue_functor,
-            element_accumulator=cutlass.float32,
+            element_accumulator=cutlass_bindings.float32,
             elements_per_access=self.Output.alignment,
-            element_compute=cutlass.float32, element_output=self.Output.element
+            element_compute=cutlass_bindings.float32, element_output=self.Output.element
         )
 
         self.epilogue_functor.initialize(node)
@@ -115,7 +115,7 @@ class FusedSpmm:
 
         self.operation = SpmmOperation(
             tile_description=self.tile_description,
-            element_input=cutlass.float16, element_accumulator=cutlass.float32,
+            element_input=cutlass_bindings.float16, element_accumulator=cutlass_bindings.float32,
             alignment_emb=align_emb, alignment_nnz=1, 
             epilogue_functor=self.epilogue_functor
         )
@@ -130,15 +130,15 @@ class FusedSpmm:
             cuda_install_path + '/include',
             cutlass_path + '/include',
             cutlass_path + '/tools/util/include',
-            cutlass_path + '/tools/library/scripts/pycutlass/src/cpp/include',
+            cutlass_path + '/python/cutlass/cpp/include',
             '/opt/conda/lib/python3.8/site-packages/torch/include/',
             mlcompiler_path + '/src/cuda/'
         ]
         compile_options = CompilationOptions(
-            ['-std=c++14'], [80, ], include_paths=include_paths
+            ['-std=c++17'], 80, include_paths=include_paths
         )
 
-        pycutlass.compiler.add_module([self.operation,], compile_options)
+        cutlass.backend.compiler.add_module([self.operation,], compile_options)
 
         self.args = self.epilogue_functor.args + list(node.args)
         self.outputs = self.epilogue_functor.outputs
@@ -161,7 +161,7 @@ class FusedSpmm:
                 M, K = lhs.size()
                 K, N = rhs.size()
                 rhs = rhs.contiguous()
-                problem_size = cutlass.MatrixCoord(M, N)
+                problem_size = cutlass_bindings.MatrixCoord(M, N)
                 kwargs = {"problem_size": [M, N]}
                 for output_node in self.kernel_outputs:
                     if output_node.target in [torch.ops.aten.sum]:
@@ -226,16 +226,16 @@ class FusedGEMM:
         # case 3: other arithmatic ops
         #     mainloop fusion is not yet supported
         if lhs_node.target == torch.ops.aten.t:
-            lhs_layout = cutlass.ColumnMajor
+            lhs_layout = cutlass_bindings.ColumnMajor
             node.replace_input_with(lhs_node, lhs_node.args[0])
         else:
-            lhs_layout = cutlass.RowMajor
+            lhs_layout = cutlass_bindings.RowMajor
         
         if rhs_node.target == torch.ops.aten.t:
-            rhs_layout = cutlass.ColumnMajor
+            rhs_layout = cutlass_bindings.ColumnMajor
             node.replace_input_with(rhs_node, rhs_node.args[0])
         else:
-            rhs_layout = cutlass.RowMajor
+            rhs_layout = cutlass_bindings.RowMajor
         
         # get shape
         lhs_shape = lhs_node.meta["tensor_meta"].shape
@@ -249,44 +249,44 @@ class FusedGEMM:
 
         math_inst = MathInstruction(
             instruction_shape=[16, 8, 16],
-            element_a=cutlass.float16, element_b=cutlass.float16,
-            element_accumulator=cutlass.float32, 
-            opcode_class=cutlass.OpClass.TensorOp
+            element_a=cutlass_bindings.float16, element_b=cutlass_bindings.float16,
+            element_accumulator=cutlass_bindings.float32, 
+            opcode_class=cutlass_bindings.OpClass.TensorOp
         )
 
         # get max alignment
-        if lhs_layout == cutlass.RowMajor:
+        if lhs_layout == cutlass_bindings.RowMajor:
             align_a = get_alignment(K)
-        elif lhs_layout == cutlass.ColumnMajor:
+        elif lhs_layout == cutlass_bindings.ColumnMajor:
             align_a = get_alignment(M)
         else:
             raise NotImplementedError
         
-        if rhs_layout == cutlass.RowMajor:
+        if rhs_layout == cutlass_bindings.RowMajor:
             align_b = get_alignment(N)
-        elif rhs_layout == cutlass.ColumnMajor:
+        elif rhs_layout == cutlass_bindings.ColumnMajor:
             align_b = get_alignment(K)
         else:
             raise NotImplementedError
         
         align_c = get_alignment(N)
 
-        A = TensorDescription(cutlass.float16, lhs_layout, align_a)
-        B = TensorDescription(cutlass.float16, rhs_layout, align_b)
-        C = TensorDescription(cutlass.float16, cutlass.RowMajor, align_c)
+        A = TensorDescription(cutlass_bindings.float16, lhs_layout, align_a)
+        B = TensorDescription(cutlass_bindings.float16, rhs_layout, align_b)
+        C = TensorDescription(cutlass_bindings.float16, cutlass_bindings.RowMajor, align_c)
 
         # epilogue functor
         epilogue_functor = LinearCombination(
             element_output=C.element, epilogue_vector_length=C.alignment,
             element_accumulator=math_inst.element_accumulator,
-            element_epilogue=cutlass.float32)
+            element_epilogue=cutlass_bindings.float32)
         
         # Creating the epilogue visitor tree
         self.epilogue_functor = EpilogueVisitTreeDAG(
             elementwise_functor=epilogue_functor, 
             element_accumulator=math_inst.element_accumulator,
             elements_per_access=C.alignment,
-            element_compute=cutlass.float32, element_output=C.element
+            element_compute=cutlass_bindings.float32, element_output=C.element
         )
 
         self.is_direct_output = self.epilogue_functor.initialize(node)
@@ -296,10 +296,10 @@ class FusedGEMM:
             self.split_k_mode = "Serial"
         # launch autotuner
         self.gemm_descriptor = GemmConfigDescriptor(
-            problem_size=[M, N, K], element_a=cutlass.float16, layout_a=lhs_layout,
-            element_b=cutlass.float16, layout_b=rhs_layout, 
-            element_c=cutlass.float16, layout_c=cutlass.RowMajor, 
-            element_accumulator=cutlass.float32, alignment_a=align_a,
+            problem_size=[M, N, K], element_a=cutlass_bindings.float16, layout_a=lhs_layout,
+            element_b=cutlass_bindings.float16, layout_b=rhs_layout, 
+            element_c=cutlass_bindings.float16, layout_c=cutlass_bindings.RowMajor, 
+            element_accumulator=cutlass_bindings.float32, alignment_a=align_a,
             alignment_b=align_b, alignment_c=align_c,
             split_k_mode=self.split_k_mode
         )
@@ -319,7 +319,7 @@ class FusedGEMM:
 
         log_swizzle = best_config['log_swizzle']
         self.split_k_slices = best_config['split_k_slices']
-        swizzling_functor = getattr(cutlass, "IdentitySwizzle%d"%int(pow(2, log_swizzle)))
+        swizzling_functor = getattr(cutlass_bindings, "IdentitySwizzle%d"%int(pow(2, log_swizzle)))
 
 
         tile_description = TileDescription(
@@ -336,9 +336,9 @@ class FusedGEMM:
             )
             if self.split_k_mode == "Parallel":
                 self.reduction_operation = ReductionOperation(
-                    shape=cutlass.MatrixCoord(4, 32 * C.alignment),
-                    C=C, element_accumulator=cutlass.float32,
-                    element_compute=cutlass.float32,
+                    shape=cutlass_bindings.MatrixCoord(4, 32 * C.alignment),
+                    C=C, element_accumulator=cutlass_bindings.float32,
+                    element_compute=cutlass_bindings.float32,
                     epilogue_functor=epilogue_functor,
                     count=C.alignment
                 )
@@ -351,9 +351,9 @@ class FusedGEMM:
             )
 
         if self.split_k_mode == "Parallel":
-            pycutlass.compiler.add_module([self.operation, self.reduction_operation])
+            cutlass.backend.compiler.add_module([self.operation, self.reduction_operation])
         else:
-            pycutlass.compiler.add_module([self.operation,])
+            cutlass.backend.compiler.add_module([self.operation,])
 
         self.args = self.epilogue_functor.args + list(node.args)
         self.outputs = self.epilogue_functor.outputs
@@ -374,24 +374,24 @@ class FusedGEMM:
             rhs = args[-1]
             with nvtx.annotate("cutlass_gemm"):
                 if self.is_direct_output:
-                    if self.lhs_layout == cutlass.ColumnMajor:
+                    if self.lhs_layout == cutlass_bindings.ColumnMajor:
                         lhs = torch.transpose(lhs, -1, -2)
-                    if self.rhs_layout == cutlass.ColumnMajor:
+                    if self.rhs_layout == cutlass_bindings.ColumnMajor:
                         rhs = torch.transpose(rhs, -1, -2)
                     # it may still contain some reshaping
                     results = [torch.matmul(lhs, rhs).view(self.kernel_outputs[0].meta['tensor_meta'].shape),]
                 else:
-                    if self.lhs_layout == cutlass.RowMajor:
+                    if self.lhs_layout == cutlass_bindings.RowMajor:
                         M, K = lhs.size()
                     else:
                         K, M = lhs.size()
-                    if self.rhs_layout == cutlass.RowMajor:
+                    if self.rhs_layout == cutlass_bindings.RowMajor:
                         N = rhs.size(-1)
                     else:
                         N = rhs.size(-2)
                     lhs = lhs.contiguous()
                     rhs = rhs.contiguous()
-                    problem_size = cutlass.gemm.GemmCoord(M, N, K)
+                    problem_size = cutlass_bindings.gemm.GemmCoord(M, N, K)
                     kwargs = {"problem_size": [M, N]}
                     for output_node in self.kernel_outputs:
                         if output_node.target in [torch.ops.aten.sum]:
@@ -417,9 +417,9 @@ class FusedGEMM:
                                 output_tensor = kwargs[key]
                         output_op = self.operation.epilogue_type(1.0, 0.0)
                         if self.split_k_mode in ["None", "Serial"]:
-                            gemm_mode=cutlass.gemm.Mode.Gemm
+                            gemm_mode=cutlass_bindings.gemm.Mode.Gemm
                         elif self.split_k_mode == "Parallel":
-                            gemm_mode= cutlass.gemm.Mode.GemmSplitKParallel
+                            gemm_mode= cutlass_bindings.gemm.Mode.GemmSplitKParallel
                         else:
                             raise NotImplementedError
                         arguments = GemmArguments(
@@ -438,7 +438,7 @@ class FusedGEMM:
                         arguments = GemmArguments(
                             operation=self.operation, problem_size=problem_size,
                             A=lhs, B=rhs, C=lhs, D=lhs,
-                            output_op=output_op, gemm_mode=cutlass.gemm.Mode.Gemm
+                            output_op=output_op, gemm_mode=cutlass_bindings.gemm.Mode.Gemm
                         )
                     if self.stream is None: 
                         self.operation.run(arguments, stream=torch.cuda.current_stream().cuda_stream)
@@ -470,10 +470,10 @@ class FusedGEMM:
 
 
 permute_2_layout = {
-    (0, 1, 2) : cutlass.RowMajor,
-    (0, 2, 1) : cutlass.ColumnMajor,
-    (1, 0, 2) : cutlass.RowMajor,
-    (1, 2, 0) : cutlass.ColumnMajor
+    (0, 1, 2) : cutlass_bindings.RowMajor,
+    (0, 2, 1) : cutlass_bindings.ColumnMajor,
+    (1, 0, 2) : cutlass_bindings.RowMajor,
+    (1, 2, 0) : cutlass_bindings.ColumnMajor
 }
 
 class FusedBMM:
@@ -519,52 +519,52 @@ class FusedBMM:
         
         math_inst = MathInstruction(
             instruction_shape=[16, 8, 16],
-            element_a=cutlass.float16, element_b=cutlass.float16,
-            element_accumulator=cutlass.float32,
-            opcode_class=cutlass.OpClass.TensorOp
+            element_a=cutlass_bindings.float16, element_b=cutlass_bindings.float16,
+            element_accumulator=cutlass_bindings.float32,
+            opcode_class=cutlass_bindings.OpClass.TensorOp
         )
 
         # get max alignment
-        if self.lhs_layout == cutlass.RowMajor:
+        if self.lhs_layout == cutlass_bindings.RowMajor:
             align_a = get_alignment(K)
-        elif self.lhs_layout == cutlass.ColumnMajor:
+        elif self.lhs_layout == cutlass_bindings.ColumnMajor:
             align_a = get_alignment(M)
         else:
             raise NotImplementedError
         
-        if self.rhs_layout == cutlass.RowMajor:
+        if self.rhs_layout == cutlass_bindings.RowMajor:
             align_b = get_alignment(N)
-        elif self.rhs_layout == cutlass.ColumnMajor:
+        elif self.rhs_layout == cutlass_bindings.ColumnMajor:
             align_b = get_alignment(K)
         else:
             raise NotImplementedError
         
         align_c = get_alignment(N)
 
-        A = TensorDescription(cutlass.float16, self.lhs_layout, align_a)
-        B = TensorDescription(cutlass.float16, self.rhs_layout, align_b)
-        C = TensorDescription(cutlass.float16, cutlass.RowMajor, align_c)
+        A = TensorDescription(cutlass_bindings.float16, self.lhs_layout, align_a)
+        B = TensorDescription(cutlass_bindings.float16, self.rhs_layout, align_b)
+        C = TensorDescription(cutlass_bindings.float16, cutlass_bindings.RowMajor, align_c)
 
         epilogue_functor = LinearCombination(
             element_output=C.element, epilogue_vector_length=C.alignment,
             element_accumulator=math_inst.element_accumulator,
-            element_epilogue=cutlass.float32)
+            element_epilogue=cutlass_bindings.float32)
 
         # Creating the epilogue visitor tree
         self.epilogue_functor = EpilogueVisitTreeDAG(
             elementwise_functor=epilogue_functor, 
             element_accumulator=math_inst.element_accumulator,
             elements_per_access=C.alignment,
-            element_compute=cutlass.float32, element_output=C.element
+            element_compute=cutlass_bindings.float32, element_output=C.element
         )
 
         self.epilogue_functor.initialize(node)
 
         bmm_descriptor = BatchedGemmConfigDescriptor(
-            problem_size=[batch, M, N, K], element_a=cutlass.float16, layout_a=self.lhs_layout,
-            element_b=cutlass.float16, layout_b=self.rhs_layout,
-            element_c=cutlass.float16, layout_c=cutlass.RowMajor,
-            element_accumulator=cutlass.float32, alignment_a=align_a,
+            problem_size=[batch, M, N, K], element_a=cutlass_bindings.float16, layout_a=self.lhs_layout,
+            element_b=cutlass_bindings.float16, layout_b=self.rhs_layout,
+            element_c=cutlass_bindings.float16, layout_c=cutlass_bindings.RowMajor,
+            element_accumulator=cutlass_bindings.float32, alignment_a=align_a,
             alignment_b=align_b, alignment_c=align_c, permute_a=lhs_permute,
             permute_b=rhs_permute
         )
@@ -580,7 +580,7 @@ class FusedBMM:
         
         stages = best_config['stage']
 
-        swizzling_functor = cutlass.BatchedIdentitySwizzle
+        swizzling_functor = cutlass_bindings.BatchedIdentitySwizzle
 
         tile_description = TileDescription(
             threadblock_shape, stages, warp_count, math_inst
@@ -588,7 +588,7 @@ class FusedBMM:
     
         self.epilogue_functor.optimize(tile_description)
 
-        C = TensorDescription(cutlass.float16, self.epilogue_functor.output_layout, 8)
+        C = TensorDescription(cutlass_bindings.float16, self.epilogue_functor.output_layout, 8)
 
         self.operation = GemmOperationUniversal(
             arch=80, tile_description=tile_description,
@@ -596,10 +596,10 @@ class FusedBMM:
             swizzling_functor=swizzling_functor, visitor=True
         )
 
-        self.problem_size = cutlass.gemm.GemmCoord(M, N, K)
+        self.problem_size = cutlass_bindings.gemm.GemmCoord(M, N, K)
         self.batch = batch
 
-        pycutlass.compiler.add_module([self.operation,])
+        cutlass.backend.compiler.add_module([self.operation,])
 
         self.args = self.epilogue_functor.args + list(node.args)
         self.outputs = self.epilogue_functor.outputs
@@ -628,7 +628,7 @@ class FusedBMM:
         with nvtx.annotate("cutlass_bmm"):
             lhs = lhs.contiguous()
             rhs = rhs.contiguous()
-            if self.epilogue_functor.output_layout == cutlass.RowMajor:
+            if self.epilogue_functor.output_layout == cutlass_bindings.RowMajor:
                 kwargs = {"problem_size": [self.problem_size.m(), self.problem_size.n()], "batch_size": self.batch}
             else:
                 kwargs = {"problem_size": [self.problem_size.n(), self.problem_size.m()], "batch_size": self.batch}
@@ -653,7 +653,7 @@ class FusedBMM:
             arguments = BatchedGemmPermutedArguments(
                 operation=self.operation, problem_size=self.problem_size,
                 A=lhs, B=rhs, C=lhs, D=lhs,
-                output_op=output_op, gemm_mode=cutlass.gemm.Mode.Batched, batch=self.batch,
+                output_op=output_op, gemm_mode=cutlass_bindings.gemm.Mode.Batched, batch=self.batch,
                 permute_A=self.lhs_permute, permute_B=self.rhs_permute
             )
             if self.stream is None: 
@@ -705,8 +705,8 @@ class FusedReduceApply:
         else:
             alignment = 1
         
-        self.Input = TensorDescription(cutlass.float16, cutlass.RowMajor, alignment)
-        self.Output = TensorDescription(cutlass.float16, cutlass.RowMajor, alignment)
+        self.Input = TensorDescription(cutlass_bindings.float16, cutlass_bindings.RowMajor, alignment)
+        self.Output = TensorDescription(cutlass_bindings.float16, cutlass_bindings.RowMajor, alignment)
 
         warp_count = min(max(1, (self.shape[1] + (32 * alignment * 2) - 1) // (32 * alignment * 4)), 4)
 
@@ -718,14 +718,14 @@ class FusedReduceApply:
         epilogue_functor = LinearCombination(
             element_output=self.Output.element, 
             epilogue_vector_length=self.Output.alignment,
-            element_accumulator=cutlass.float32,
-            element_epilogue=cutlass.float32)
+            element_accumulator=cutlass_bindings.float32,
+            element_epilogue=cutlass_bindings.float32)
         
         self.epilogue_functor = EpilogueVisitTreeDAG(
             elementwise_functor=epilogue_functor, 
-            element_accumulator=cutlass.float32,
+            element_accumulator=cutlass_bindings.float32,
             elements_per_access=self.Output.alignment,
-            element_compute=cutlass.float32, element_output=self.Output.element
+            element_compute=cutlass_bindings.float32, element_output=self.Output.element
         )
 
         self.epilogue_functor.initialize(node)
@@ -745,7 +745,7 @@ class FusedSoftmax(FusedReduceApply):
         super().__init__(node)
         self.operation = SoftmaxOperation(
             input=self.Input, output=self.Output, threadblock_tile=self.tile_description.threadblock_shape,
-            warp_count=self.tile_description.warp_count, element_accumulator=cutlass.float32, epilogue_functor=self.epilogue_functor
+            warp_count=self.tile_description.warp_count, element_accumulator=cutlass_bindings.float32, epilogue_functor=self.epilogue_functor
         )
         cutlass_path = os.getenv('CUTLASS_PATH')
         assert cutlass_path is not None, "Environment variable 'CUTLASS_PATH' is not defined."
@@ -757,15 +757,15 @@ class FusedSoftmax(FusedReduceApply):
             cuda_install_path + '/include',
             cutlass_path + '/include',
             cutlass_path + '/tools/util/include',
-            cutlass_path + '/tools/library/scripts/pycutlass/src/cpp/include',
+            cutlass_path + '/python/cutlass/cpp/include',
             '/opt/conda/lib/python3.8/site-packages/torch/include/',
             mlcompiler_path + '/src/cuda'
         ]
         compile_options = CompilationOptions(
-            ['-std=c++14'], [80, ], include_paths=include_paths
+            ['-std=c++17'], 80, include_paths=include_paths
         )
 
-        pycutlass.compiler.add_module([self.operation,], compile_options)
+        cutlass.backend.compiler.add_module([self.operation,], compile_options)
 
         self.args = self.epilogue_functor.args + list(node.args)
         self.outputs = self.epilogue_functor.outputs
@@ -816,7 +816,7 @@ class FusedSoftmaxBackward(FusedReduceApply):
         super().__init__(node)
         self.operation = SoftmaxBackwardOperation(
             input=self.Input, output=self.Output, threadblock_tile=self.tile_description.threadblock_shape,
-            warp_count=self.tile_description.warp_count, element_accumulator=cutlass.float32, epilogue_functor=self.epilogue_functor
+            warp_count=self.tile_description.warp_count, element_accumulator=cutlass_bindings.float32, epilogue_functor=self.epilogue_functor
         )
         cutlass_path = os.getenv('CUTLASS_PATH')
         assert cutlass_path is not None, "Environment variable 'CUTLASS_PATH' is not defined."
@@ -828,15 +828,15 @@ class FusedSoftmaxBackward(FusedReduceApply):
             cuda_install_path + '/include',
             cutlass_path + '/include',
             cutlass_path + '/tools/util/include',
-            cutlass_path + '/tools/library/scripts/pycutlass/src/cpp/include',
+            cutlass_path + '/python/cutlass/cpp/include',
             '/opt/conda/lib/python3.8/site-packages/torch/include/',
             mlcompiler_path + '/src/cuda/'
         ]
         compile_options = CompilationOptions(
-            ['-std=c++14'], [80, ], include_paths=include_paths
+            ['-std=c++17'], 80, include_paths=include_paths
         )
 
-        pycutlass.compiler.add_module([self.operation,], compile_options)
+        cutlass.backend.compiler.add_module([self.operation,], compile_options)
 
         self.args = self.epilogue_functor.args + list(node.args)
         self.outputs = self.epilogue_functor.outputs
@@ -887,7 +887,7 @@ class FusedLayerNormForward(FusedReduceApply):
 
         self.operation = LayerNormOperation(
             input=self.Input, output=self.Output, threadblock_tile=self.tile_description.threadblock_shape,
-            warp_count=self.tile_description.warp_count, element_accumulator=cutlass.float32, epilogue_functor=self.epilogue_functor
+            warp_count=self.tile_description.warp_count, element_accumulator=cutlass_bindings.float32, epilogue_functor=self.epilogue_functor
         )
         cutlass_path = os.getenv('CUTLASS_PATH')
         assert cutlass_path is not None, "Environment variable 'CUTLASS_PATH' is not defined."
@@ -899,15 +899,15 @@ class FusedLayerNormForward(FusedReduceApply):
             cuda_install_path + '/include',
             cutlass_path + '/include',
             cutlass_path + '/tools/util/include',
-            cutlass_path + '/tools/library/scripts/pycutlass/src/cpp/include',
+            cutlass_path + '/python/cutlass/cpp/include',
             '/opt/conda/lib/python3.8/site-packages/torch/include/',
             mlcompiler_path + '/src/cuda/'
         ]
         compile_options = CompilationOptions(
-            ['-std=c++14'], [80, ], include_paths=include_paths
+            ['-std=c++17'], 80, include_paths=include_paths
         )
 
-        pycutlass.compiler.add_module([self.operation,], compile_options)
+        cutlass.backend.compiler.add_module([self.operation,], compile_options)
 
         self.args = self.epilogue_functor.args + list(node.args)
         _, mean, std = list(node.users.keys())
@@ -980,7 +980,7 @@ class FusedLayerNormBackward(FusedReduceApply):
 
         self.operation = LayerNormBackwardOperation(
             input=self.Input, output=self.Output, threadblock_tile=self.tile_description.threadblock_shape,
-            warp_count=self.tile_description.warp_count, element_accumulator=cutlass.float32, epilogue_functor=self.epilogue_functor
+            warp_count=self.tile_description.warp_count, element_accumulator=cutlass_bindings.float32, epilogue_functor=self.epilogue_functor
         )
         cutlass_path = os.getenv('CUTLASS_PATH')
         assert cutlass_path is not None, "Environment variable 'CUTLASS_PATH' is not defined."
@@ -992,15 +992,15 @@ class FusedLayerNormBackward(FusedReduceApply):
             cuda_install_path + '/include',
             cutlass_path + '/include',
             cutlass_path + '/tools/util/include',
-            cutlass_path + '/tools/library/scripts/pycutlass/src/cpp/include',
+            cutlass_path + '/python/cutlass/cpp/include',
             '/opt/conda/lib/python3.8/site-packages/torch/include/',
             mlcompiler_path + '/src/cuda/'
         ]
         compile_options = CompilationOptions(
-            ['-std=c++14'], [80, ], include_paths=include_paths
+            ['-std=c++17'], 80, include_paths=include_paths
         )
 
-        pycutlass.compiler.add_module([self.operation,], compile_options)
+        cutlass.backend.compiler.add_module([self.operation,], compile_options)
 
         self.args = self.epilogue_functor.args + list(node.args)
 

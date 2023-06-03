@@ -16,7 +16,7 @@
 
 from gtl.compiler.passes.gemm_fusion import FusedGEMM
 import torch
-from pycutlass.test.profiler import GpuTimer
+from cutlass.backend.test.profiler import GpuTimer
 import nvtx
 from gtl.compiler.autotuner.auto_tuner import sample_parameters_with_ML, sample_parameters_without_ML
 import numpy as np

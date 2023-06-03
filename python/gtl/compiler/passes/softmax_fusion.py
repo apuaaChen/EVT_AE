@@ -14,8 +14,8 @@
 # limitations under the License.
 ################################################################################
 from unittest import result
-import pycutlass
-from pycutlass import *
+import cutlass.backend
+from cutlass.backend import *
 import cutlass
 import torch
 from gtl.compiler.passes.epilogue_parser import EpilogueVisitTreeDAG
@@ -100,7 +100,7 @@ class FusedSoftmax:
             cuda_install_path + '/include',
             cutlass_path + '/include',
             cutlass_path + '/tools/util/include',
-            cutlass_path + '/tools/library/scripts/pycutlass/src/cpp/include',
+            cutlass_path + '/python/cutlass/cpp/include',
             '/opt/conda/lib/python3.8/site-packages/torch/include/',
             '/workspace/sparseTraining/src/cuda/'
         ]
@@ -108,7 +108,7 @@ class FusedSoftmax:
             ['-std=c++14'], [80, ], include_paths=include_paths
         )
 
-        pycutlass.compiler.add_module([self.operation,], compile_options)
+        cutlass.backend.compiler.add_module([self.operation,], compile_options)
 
         self.args = self.epilogue_functor.args + list(node.args)
         self.outputs = self.epilogue_functor.outputs

@@ -16,14 +16,14 @@ from gtl.helper import compiler_fn, partition_func, GTLProfiler, BaseTestCase, a
 from bert_pass_manager import pre_partition_optimization
 from bert_pass_manager import *
 from functorch.compile import ts_compile
-import pycutlass
-from pycutlass import *
-pycutlass.get_memory_pool(manager="torch")
-pycutlass.compiler.nvcc()
+import cutlass.backend
+from cutlass.backend import *
+cutlass.backend.get_memory_pool(manager="torch")
+cutlass.backend.compiler.nvcc()
 import nvtx
 import argparse
 import logging
-from pycutlass.test.profiler import GpuTimer
+from cutlass.backend.test.profiler import GpuTimer
 from functools import partial
 import unittest
 

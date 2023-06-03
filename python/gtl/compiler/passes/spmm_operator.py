@@ -1,4 +1,4 @@
-from pycutlass import *
+from cutlass.backend import *
 
 ################################################################################
 #

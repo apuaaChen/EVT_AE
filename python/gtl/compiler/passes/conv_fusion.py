@@ -15,9 +15,9 @@
 ################################################################################
 from tqdm import tqdm
 import torch
-import cutlass
-import pycutlass
-from pycutlass import *
+import cutlass_bindings
+import cutlass.backend
+from cutlass.backend import *
 from gtl.compiler.passes.epilogue_parser import EpilogueVisitTreeDAG
 import operator
 from gtl.compiler.passes import autotuner
@@ -80,13 +80,13 @@ class FusedConv2d:
         assert C_ == C
 
 
-        element_a = cutlass.float16
-        element_b = cutlass.float16
-        element_c = cutlass.float16
-        element_acc = cutlass.float32
+        element_a = cutlass_bindings.float16
+        element_b = cutlass_bindings.float16
+        element_c = cutlass_bindings.float16
+        element_acc = cutlass_bindings.float32
 
         math_operation = MathOperation.multiply_add
-        opclass = cutlass.OpClass.TensorOp
+        opclass = cutlass_bindings.OpClass.TensorOp
         
         math_inst = MathInstruction(
             [16, 8, 16], element_a, element_b,
@@ -99,9 +99,9 @@ class FusedConv2d:
         # )
         # split_k_slices = 1
 
-        layout_a = cutlass.TensorNHWC
-        layout_b = cutlass.TensorNHWC
-        layout_c = cutlass.TensorNHWC
+        layout_a = cutlass_bindings.TensorNHWC
+        layout_b = cutlass_bindings.TensorNHWC
+        layout_c = cutlass_bindings.TensorNHWC
 
         align_a = get_alignment(C)
         align_b = get_alignment(C)
@@ -119,9 +119,9 @@ class FusedConv2d:
             element_c, layout_c, align_c
         )
 
-        element_epilogue = cutlass.float32
+        element_epilogue = cutlass_bindings.float32
 
-        epilogue_functor = pycutlass.LinearCombination(
+        epilogue_functor = cutlass.backend.LinearCombination(
             D.element, D.alignment, math_inst.element_accumulator, element_epilogue
         )
 
@@ -130,18 +130,18 @@ class FusedConv2d:
             elementwise_functor=epilogue_functor,
             element_accumulator=math_inst.element_accumulator,
             elements_per_access=D.alignment,
-            element_compute=cutlass.float32, element_output=D.element
+            element_compute=cutlass_bindings.float32, element_output=D.element
         )
 
         self.epilogue_functor.initialize(node)
 
-        self.problem_size = cutlass.conv.Conv2dProblemSize(
-            cutlass.Tensor4DCoord(N, H, W, C),
-            cutlass.Tensor4DCoord(K, R, S, C),
-            cutlass.Tensor4DCoord(padding[0], padding[0], padding[1], padding[1]),
-            cutlass.MatrixCoord(stride[0], stride[1]),
-            cutlass.MatrixCoord(dilation[0], dilation[1]),
-            cutlass.conv.Mode.cross_correlation,
+        self.problem_size = cutlass_bindings.conv.Conv2dProblemSize(
+            cutlass_bindings.Tensor4DCoord(N, H, W, C),
+            cutlass_bindings.Tensor4DCoord(K, R, S, C),
+            cutlass_bindings.Tensor4DCoord(padding[0], padding[0], padding[1], padding[1]),
+            cutlass_bindings.MatrixCoord(stride[0], stride[1]),
+            cutlass_bindings.MatrixCoord(dilation[0], dilation[1]),
+            cutlass_bindings.conv.Mode.cross_correlation,
             1, 1
         )
 
@@ -167,7 +167,7 @@ class FusedConv2d:
         stages = best_config['stage']
         log_swizzle = best_config['log_swizzle']
         self.split_k_slices = best_config['split_k_slices']
-        swizzling_functor = getattr(cutlass, "IdentitySwizzle%d"%int(pow(2, log_swizzle)))
+        swizzling_functor = getattr(cutlass_bindings, "IdentitySwizzle%d"%int(pow(2, log_swizzle)))
 
         tile_description = TileDescription(
             threadblock_shape, stages, warp_count, math_inst
@@ -177,7 +177,7 @@ class FusedConv2d:
 
         iterator_algorithm = self.conv_descriptor.heuristic.available_iterator_algorithms[best_config["iterator_algorithm"]]
         stride_support = StrideSupport.Strided
-        conv_kind = cutlass.conv.Operator.fprop
+        conv_kind = cutlass_bindings.conv.Operator.fprop
 
         self.operation = Conv2dOperation(
             conv_kind, iterator_algorithm,
@@ -185,7 +185,7 @@ class FusedConv2d:
             self.epilogue_functor, swizzling_functor, visitor=True
         )
 
-        pycutlass.compiler.add_module([self.operation,])
+        cutlass.backend.compiler.add_module([self.operation,])
 
 
         N_, K_, P, Q = list(node.meta["tensor_meta"].shape)
@@ -238,7 +238,7 @@ class FusedConv2d:
             self.operation, self.problem_size,
             A=input_cl, B=weight_cl, C=input_cl, D=input_cl,
             output_op=output_op,
-            split_k_mode=cutlass.conv.SplitKMode.Serial,
+            split_k_mode=cutlass_bindings.conv.SplitKMode.Serial,
             split_k_slices=1
         )
         stream = torch.cuda.current_stream()
@@ -276,22 +276,22 @@ class FusedConv2dDgrad:
 
         assert C_ == C
 
-        element_a = cutlass.float16
-        element_b = cutlass.float16
-        element_c = cutlass.float16
-        element_acc = cutlass.float32
+        element_a = cutlass_bindings.float16
+        element_b = cutlass_bindings.float16
+        element_c = cutlass_bindings.float16
+        element_acc = cutlass_bindings.float32
 
         math_operation = MathOperation.multiply_add
-        opclass = cutlass.OpClass.TensorOp
+        opclass = cutlass_bindings.OpClass.TensorOp
         
         math_inst = MathInstruction(
             [16, 8, 16], element_a, element_b,
             element_acc, opclass, math_operation
         )
 
-        layout_a = cutlass.TensorNHWC
-        layout_b = cutlass.TensorNHWC
-        layout_c = cutlass.TensorNHWC
+        layout_a = cutlass_bindings.TensorNHWC
+        layout_b = cutlass_bindings.TensorNHWC
+        layout_c = cutlass_bindings.TensorNHWC
 
         align_a = get_alignment(K)
         align_b = get_alignment(C)
@@ -309,9 +309,9 @@ class FusedConv2dDgrad:
             element_c, layout_c, align_c
         )
 
-        element_epilogue = cutlass.float32
+        element_epilogue = cutlass_bindings.float32
 
-        epilogue_functor = pycutlass.LinearCombination(
+        epilogue_functor = cutlass.backend.LinearCombination(
             D.element, D.alignment, math_inst.element_accumulator, element_epilogue
         )
 
@@ -320,18 +320,18 @@ class FusedConv2dDgrad:
             elementwise_functor=epilogue_functor,
             element_accumulator=math_inst.element_accumulator,
             elements_per_access=D.alignment,
-            element_compute=cutlass.float32, element_output=D.element
+            element_compute=cutlass_bindings.float32, element_output=D.element
         )
 
         self.epilogue_functor.initialize(node)
 
-        self.problem_size = cutlass.conv.Conv2dProblemSize(
-            cutlass.Tensor4DCoord(N, H, W, C),
-            cutlass.Tensor4DCoord(K, R, S, C),
-            cutlass.Tensor4DCoord(padding[0], padding[0], padding[1], padding[1]),
-            cutlass.MatrixCoord(stride[0], stride[1]),
-            cutlass.MatrixCoord(dilation[0], dilation[1]),
-            cutlass.conv.Mode.cross_correlation,
+        self.problem_size = cutlass_bindings.conv.Conv2dProblemSize(
+            cutlass_bindings.Tensor4DCoord(N, H, W, C),
+            cutlass_bindings.Tensor4DCoord(K, R, S, C),
+            cutlass_bindings.Tensor4DCoord(padding[0], padding[0], padding[1], padding[1]),
+            cutlass_bindings.MatrixCoord(stride[0], stride[1]),
+            cutlass_bindings.MatrixCoord(dilation[0], dilation[1]),
+            cutlass_bindings.conv.Mode.cross_correlation,
             1, 1
         )
 
@@ -340,7 +340,7 @@ class FusedConv2dDgrad:
             element_b=element_b, element_c=element_c, 
             element_accumulator=element_acc, alignment_a=align_a,
             alignment_b=align_b, alignment_c=align_c, 
-            conv_kind=cutlass.conv.Operator.dgrad
+            conv_kind=cutlass_bindings.conv.Operator.dgrad
         )
 
         best_config = autotuner(self.conv_descriptor)
@@ -360,10 +360,10 @@ class FusedConv2dDgrad:
         self.split_k_slices = best_config['split_k_slices']
         # handle dgrad
         if self.problem_size.stride_h == 1 and self.problem_size.stride_w == 1:
-            swizzling_functor = getattr(cutlass, "IdentitySwizzle%d"%int(pow(2, log_swizzle)))
+            swizzling_functor = getattr(cutlass_bindings, "IdentitySwizzle%d"%int(pow(2, log_swizzle)))
             stride_support = StrideSupport.Unity
         else:
-            swizzling_functor = getattr(cutlass, "StridedDgradIdentitySwizzle%d"%int(pow(2, log_swizzle)))
+            swizzling_functor = getattr(cutlass_bindings, "StridedDgradIdentitySwizzle%d"%int(pow(2, log_swizzle)))
             stride_support = StrideSupport.Strided
 
         tile_description = TileDescription(
@@ -372,7 +372,7 @@ class FusedConv2dDgrad:
 
         iterator_algorithm = self.conv_descriptor.heuristic.available_iterator_algorithms[best_config["iterator_algorithm"]]
         
-        conv_kind = cutlass.conv.Operator.dgrad
+        conv_kind = cutlass_bindings.conv.Operator.dgrad
 
         self.epilogue_functor.optimize(tile_description)
 
@@ -382,7 +382,7 @@ class FusedConv2dDgrad:
             self.epilogue_functor, swizzling_functor, visitor=True
         )
 
-        pycutlass.compiler.add_module([self.operation,])
+        cutlass.backend.compiler.add_module([self.operation,])
 
         self.output_shape = (N, H, W, C)
         self.implicit_mn = [N * H * W, C]
@@ -431,7 +431,7 @@ class FusedConv2dDgrad:
             self.operation, self.problem_size,
             A=grad_output_cl, B=weight_cl, C=grad_output_cl, D=grad_output_cl,
             output_op=output_op,
-            split_k_mode=cutlass.conv.SplitKMode.Serial,
+            split_k_mode=cutlass_bindings.conv.SplitKMode.Serial,
             split_k_slices=1
         )
         stream = torch.cuda.current_stream()
@@ -468,22 +468,22 @@ class FusedConv2dWgrad:
 
         assert C_ == C
 
-        element_a = cutlass.float16
-        element_b = cutlass.float16
-        element_c = cutlass.float16
-        element_acc = cutlass.float32
+        element_a = cutlass_bindings.float16
+        element_b = cutlass_bindings.float16
+        element_c = cutlass_bindings.float16
+        element_acc = cutlass_bindings.float32
 
         math_operation = MathOperation.multiply_add
-        opclass = cutlass.OpClass.TensorOp
+        opclass = cutlass_bindings.OpClass.TensorOp
         
         math_inst = MathInstruction(
             [16, 8, 16], element_a, element_b,
             element_acc, opclass, math_operation
         )
 
-        layout_a = cutlass.TensorNHWC
-        layout_b = cutlass.TensorNHWC
-        layout_c = cutlass.TensorNHWC
+        layout_a = cutlass_bindings.TensorNHWC
+        layout_b = cutlass_bindings.TensorNHWC
+        layout_c = cutlass_bindings.TensorNHWC
 
         align_a = get_alignment(K)
         align_b = get_alignment(C)
@@ -501,19 +501,19 @@ class FusedConv2dWgrad:
             element_c, layout_c, align_c
         )
 
-        element_epilogue = cutlass.float32
+        element_epilogue = cutlass_bindings.float32
 
-        epilogue_functor = pycutlass.LinearCombination(
+        epilogue_functor = cutlass.backend.LinearCombination(
             D.element, D.alignment, math_inst.element_accumulator, element_epilogue
         )
 
-        self.problem_size = cutlass.conv.Conv2dProblemSize(
-            cutlass.Tensor4DCoord(N, H, W, C),
-            cutlass.Tensor4DCoord(K, R, S, C),
-            cutlass.Tensor4DCoord(padding[0], padding[0], padding[1], padding[1]),
-            cutlass.MatrixCoord(stride[0], stride[1]),
-            cutlass.MatrixCoord(dilation[0], dilation[1]),
-            cutlass.conv.Mode.cross_correlation,
+        self.problem_size = cutlass_bindings.conv.Conv2dProblemSize(
+            cutlass_bindings.Tensor4DCoord(N, H, W, C),
+            cutlass_bindings.Tensor4DCoord(K, R, S, C),
+            cutlass_bindings.Tensor4DCoord(padding[0], padding[0], padding[1], padding[1]),
+            cutlass_bindings.MatrixCoord(stride[0], stride[1]),
+            cutlass_bindings.MatrixCoord(dilation[0], dilation[1]),
+            cutlass_bindings.conv.Mode.cross_correlation,
             1, 1
         )
 
@@ -522,7 +522,7 @@ class FusedConv2dWgrad:
             element_b=element_b, element_c=element_c, 
             element_accumulator=element_acc, alignment_a=align_a,
             alignment_b=align_b, alignment_c=align_c, 
-            conv_kind=cutlass.conv.Operator.wgrad, split_k_mode="Serial",
+            conv_kind=cutlass_bindings.conv.Operator.wgrad, split_k_mode="Serial",
             autotuning_rounds=30
         )
 
@@ -543,7 +543,7 @@ class FusedConv2dWgrad:
         self.split_k_slices = best_config['split_k_slices']
         # handle dgrad
 
-        swizzling_functor = getattr(cutlass, "IdentitySwizzle%d"%int(pow(2, log_swizzle)))
+        swizzling_functor = getattr(cutlass_bindings, "IdentitySwizzle%d"%int(pow(2, log_swizzle)))
         stride_support = StrideSupport.Strided
 
         tile_description = TileDescription(
@@ -552,7 +552,7 @@ class FusedConv2dWgrad:
 
         iterator_algorithm = self.conv_descriptor.heuristic.available_iterator_algorithms[best_config["iterator_algorithm"]]
         
-        conv_kind = cutlass.conv.Operator.wgrad
+        conv_kind = cutlass_bindings.conv.Operator.wgrad
 
         self.operation = Conv2dOperation(
             conv_kind, iterator_algorithm,
@@ -560,7 +560,7 @@ class FusedConv2dWgrad:
             epilogue_functor, swizzling_functor, visitor=False
         )
 
-        pycutlass.compiler.add_module([self.operation,])
+        cutlass.backend.compiler.add_module([self.operation,])
 
         self.output_shape = (K, C, R, S)
         self.implicit_mn = [K * R * S, C]
@@ -589,7 +589,7 @@ class FusedConv2dWgrad:
             self.operation, self.problem_size,
             A=grad_output_cl, B=input_cl, C=grad_weight_cl, D=grad_weight_cl,
             output_op=self.operation.epilogue_type(1.0, 0.0),
-            split_k_mode=cutlass.conv.SplitKMode.Serial,
+            split_k_mode=cutlass_bindings.conv.SplitKMode.Serial,
             split_k_slices=self.split_k_slices
         )
         stream = torch.cuda.current_stream()

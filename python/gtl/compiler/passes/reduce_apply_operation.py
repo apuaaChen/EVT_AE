@@ -1,5 +1,5 @@
-import pycutlass
-from pycutlass import *
+import cutlass.backend
+from cutlass.backend import *
 import os
 import nvtx
 

@@ -1,9 +1,10 @@
-import cutlass
+import cutlass_bindings
 from gtl.compiler.autotuner.gemm_heuristic import GemmHeuristics, BatchedGemmHeuristics
 from gtl.compiler.autotuner.conv_heuristic import Conv2dHeuristics
-from pycutlass import *
-import pycutlass
-from pycutlass.test.profiler import GpuTimer
+from cutlass.backend import *
+import cutlass.backend
+import sqlite3
+from cutlass.backend.test.profiler import GpuTimer
 
 from torch.utils._python_dispatch import _pop_mode_temporarily
 
@@ -11,11 +12,11 @@ class ConfigDescriptor:
     def __init__(self, autotuning_rounds=15) -> None:
         self.autotuning_rounds = autotuning_rounds
         self.arg_key = {
-            cutlass.float16: "f16",
-            cutlass.bfloat16: "bf16",
-            cutlass.float32: "f32",
-            cutlass.RowMajor: "row",
-            cutlass.ColumnMajor: "col"
+            cutlass_bindings.float16: "f16",
+            cutlass_bindings.bfloat16: "bf16",
+            cutlass_bindings.float32: "f32",
+            cutlass_bindings.RowMajor: "row",
+            cutlass_bindings.ColumnMajor: "col"
         }
         pass
     
@@ -143,7 +144,7 @@ class GemmConfigDescriptor(ConfigDescriptor):
             element_a=self.problem_description["element_a"], 
             element_b=self.problem_description["element_b"],
             element_accumulator=self.problem_description["element_accumulator"],
-            opcode_class=cutlass.OpClass.TensorOp
+            opcode_class=cutlass_bindings.OpClass.TensorOp
         )
 
         threadblock_shape = [
@@ -162,7 +163,7 @@ class GemmConfigDescriptor(ConfigDescriptor):
             threadblock_shape, stages, warp_count, math_inst
         )
         swizzling_functor = getattr(
-            cutlass, "IdentitySwizzle%d"%int(pow(2, config["log_swizzle"])))
+            cutlass_bindings, "IdentitySwizzle%d"%int(pow(2, config["log_swizzle"])))
             
 
         A = TensorDescription(
@@ -181,7 +182,7 @@ class GemmConfigDescriptor(ConfigDescriptor):
         epilogue_functor = LinearCombination(
             element_output=C.element, epilogue_vector_length=C.alignment,
             element_accumulator=math_inst.element_accumulator,
-            element_epilogue=cutlass.float32
+            element_epilogue=cutlass_bindings.float32
         )
 
         operation = GemmOperationUniversal(
@@ -190,7 +191,7 @@ class GemmConfigDescriptor(ConfigDescriptor):
             swizzling_functor=swizzling_functor
         )
 
-        pycutlass.compiler.add_module([operation])
+        cutlass.backend.compiler.add_module([operation])
 
         return operation
     
@@ -201,7 +202,7 @@ class GemmConfigDescriptor(ConfigDescriptor):
             element_a=self.problem_description["element_a"], 
             element_b=self.problem_description["element_b"],
             element_accumulator=self.problem_description["element_accumulator"],
-            opcode_class=cutlass.OpClass.TensorOp
+            opcode_class=cutlass_bindings.OpClass.TensorOp
         )
 
         threadblock_shape = [
@@ -220,7 +221,7 @@ class GemmConfigDescriptor(ConfigDescriptor):
             threadblock_shape, stages, warp_count, math_inst
         )
         swizzling_functor = getattr(
-            cutlass, "IdentitySwizzle%d"%int(pow(2, config["log_swizzle"])))
+            cutlass_bindings, "IdentitySwizzle%d"%int(pow(2, config["log_swizzle"])))
             
 
         A = TensorDescription(
@@ -239,7 +240,7 @@ class GemmConfigDescriptor(ConfigDescriptor):
         epilogue_functor = LinearCombination(
             element_output=C.element, epilogue_vector_length=C.alignment,
             element_accumulator=math_inst.element_accumulator,
-            element_epilogue=cutlass.float32
+            element_epilogue=cutlass_bindings.float32
         )
 
         operation = GemmOperationUniversal(
@@ -248,7 +249,7 @@ class GemmConfigDescriptor(ConfigDescriptor):
             swizzling_functor=swizzling_functor
         )
 
-        pycutlass.compiler.add_module([operation])
+        cutlass.backend.compiler.add_module([operation])
 
 
         ## Profile
@@ -265,17 +266,17 @@ class GemmConfigDescriptor(ConfigDescriptor):
 
             if self.problem_description['split_k_mode'] in ["None", "Serial"]:
                 arguments = GemmArguments(
-                    operation=operation, problem_size=cutlass.gemm.GemmCoord(M, N, K),
+                    operation=operation, problem_size=cutlass_bindings.gemm.GemmCoord(M, N, K),
                     A=tensor_A, B=tensor_B, C=tensor_C, D=tensor_C, 
                     output_op = operation.epilogue_type(1.0, 0.0),
-                    gemm_mode=cutlass.gemm.Mode.Gemm, split_k_slices=split_k_slices
+                    gemm_mode=cutlass_bindings.gemm.Mode.Gemm, split_k_slices=split_k_slices
                 )
             else:
                 arguments = GemmArguments(
-                    operation=operation, problem_size=cutlass.gemm.GemmCoord(M, N, K),
+                    operation=operation, problem_size=cutlass_bindings.gemm.GemmCoord(M, N, K),
                     A=tensor_A, B=tensor_B, C=tensor_C, D=tensor_C,
                     output_op = operation.epilogue_type(1.0, 0.0),
-                    gemm_mode=cutlass.gemm.Mode.GemmSplitKParallel,
+                    gemm_mode=cutlass_bindings.gemm.Mode.GemmSplitKParallel,
                     split_k_slices=split_k_slices
                 )
 
@@ -385,7 +386,7 @@ class BatchedGemmConfigDescriptor(ConfigDescriptor):
             element_a=self.problem_description["element_a"], 
             element_b=self.problem_description["element_b"],
             element_accumulator=self.problem_description["element_accumulator"],
-            opcode_class=cutlass.OpClass.TensorOp
+            opcode_class=cutlass_bindings.OpClass.TensorOp
         )
 
         threadblock_shape = [
@@ -403,7 +404,7 @@ class BatchedGemmConfigDescriptor(ConfigDescriptor):
         tile_description = TileDescription(
             threadblock_shape, stages, warp_count, math_inst
         )
-        swizzling_functor = cutlass.BatchedIdentitySwizzle
+        swizzling_functor = cutlass_bindings.BatchedIdentitySwizzle
 
         A = TensorDescription(
             self.problem_description["element_a"], 
@@ -421,7 +422,7 @@ class BatchedGemmConfigDescriptor(ConfigDescriptor):
         epilogue_functor = LinearCombination(
             element_output=C.element, epilogue_vector_length=C.alignment,
             element_accumulator=math_inst.element_accumulator,
-            element_epilogue=cutlass.float32
+            element_epilogue=cutlass_bindings.float32
         )
 
         operation = GemmOperationUniversal(
@@ -430,7 +431,7 @@ class BatchedGemmConfigDescriptor(ConfigDescriptor):
             swizzling_functor=swizzling_functor
         )
 
-        pycutlass.compiler.add_module([operation])
+        cutlass.backend.compiler.add_module([operation])
 
 
         ## Profile
@@ -443,10 +444,10 @@ class BatchedGemmConfigDescriptor(ConfigDescriptor):
             tensor_C = torch.empty(size=(B * M * N,), dtype=torch.float16, device="cuda")
 
             arguments = BatchedGemmPermutedArguments(
-                operation=operation, problem_size=cutlass.gemm.GemmCoord(M, N, K),
+                operation=operation, problem_size=cutlass_bindings.gemm.GemmCoord(M, N, K),
                 A=tensor_A, B=tensor_B, C=tensor_C, D=tensor_C, 
                 output_op = operation.epilogue_type(1.0, 0.0),
-                gemm_mode=cutlass.gemm.Mode.Batched, batch=B,
+                gemm_mode=cutlass_bindings.gemm.Mode.Batched, batch=B,
                 permute_A=self.problem_description["permute_a"],
                 permute_B=self.problem_description["permute_b"]
             )
@@ -473,7 +474,7 @@ class ConvConfigDescriptor(ConfigDescriptor):
     OP_NAME = "CONV"
     def __init__(self, problem_size, element_a, element_b, element_c,
         element_accumulator, alignment_a, alignment_b, alignment_c,
-        split_k_mode="None", conv_kind = cutlass.conv.Operator.fprop, 
+        split_k_mode="None", conv_kind = cutlass_bindings.conv.Operator.fprop, 
         autotuning_rounds=15) -> None:
         #
         super().__init__(autotuning_rounds)
@@ -482,11 +483,11 @@ class ConvConfigDescriptor(ConfigDescriptor):
         self.problem_size = problem_size
         self.autotuning_rounds = autotuning_rounds
 
-        if self.conv_kind == cutlass.conv.Operator.fprop:
+        if self.conv_kind == cutlass_bindings.conv.Operator.fprop:
             conv_kind_str = "fprop"
-        elif self.conv_kind == cutlass.conv.Operator.dgrad:
+        elif self.conv_kind == cutlass_bindings.conv.Operator.dgrad:
             conv_kind_str = "dgrad_4"
-        elif self.conv_kind == cutlass.conv.Operator.wgrad:
+        elif self.conv_kind == cutlass_bindings.conv.Operator.wgrad:
             conv_kind_str = "wgrad_t2"
         
         self.autotuning_rounds = autotuning_rounds
@@ -589,7 +590,7 @@ class ConvConfigDescriptor(ConfigDescriptor):
             [16, 8, 16], self.problem_description["element_a"], 
             self.problem_description["element_b"],
             self.problem_description["element_accumulator"],
-            cutlass.OpClass.TensorOp
+            cutlass_bindings.OpClass.TensorOp
         )
 
         threadblock_shape = [
@@ -609,17 +610,17 @@ class ConvConfigDescriptor(ConfigDescriptor):
         )
 
         swizzling_functor = getattr(
-            cutlass, "IdentitySwizzle%d"%int(pow(2, config["log_swizzle"])))
+            cutlass_bindings, "IdentitySwizzle%d"%int(pow(2, config["log_swizzle"])))
 
         stride_support = StrideSupport.Strided
 
         # case strided dgrad
-        if self.conv_kind == cutlass.conv.Operator.dgrad:
+        if self.conv_kind == cutlass_bindings.conv.Operator.dgrad:
             if self.problem_size.stride_h == 1 and self.problem_size.stride_w == 1:
                 stride_support = StrideSupport.Unity
             else:
                 swizzling_functor = getattr(
-                    cutlass, "StridedDgradIdentitySwizzle%d"%int(pow(2, config["log_swizzle"]))
+                    cutlass_bindings, "StridedDgradIdentitySwizzle%d"%int(pow(2, config["log_swizzle"]))
                 )
         
         
@@ -629,21 +630,21 @@ class ConvConfigDescriptor(ConfigDescriptor):
 
         A = TensorDescription(
             self.problem_description["element_a"], 
-            cutlass.TensorNHWC,
+            cutlass_bindings.TensorNHWC,
             self.problem_description["alignment_a"])
         B = TensorDescription(
             self.problem_description["element_b"], 
-            cutlass.TensorNHWC,
+            cutlass_bindings.TensorNHWC,
             self.problem_description["alignment_b"])
         C = TensorDescription(
             self.problem_description["element_c"], 
-            cutlass.TensorNHWC, 
+            cutlass_bindings.TensorNHWC, 
             self.problem_description["alignment_c"])
 
         epilogue_functor = LinearCombination(
             element_output=C.element, epilogue_vector_length=C.alignment,
             element_accumulator=math_inst.element_accumulator,
-            element_epilogue=cutlass.float32
+            element_epilogue=cutlass_bindings.float32
         )
 
         operation = Conv2dOperation(
@@ -652,22 +653,22 @@ class ConvConfigDescriptor(ConfigDescriptor):
             epilogue_functor, swizzling_functor, visitor=False
         )
 
-        pycutlass.compiler.add_module([operation])
+        cutlass.backend.compiler.add_module([operation])
 
         return operation
     
     def generate_code_and_profile(self, config):
         operation = self.generate_code(config)
 
-        tensor_A_size = cutlass.conv.implicit_gemm_tensor_a_size(
+        tensor_A_size = cutlass_bindings.conv.implicit_gemm_tensor_a_size(
             self.conv_kind, self.problem_size
         )
 
-        tensor_B_size = cutlass.conv.implicit_gemm_tensor_b_size(
+        tensor_B_size = cutlass_bindings.conv.implicit_gemm_tensor_b_size(
             self.conv_kind, self.problem_size
         )
 
-        tensor_C_size = cutlass.conv.implicit_gemm_tensor_c_size(
+        tensor_C_size = cutlass_bindings.conv.implicit_gemm_tensor_c_size(
             self.conv_kind, self.problem_size
         )
         # necessary! otherwise, the functorch sets mode to fake tensor mode
@@ -683,7 +684,7 @@ class ConvConfigDescriptor(ConfigDescriptor):
                 operation, self.problem_size,
                 A=tensor_A, B=tensor_B, C=tensor_C, D=tensor_C,
                 output_op=operation.epilogue_type(1.0, 0.0),
-                split_k_mode=cutlass.conv.SplitKMode.Serial,
+                split_k_mode=cutlass_bindings.conv.SplitKMode.Serial,
                 split_k_slices=config["split_k_slices"]
             )
 

@@ -1,4 +1,4 @@
-FROM nvcr.io/nvidia/pytorch:23.03-py3
+FROM nvcr.io/nvidia/pytorch:23.07-py3
 
 WORKDIR /workspace
 
@@ -37,8 +37,8 @@ WORKDIR /workspace/cutlass
 COPY ./thirdparty/cutlass .
 ENV CUTLASS_PATH /workspace/cutlass
 ENV CUDA_INSTALL_PATH /usr/local/cuda
-WORKDIR /workspace/cutlass/tools/library/scripts/pycutlass
-RUN bash build.sh
+WORKDIR /workspace/cutlass/python
+RUN python setup.py develop --user
 
 # go back to root directory
 ENV MLCOMPILER_PATH /workspace/SEAL-PICASSO-ML-Compiler/

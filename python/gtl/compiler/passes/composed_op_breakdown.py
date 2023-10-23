@@ -18,7 +18,7 @@ from gtl.compiler.nodes import *
 from torch.fx.passes.infra.pass_base import PassBase, PassResult
 from torch.fx.graph_module import GraphModule
 from torch.fx import Node, symbolic_trace, Interpreter
-from gtl.compiler.passes.utils.subgraph_rewriter import replace_pattern
+from torch.fx.subgraph_rewriter import replace_pattern
 from torch._subclasses.fake_tensor import FakeTensorMode, FakeTensor
 from typing import Optional
 from torch.fx.passes.shape_prop import _extract_tensor_metadata
@@ -184,7 +184,7 @@ class Decomposition(PassBase):
         Args:
             graph_module: The graph module we will run checks on
         """
-        # legalize_graph(graph_module)
+        legalize_graph(graph_module)
         graph_module.graph.lint()
         # print(graph_module.code)
         FakeTensorInfer(graph_module).infer()
@@ -323,6 +323,26 @@ class Decomposition(PassBase):
             return torch.ops.aten.add(mm, bias)
 
         self.pattern_replacement[key] = (pattern, replacement)
+    
+    def requires__log_softmax_backward_data(self, node: torch.fx.Node):
+        key = f"aten._log_softmax_backward_data"
+
+        if key in self.pattern_replacement.keys():
+            return
+        
+        def pattern(grad_y, softmax, dim, dtype):
+            log_softmax = torch.ops.aten.log(softmax)
+            return log_softmax, torch.ops.aten._log_softmax_backward_data(grad_y, log_softmax, dim, dtype)
+        
+        def replacement(grad_y, softmax, dim, dtype):
+            log_softmax = torch.ops.aten.log(softmax)
+            sum = torch.ops.aten.sum(grad_y, dim)
+            unsqueeze = torch.ops.aten.unsqueeze(sum, dim)
+            mul = torch.ops.aten.mul(unsqueeze, softmax)
+            sub = torch.ops.aten.sub(grad_y, mul)
+            return log_softmax, sub
+
+        self.pattern_replacement[key] = (pattern, replacement)
 
 """
     # TODO: the convolution backward is more tricky to construct the arg list
@@ -358,25 +378,6 @@ class Decomposition(PassBase):
             
 
     # TODO: it may lead to several issues, we keep the old way temporarily
-    def requires__log_softmax_backward_data(self, node: torch.fx.Node):
-        key = f"aten._log_softmax_backward_data"
-
-        if key in self.pattern_replacement.keys():
-            return
-        
-        def pattern(grad_y, softmax, dim, dtype):
-            log_softmax = torch.ops.aten.log(softmax)
-            return log_softmax, torch.ops.aten._log_softmax_backward_data(grad_y, log_softmax, dim, dtype)
-        
-        def replacement(grad_y, softmax, dim, dtype):
-            log_softmax = torch.ops.aten.log(softmax)
-            sum = torch.ops.aten.sum(grad_y, dim)
-            unsqueeze = torch.ops.aten.unsqueeze(sum, dim)
-            mul = torch.ops.aten.mul(unsqueeze, softmax)
-            sub = torch.ops.aten.sub(grad_y, mul)
-            return log_softmax, sub
-
-        self.pattern_replacement[key] = (pattern, replacement)
 """
         
 
@@ -393,14 +394,7 @@ def pass_composed_op_breakdown(module, graph, disabled_list=[]):
     for node in graph.nodes:
         if node.op == "call_function":
             if node.target in disabled_list: continue
-            if node.target == torch.ops.aten._log_softmax_backward_data:
-                softmax_node = node.args[1].args[0]
-                sum_node = inject_sum(node, graph, node.args[0], 1)
-                unsqueeze_node = inject_unsqueeze(sum_node, graph, sum_node, 1)
-                mul_node = inject_mul(unsqueeze_node, graph, unsqueeze_node, softmax_node)
-                sub_node = inject_sub(mul_node, graph, node.args[0], mul_node)
-                node.replace_all_uses_with(sub_node)
-            elif node.target == torch.ops.aten.convolution_backward:
+            if node.target == torch.ops.aten.convolution_backward:
                 grad_output, input, weight, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, output_mask = node.args
                 n, c, h, w = input.meta["tensor_meta"].shape
                 k, c_, r, s = weight.meta["tensor_meta"].shape

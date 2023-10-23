@@ -8,6 +8,7 @@ from torch.fx.experimental.proxy_tensor import py_sym_types
 from torch.fx.node import map_aggregate
 from torch.fx.passes.shape_prop import _extract_tensor_metadata
 from typing import Optional
+import re
 
 class DeLogSoftmaxForward(torch.nn.Module):
     def __init__(self, dim, half2float) -> None:
@@ -87,9 +88,46 @@ class FakeTensorInfer(Interpreter):
 
 
 class Decomposition(unittest.TestCase):
+
+    def __init__(self, methodName: str = "runTest") -> None:
+        super().__init__(methodName)
+        # Change to True to visualize the graph before and after decomposition
+        self.visualize = True
+
+    # Helper function for launching test
+    def util_test_decomposition(self, cls, inputs):
+        ## model instances
+        model = cls()
+        model_reference = cls()
+
+        symbolic_traced: torch.fx.GraphModule = symbolic_trace(model)
+        ShapeProp(symbolic_traced).propagate(*inputs)
+
+        # Get snake case name
+        name = cls.__name__
+        words = re.findall(r'[A-Z][a-z0-9]*', name)
+        snake_case_name = '_'.join(words).lower()
+
+        if self.visualize:
+            pass_print_graph(symbolic_traced, f"./{snake_case_name}.svg")
+        
+        pass_composed_op_breakdown(symbolic_traced, symbolic_traced.graph)
+        symbolic_traced.recompile()
+
+        if self.visualize:
+            pass_print_graph(symbolic_traced, f"./{snake_case_name}_decomposed.svg")
+        
+        out = symbolic_traced(*inputs)
+        ref = model_reference(*inputs)
+        if isinstance(out, tuple):
+            for o, r in zip(out, ref):
+                self.assertTrue(torch.allclose(o, r, rtol=5e-2))
+        else:
+            self.assertTrue(torch.allclose(out, ref, rtol=5e-2))
+
     # decomposition of _log_softmax = aten.log(aten.softmax)
-    def log_softmax_forward(self):
-        # model
+    def test_log_softmax_forward(self):
+        # Model
         class LogSoftmaxForward(torch.nn.Module):
             def __init__(self) -> None:
                 super().__init__()
@@ -97,39 +135,13 @@ class Decomposition(unittest.TestCase):
             def forward(self, input):
                 return torch.ops.aten._log_softmax(input, 1, False)
         
-        ## model instances
-        model = LogSoftmaxForward()
-        model_reference = LogSoftmaxForward()
-
-        ## run the compiler pass
-        symbolic_traced : torch.fx.GraphModule = symbolic_trace(model)
+        # inputs
         x = torch.randn((512, 1024), dtype=torch.float16, device="cuda")
 
-        ShapeProp(symbolic_traced).propagate(x)
-
-        pass_print_graph(symbolic_traced, "./log_softmax_fp.svg")
-        def pattern(input, dim, half2float):
-            return torch.ops.aten._log_softmax(input, dim, half2float)
-        
-        def replacement(input, dim, half2float):
-            softmax = torch.ops.aten._softmax(input, dim, half2float)
-            return torch.ops.aten.log(softmax)
-
-        # decomposition
-        subgraph_rewriter.replace_pattern(symbolic_traced, pattern, replacement)
-        # pass_infer_shape(symbolic_traced)
-        FakeTensorInfer(symbolic_traced).infer()
-        
-        symbolic_traced.recompile()
-        pass_print_graph(symbolic_traced, "./log_softmax_fp_optimized.svg")
-
-        out = symbolic_traced(x)
-        ref = model_reference(x)
-
-        self.assertTrue(torch.allclose(out, ref, rtol=5e-2))
+        self.util_test_decomposition(LogSoftmaxForward, [x,])
     
-    def nll_loss_backward(self):
-        # model
+    def test_nll_loss_backward(self):
+        # Model
         class NllLossBackward(torch.nn.Module):
             def __init__(self) -> None:
                 super().__init__()
@@ -147,31 +159,15 @@ class Decomposition(unittest.TestCase):
                 _log_softmax_backward_data = torch.ops.aten._log_softmax_backward_data(nll_loss_backward, log_softmax, 1, torch.float16)
                 return loss, _log_softmax_backward_data
         
-        ## model instance
-        model = NllLossBackward()
-        model_reference = NllLossBackward()
-
-        ## run the compiler pass
-        symbolic_traced : torch.fx.GraphModule = symbolic_trace(model)
+        # Inputs
         tangents = torch.randn((1,), dtype=torch.float16, device="cuda")
         x = torch.randn((512, 1024), dtype=torch.float16, device='cuda')
         target = torch.randint(low=0, high=1023, size=(512, ), dtype=torch.int64, device="cuda")
-        
-        ShapeProp(symbolic_traced).propagate(tangents, x, target)
-        pass_print_graph(symbolic_traced, "./nll_bp_fp.svg")
 
-        pass_composed_op_breakdown(symbolic_traced, symbolic_traced.graph)
-
-        symbolic_traced.recompile()
-        pass_print_graph(symbolic_traced, "./nll_bp_optimized.svg")
-
-        out = symbolic_traced(tangents, x, target)
-        ref = model_reference(tangents, x, target)
-
-        self.assertTrue(torch.allclose(out[1], ref[1], rtol=5e-2))
+        self.util_test_decomposition(NllLossBackward, [tangents, x, target])
     
     def test_rsub(self):
-        # model
+        # Model
         class Rsub(torch.nn.Module):
             def __init__(self) -> None:
                 super().__init__()
@@ -179,27 +175,75 @@ class Decomposition(unittest.TestCase):
             def forward(self, x, y):
                 return torch.ops.aten.rsub(x, y)
         
-        ## model instance
-        model = Rsub()
-        model_reference = Rsub()
-
-        ## run the compiler pass
-        symbolic_traced : torch.fx.GraphModule = symbolic_trace(model)
+        # Inputs
         x = torch.randn((512, 1024), dtype=torch.float16, device='cuda')
         y = torch.randn((512, 1024), dtype=torch.float16, device='cuda')
+
+        self.util_test_decomposition(Rsub, [x, y])
+    
+    def test_native_dropout_backward(self):
+        # Model
+        class NativeDropoutBackward(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+            
+            def forward(self, grad_y, mask):
+                return torch.ops.aten.native_dropout_backward(grad_y, mask, 2.)
         
-        ShapeProp(symbolic_traced).propagate(x, y)
-        pass_print_graph(symbolic_traced, "./rsub.svg")
+        # Inputs
+        grad_y = torch.randn((512, 16, 1024), dtype=torch.float16, device='cuda')
+        mask = torch.rand((512, 16, 1024), device='cuda') < 0.5
 
-        pass_composed_op_breakdown(symbolic_traced, symbolic_traced.graph)
+        self.util_test_decomposition(NativeDropoutBackward, [grad_y, mask])
+    
+    def test_threshold_backward(self):
+        # Model
+        class ThresholdBackward(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+            
+            def forward(self, grad_y, threshold_output):
+                return torch.ops.aten.threshold_backward(grad_y, threshold_output, 0)
+        
+        # Inputs
+        grad_y = torch.randn((512, 1024), dtype=torch.float16, device='cuda')
+        threshold_output = torch.ops.aten.relu(torch.randn_like(grad_y))
 
-        symbolic_traced.recompile()
-        pass_print_graph(symbolic_traced, "./rsub.svg")
+        self.util_test_decomposition(ThresholdBackward, [grad_y, threshold_output])
+        
+    def test_addmm(self):
+        # Model
+        class Addmm(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+            
+            def forward(self, bias, lhs, rhs):
+                return torch.ops.aten.addmm(bias, lhs, rhs)
+        
+        # Inputs
+        lhs = torch.randn((16, 64), dtype=torch.float16, device='cuda')
+        rhs = torch.randn((64, 16), dtype=torch.float16, device='cuda')
+        bias = torch.randn((16,), dtype=torch.float16, device='cuda')
 
-        out = symbolic_traced(x, y)
-        ref = model_reference(x, y)
+        self.util_test_decomposition(Addmm, [bias, lhs, rhs])
+    
+    def test_log_softmax_backward_data(self):
+        # Model
+        class LogSoftmaxBackwardData(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+            
+            def forward(self, grad_y, softmax):
+                log_softmax = torch.ops.aten.log(softmax)
+                return log_softmax, torch.ops.aten._log_softmax_backward_data(
+                    grad_y, log_softmax, -1, torch.float32)
+        
+        # Inputs
+        grad_y = torch.randn((2, 16, 24), dtype=torch.float32, device='cuda')
+        x = torch.randn_like(grad_y)
+        softmax = torch.ops.aten._softmax(x, -1, False)
 
-        self.assertTrue(torch.allclose(out, ref, rtol=5e-2))
+        self.util_test_decomposition(LogSoftmaxBackwardData, [grad_y, softmax])
 
 
 if __name__ == '__main__':

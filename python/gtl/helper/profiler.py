@@ -15,7 +15,7 @@
 ################################################################################
 
 import torch
-from cutlass.backend.test.profiler import GpuTimer
+from cutlass.profiler.event_profiler import GpuTimer
 import nvtx
 import logging
 

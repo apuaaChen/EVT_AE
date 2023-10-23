@@ -27,9 +27,10 @@ def pass_loss_elimination(module, graph):
             # loss is at input_node[0]
             loss_node = node.all_input_nodes[0]
             with _pop_mode_temporarily():
+                meta = loss_node.meta["tensor_meta"]
                 fake_loss_node = inject_get_attr(
                     loss_node, module, graph, 
-                    torch.Tensor([1.0,]).to("cuda").requires_grad_().to(torch.float16), 
+                    torch.ones(size=meta.shape, dtype=meta.dtype, device="cuda").requires_grad_(), 
                     "_fake_loss_0")
 
             loss_node.replace_all_uses_with(fake_loss_node)

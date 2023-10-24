@@ -155,6 +155,8 @@ class Decomposition(PassBase):
                 self.pattern_replacement[key][1],
                 self.pattern_replacement[key][2] # filters
                 )
+            if len(matches) == 0:
+                print(key)
             assert len(matches)
 
         # graph_module.recompile()
@@ -409,6 +411,103 @@ class Decomposition(PassBase):
             return _dim == dim
         
         self.pattern_replacement[key] = (pattern, replacement, [filter,])
+    
+    def requires_native_layer_norm(self, node: torch.fx.Node):
+        key = f"aten.native_layer_norm"
+
+        if node.args[2] is None:
+            return False
+        if node.args[3] is None:
+            return False
+        
+        if key in self.pattern_replacement:
+            return
+        
+        def pattern(input, normalized_shape, gamma, beta, eps):
+            output, mean, rstd = torch.ops.aten.native_layer_norm(
+                input, normalized_shape, gamma, beta, eps
+            )
+
+            return output, mean, rstd
+        
+        def replacement(input, normalized_shape, gamma, beta, eps):
+            _output, mean, rstd = torch.ops.aten.native_layer_norm(
+                input, normalized_shape, None, None, eps
+            )
+            output = torch.ops.aten.add(torch.ops.aten.mul(_output, gamma), beta)
+
+            return output, mean, rstd
+
+        def filter(match, original_graph, pattern_graph):
+            layer_norm_node = None
+            for node_ in match.nodes_map.keys():
+                if node_.target == torch.ops.aten.native_layer_norm:
+                    layer_norm_node = match.nodes_map[node_]
+                    break
+            
+            if layer_norm_node.args[2] is None:
+                return False
+            if layer_norm_node.args[3] is None:
+                return False
+            
+            return True
+        
+        self.pattern_replacement[key] = (pattern, replacement, [filter,])
+    
+    def requires_native_layer_norm_backward(self, node: torch.fx.Node):
+        input_shape = node.args[1].meta["tensor_meta"].shape
+        input_ndim = len(input_shape)
+        normalized_shape = node.args[2]
+        axis = input_ndim - len(normalized_shape)
+        outer_dim_indices = list(range(0, axis))
+        output_mask = node.args[-1]
+
+        if (not output_mask[1]) or (not output_mask[2]):
+            return
+
+        key = f"aten.native_layer_norm_backward_{axis}"
+        if key in self.pattern_replacement:
+            return
+        
+        def pattern(input, normalized_shape, gamma, beta, grad_out, output_mask, mean, rstd):
+            grad_input, grad_gamma, grad_beta = torch.ops.aten.native_layer_norm_backward(
+                grad_out, input, normalized_shape, mean, rstd, gamma, beta,
+                output_mask
+            )
+            return grad_input, grad_gamma, grad_beta
+        
+        def replacement(input, normalized_shape, gamma, beta, grad_out, output_mask, mean, rstd):
+            grad_beta = torch.ops.aten.sum(grad_out, outer_dim_indices)
+            sub_mean = torch.ops.aten.sub(input, mean)
+            mul = torch.ops.aten.mul(sub_mean, rstd)
+            mul_gamma = torch.ops.aten.mul(grad_out, mul)
+            grad_gamma = torch.ops.aten.sum(mul_gamma, outer_dim_indices)
+            grad_input, _, _ = torch.ops.aten.native_layer_norm_backward(
+                grad_out, input, normalized_shape, mean, rstd, gamma, beta,
+                [output_mask[0], False, False]
+            )
+            return grad_input, grad_gamma, grad_beta
+
+        def filter(match, original_graph, pattern_graph):
+            layer_norm_backward_node = None
+            for node_ in match.nodes_map.keys():
+                if node_.target == torch.ops.aten.native_layer_norm_backward:
+                    layer_norm_backward_node = match.nodes_map[node_]
+                    break
+            
+            output_mask = layer_norm_backward_node.args[-1]
+
+            if (not output_mask[1]) or (not output_mask[2]):
+                return False
+            
+            input_shape_ = layer_norm_backward_node.args[1].meta["tensor_meta"].shape
+            input_ndim_ = len(input_shape_)
+            normalized_shape_ = layer_norm_backward_node.args[2]
+            axis_ = input_ndim_ - len(normalized_shape_)
+            return axis_ == axis
+        
+        self.pattern_replacement[key] = (pattern, replacement, [filter,])
+
 
 """
     # TODO: the convolution backward is more tricky to construct the arg list
@@ -447,7 +546,7 @@ class Decomposition(PassBase):
 """
         
 
-def pass_composed_op_breakdown(module, graph, disabled_list=[]):
+def pass_decomposition(module, graph, disabled_list=[]):
     decompose = Decomposition()
 
     module, modified = decompose(module)

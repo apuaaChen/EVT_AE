@@ -125,7 +125,7 @@ class LocalCSE(PassBase):
 # Graph-level pass to merge duplicated nodes
 ################################################################################
 
-def pass_remove_duplicated_node(module, graph):
+def pass_cse(module, graph):
     cse = LocalCSE()
 
     module, modified = cse(module)

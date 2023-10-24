@@ -9,6 +9,7 @@ from torch.fx.node import map_aggregate
 from torch.fx.passes.shape_prop import _extract_tensor_metadata
 from typing import Optional
 import re
+import logging
 
 class DeLogSoftmaxForward(torch.nn.Module):
     def __init__(self, dim, half2float) -> None:
@@ -161,8 +162,8 @@ class Decomposition(unittest.TestCase):
         
         # Inputs
         tangents = torch.randn((1,), dtype=torch.float16, device="cuda")
-        x = torch.randn((512, 1024), dtype=torch.float16, device='cuda')
-        target = torch.randint(low=0, high=1023, size=(512, ), dtype=torch.int64, device="cuda")
+        x = torch.randn((512, 64), dtype=torch.float16, device='cuda')
+        target = torch.randint(low=0, high=63, size=(512, ), dtype=torch.int64, device="cuda")
 
         self.util_test_decomposition(NllLossBackward, [tangents, x, target])
     
@@ -246,5 +247,64 @@ class Decomposition(unittest.TestCase):
         self.util_test_decomposition(LogSoftmaxBackwardData, [grad_y, softmax])
 
 
+from gtl.helper import compiler_fn, partition_func, BaseTestCase, apex_autocast
+from model_zoo.bert import prepare_model_and_optimizer as bert_model_optimizer
+from model_zoo.bert import example_inputs as bert_inputs
+from functools import partial
+from gtl.compiler.passes import GTLFrontend, pass_loss_elimination
+from torch.fx.experimental.proxy_tensor import maybe_disable_fake_tensor_mode
+
+
+def decomposition_optimization(joint_module):
+    frontend = GTLFrontend()
+    joint_module, _ = frontend(joint_module)
+
+    pass_loss_elimination(joint_module, joint_module.graph)
+    pass_composed_op_breakdown(joint_module, joint_module.graph)
+    joint_module.recompile()
+    # pass_print_graph(joint_module, "./bert.svg")
+    return joint_module
+
+
+class BertTest(BaseTestCase):
+    def test_bert_large(self):
+        # Create the model
+        model, optimizer = bert_model_optimizer(config_file="./large.json")
+        model_ref, optimizer_ref = bert_model_optimizer(
+            config_file="./large.json", reference=model)
+        # Create the sample inputs
+        sample_inputs = bert_inputs(batch_size=2, seq_len=512)
+        # Cast to fp16
+        model, optimizer = apex_autocast(
+            model, optimizer, False
+        )
+        mode_ref, optimizer_ref = apex_autocast(
+            model_ref, optimizer_ref, False
+        )
+
+        self.run_reference_model(model_ref, optimizer_ref, sample_inputs, 4096.)
+    
+        model.aot_optimize(
+            compiler_fn, compiler_fn,
+            partial(
+                partition_func,
+                joint_compiler=decomposition_optimization
+            )
+        )
+
+        self.run_reference_model(model, optimizer, sample_inputs, 4096.)
+        
+        self.verify(mode_ref, model, verbose=0)
+    def is_close(self, grad1, grad2):
+        return (
+            torch.sum(
+                torch.isclose(grad1, grad2, rtol=1e-1)
+            ) / grad1.numel() > 0.9 
+            or torch.allclose(grad1, grad2, atol=1e-3)
+        )
+    
+
 if __name__ == '__main__':
+    logging.basicConfig(level=getattr(logging, "DEBUG"))
+    logging.basicConfig(format='%(message)s')
     unittest.main()

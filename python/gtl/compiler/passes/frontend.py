@@ -20,6 +20,7 @@ import operator
 import torch
 from torch import ops
 import logging
+from torch.utils._python_dispatch import _pop_mode_temporarily
 
 ################################################################################
 # Compiler Frontend that formalize the compute graph representation & reduce
@@ -131,11 +132,12 @@ def pass_suffix_elimination_(module, graph):
                     if arg != input_node:
                         constant_value = arg
                         constant_idx = idx
-                constant_node = inject_get_attr(
-                    input_node, module, graph,
-                    torch.Tensor([constant_value,]).to("cuda").to(torch.float16),
-                    "const_scalar%d" % name_idx
-                )
+                with _pop_mode_temporarily():
+                    constant_node = inject_get_attr(
+                        input_node, module, graph,
+                        torch.Tensor([constant_value,]).to("cuda").to(torch.float16),
+                        "const_scalar%d" % name_idx
+                    )
                 name_idx += 1
                 graph.inserting_after(constant_node)
                 scalar_node = graph.call_function(node.target, args=(input_node, constant_node))
@@ -145,11 +147,12 @@ def pass_suffix_elimination_(module, graph):
         elif node.target in [torch.ops.aten.sub, torch.ops.aten.div, torch.ops.aten.rsub]:
             if len(node.all_input_nodes) == 1:
                 if node.args[0] in node.all_input_nodes:
-                    constant_node = inject_get_attr(
-                        node.args[0], module, graph,
-                        torch.Tensor([node.args[1],]).to("cuda").to(torch.float16),
-                        "const_scalar%d" % name_idx
-                    )
+                    with _pop_mode_temporarily():
+                        constant_node = inject_get_attr(
+                            node.args[0], module, graph,
+                            torch.Tensor([node.args[1],]).to("cuda").to(torch.float16),
+                            "const_scalar%d" % name_idx
+                        )
                     name_idx += 1
                     graph.inserting_after(constant_node)
                     scalar_node = graph.call_function(node.target, args=(node.args[0], constant_node))
@@ -157,11 +160,12 @@ def pass_suffix_elimination_(module, graph):
                     scalar_node.meta['tensor_meta'] = node.meta['tensor_meta']._replace()
                     node.replace_all_uses_with(scalar_node)
                 elif node.args[1] in node.all_input_nodes:
-                    constant_node = inject_get_attr(
-                        node.args[1], module, graph,
-                        torch.Tensor([node.args[0],]).to("cuda").to(torch.float16),
-                        "const_scalar%d" % name_idx
-                    )
+                    with _pop_mode_temporarily():
+                        constant_node = inject_get_attr(
+                            node.args[1], module, graph,
+                            torch.Tensor([node.args[0],]).to("cuda").to(torch.float16),
+                            "const_scalar%d" % name_idx
+                        )
                     name_idx += 1
                     graph.inserting_after(constant_node)
                     scalar_node = graph.call_function(node.target, args=(constant_node, node.args[1]))

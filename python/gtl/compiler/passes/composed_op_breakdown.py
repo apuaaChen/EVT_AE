@@ -17,16 +17,15 @@ import torch
 from gtl.compiler.nodes import *
 from torch.fx.passes.infra.pass_base import PassBase, PassResult
 from torch.fx.graph_module import GraphModule
-from torch.fx import Node, symbolic_trace, Interpreter
-from torch.fx.subgraph_rewriter import replace_pattern
+from torch.fx import Node
+from torch.fx.subgraph_rewriter import replace_pattern_with_filters
 from torch._subclasses.fake_tensor import FakeTensorMode, FakeTensor
 from typing import Optional
 from torch.fx.passes.shape_prop import _extract_tensor_metadata
 from torch.fx.experimental.proxy_tensor import py_sym_types
 from torch.fx.node import map_aggregate
-from gtl.compiler.passes.print_graph import pass_print_graph
-import logging
 from torch.fx.passes.tools_common import legalize_graph
+from torch.fx.passes.fake_tensor_prop import FakeTensorProp
 
 ################################################################################
 # Graph-level pass to break down log softmax, nll_loss_forward, nll_loss_backward, 
@@ -57,7 +56,8 @@ class nhwcWgradOnly:
                 input.record_stream(self.stream)
         return weight_grad
 
-class FakeTensorInfer(Interpreter):
+
+class FakeTensorInfer(FakeTensorProp):
     """
     Execute an FX graph Node-by-Node and record a fake tensor representing
     the metadata for the node.  Unlike ShapeProp, (1) this propagation
@@ -72,8 +72,8 @@ class FakeTensorInfer(Interpreter):
     """
     def __init__(self, module: torch.fx.GraphModule, mode: Optional[FakeTensorMode] = None):
         super().__init__(module)
-        # if mode is None:
-        mode = FakeTensorMode()
+        if mode is None:
+            mode = FakeTensorMode()
         self._mode = mode
         # dtype used when it cannot be infered
         self.dtype = torch.float16
@@ -84,22 +84,17 @@ class FakeTensorInfer(Interpreter):
         if 'tensor_meta' in n.meta:
             meta = n.meta['tensor_meta']
             with self._mode:
-                try:
-                    if isinstance(meta, TensorMetadata):
-                        return torch.empty(size=meta.shape, dtype=meta.dtype, device="meta")
-                    elif isinstance(meta, tuple) and isinstance(meta[0], TensorMetadata):
-                        return (torch.empty(size=m.shape, dtype=m.dtype, device="meta") for m in meta)
-                except:
-                    logging.DEBUG(f"unkown meta data {meta}")
-                    print(meta)
-                    exit()
-                    return
+                if isinstance(meta, TensorMetadata):
+                    return torch.empty(size=meta.shape, dtype=meta.dtype, device="cuda")
+                elif isinstance(meta, tuple) and isinstance(meta[0], TensorMetadata):
+                    return (torch.empty(size=m.shape, dtype=m.dtype, device="cuda") for m in meta)
         else:
             op_name = '_' + str(n.target).split(sep='.')[-1]
             if hasattr(self, op_name):
                 result = getattr(self, op_name)(n)
             else:
-                result = super().run_node(n)
+                with self._mode:
+                    result = super().run_node(n)
                 
             def extract_val(obj):
                 if isinstance(obj, FakeTensor):
@@ -116,6 +111,17 @@ class FakeTensorInfer(Interpreter):
                 n.meta['type'] = type(result)
             return result
 
+    def propagate(self, *args):
+        fake_args = [
+            self._mode.from_tensor(a) if isinstance(a, torch.Tensor) else a
+            for a in args
+        ]
+        return self.propagate_dont_convert_inputs(*fake_args)
+
+    def propagate_dont_convert_inputs(self, *args):
+        with self._mode:
+            return super().run(*args)
+        
     def infer(self):
         return super().run()
 
@@ -126,8 +132,8 @@ class FakeTensorInfer(Interpreter):
                 size=(
                     n.args[0].meta["tensor_meta"].shape[0], 
                     n.kwargs["num_classes"]
-                ), dtype=self.dtype, device="meta")
-            
+                ), dtype=self.dtype, device="cuda")
+
 
 class Decomposition(PassBase):
     """
@@ -143,12 +149,15 @@ class Decomposition(PassBase):
     def call(self, graph_module: GraphModule) -> PassResult:
 
         for key in self.pattern_replacement.keys():
-            matches = replace_pattern(
-                graph_module, self.pattern_replacement[key][0],
-                self.pattern_replacement[key][1])
+            matches = replace_pattern_with_filters(
+                graph_module, 
+                self.pattern_replacement[key][0],
+                self.pattern_replacement[key][1],
+                self.pattern_replacement[key][2] # filters
+                )
             assert len(matches)
 
-        graph_module.recompile()
+        # graph_module.recompile()
 
         return PassResult(graph_module, True)
 
@@ -206,7 +215,7 @@ class Decomposition(PassBase):
             return torch.ops.aten.log(softmax)
         
         # inject the pattern
-        self.pattern_replacement[key] = (pattern, replacement)
+        self.pattern_replacement[key] = (pattern, replacement, None)
     
     def requires_rsub(self, node: torch.fx.Node):
         key = "aten.rsub"
@@ -220,10 +229,7 @@ class Decomposition(PassBase):
             return torch.ops.aten.sub(y, x)
         
         # inject the pattern
-        self.pattern_replacement[key] = (pattern, replacement)
-
-        # node.target = torch.ops.aten.sub
-        # node.args = (node.args[1], node.args[0])
+        self.pattern_replacement[key] = (pattern, replacement, None)
 
     def requires_nll_loss_backward(self, node: torch.fx.Node):
 
@@ -240,7 +246,7 @@ class Decomposition(PassBase):
         else:
             return
 
-        key = f"aten.nll_loss_backward_{reduction}_{_ignore_idx}"
+        key = f"aten.nll_loss_backward_{reduction}_{_ignore_idx}_{num_classes}"
 
         if key in self.pattern_replacement.keys():
             return
@@ -270,12 +276,16 @@ class Decomposition(PassBase):
                 mul = torch.ops.aten.mul(neg, tangents)
 
                 ne = torch.ops.aten.ne(target, -1)
-                unsqueeze = torch.ops.aten.unsqueeze(ne, 1)
+                unsqueeze = torch.ops.aten.unsqueeze(ne, -1)
                 mul_mask = torch.ops.aten.mul(mul, unsqueeze)
                 mean = torch.ops.aten.div(mul_mask, num_sample)
                 return mean
         
-        self.pattern_replacement[key] = (pattern, replacement)
+        def filter(match, original_graph, pattern_graph):
+            _num_cls = match.nodes_map[match.anchors[0]].meta["tensor_meta"].shape[-1]
+            return _num_cls == num_classes
+        
+        self.pattern_replacement[key] = (pattern, replacement, [filter])
 
     def requires_native_dropout_backward(self, node: torch.fx.Node):
         key = "aten.native_dropout_backward"
@@ -291,7 +301,7 @@ class Decomposition(PassBase):
             grad_x = torch.ops.aten.mul(grad_x, scale)
             return grad_x
         
-        self.pattern_replacement[key] = (pattern, replacement)
+        self.pattern_replacement[key] = (pattern, replacement, None)
 
     def requires_threshold_backward(self, node: torch.fx.Node):
         threshold = node.args[2]
@@ -308,7 +318,7 @@ class Decomposition(PassBase):
             ne = torch.ops.aten.ne(threshold_output, threshold)
             return torch.ops.aten.mul(grad_Y, ne)
         
-        self.pattern_replacement[key] = (pattern, replacement)
+        self.pattern_replacement[key] = (pattern, replacement, None)
 
     def requires_addmm(self, node: torch.fx.Node):
         key = "aten.addmm"
@@ -322,7 +332,7 @@ class Decomposition(PassBase):
             mm = torch.ops.aten.mm(lhs, rhs)
             return torch.ops.aten.add(mm, bias)
 
-        self.pattern_replacement[key] = (pattern, replacement)
+        self.pattern_replacement[key] = (pattern, replacement, None)
     
     def requires__log_softmax_backward_data(self, node: torch.fx.Node):
         key = f"aten._log_softmax_backward_data"
@@ -342,7 +352,7 @@ class Decomposition(PassBase):
             sub = torch.ops.aten.sub(grad_y, mul)
             return log_softmax, sub
 
-        self.pattern_replacement[key] = (pattern, replacement)
+        self.pattern_replacement[key] = (pattern, replacement, None)
 
 """
     # TODO: the convolution backward is more tricky to construct the arg list
@@ -385,61 +395,60 @@ def pass_composed_op_breakdown(module, graph, disabled_list=[]):
     decompose = Decomposition()
 
     module, modified = decompose(module)
-    module.recompile()
+    # module.recompile()
 
-    graph = module.graph
+    # graph = module.graph
     
-
-    softmax_node = None
-    for node in graph.nodes:
-        if node.op == "call_function":
-            if node.target in disabled_list: continue
-            if node.target == torch.ops.aten.convolution_backward:
-                grad_output, input, weight, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, output_mask = node.args
-                n, c, h, w = input.meta["tensor_meta"].shape
-                k, c_, r, s = weight.meta["tensor_meta"].shape
-                assert c == c_
-                # inject dgrad node 
-                if output_mask[0] and output_mask[1]:
-                    dgrad_output = list(node.users.keys())[0]
-                    wgrad_output = list(node.users.keys())[1]
-                elif (not output_mask[0]) and output_mask[1]:
-                    dgrad_output = None
-                    wgrad_output = list(node.users.keys())[0]
-                elif output_mask[0] and (not output_mask[1]):
-                    dgrad_output = list(node.users.keys())[0]
-                    wgrad_output = None
-                else:
-                    raise NotImplementedError
+    # TODO: strange it is not working
+    # for node in graph.nodes:
+    #     if node.op == "call_function":
+    #         if node.target in disabled_list: continue
+    #         if node.target == torch.ops.aten.convolution_backward:
+    #             grad_output, input, weight, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, output_mask = node.args
+    #             n, c, h, w = input.meta["tensor_meta"].shape
+    #             k, c_, r, s = weight.meta["tensor_meta"].shape
+    #             assert c == c_
+    #             # inject dgrad node 
+    #             if output_mask[0] and output_mask[1]:
+    #                 dgrad_output = list(node.users.keys())[0]
+    #                 wgrad_output = list(node.users.keys())[1]
+    #             elif (not output_mask[0]) and output_mask[1]:
+    #                 dgrad_output = None
+    #                 wgrad_output = list(node.users.keys())[0]
+    #             elif output_mask[0] and (not output_mask[1]):
+    #                 dgrad_output = list(node.users.keys())[0]
+    #                 wgrad_output = None
+    #             else:
+    #                 raise NotImplementedError
                 
-                if dgrad_output is not None:
-                    dgrad_args = [
-                        (n, c, h, w), weight, grad_output, stride, padding, dilation, groups
-                    ]
-                    graph.inserting_after(node)
-                    dgrad_node = graph.call_function(torch.nn.grad.conv2d_input, args=tuple(dgrad_args))
-                    dgrad_node.meta["tensor_meta"] = dgrad_output.meta["tensor_meta"]._replace()
-                    dgrad_output.replace_all_uses_with(dgrad_node)
+    #             if dgrad_output is not None:
+    #                 dgrad_args = [
+    #                     (n, c, h, w), weight, grad_output, stride, padding, dilation, groups
+    #                 ]
+    #                 graph.inserting_after(node)
+    #                 dgrad_node = graph.call_function(torch.nn.grad.conv2d_input, args=tuple(dgrad_args))
+    #                 dgrad_node.meta["tensor_meta"] = dgrad_output.meta["tensor_meta"]._replace()
+    #                 dgrad_output.replace_all_uses_with(dgrad_node)
                 
-                if wgrad_output is not None:
-                    if dgrad_output is not None:
-                        torch_wgrad_func = nhwcWgradOnly()
+    #             if wgrad_output is not None:
+    #                 if dgrad_output is not None:
+    #                     torch_wgrad_func = nhwcWgradOnly()
 
-                        graph.inserting_after(node)
-                        wgrad_node = graph.call_function(torch_wgrad_func, args=(grad_output, input, weight, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, [False, True, False]))
-                        wgrad_node.meta["tensor_meta"] = wgrad_output.meta["tensor_meta"]._replace()
-                        wgrad_output.replace_all_uses_with(wgrad_node)
-                    else:
-                        # transfer the function to nhwc
-                        def nhwc_wgrad_only(grad_output, input, weight, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, output_mask):
-                            k, c, s, r = weight.size()
-                            weight_permuted = weight.view(k, r, s, c).permute(0, 3, 1, 2)
-                            weight_grad = torch.ops.aten.convolution_backward(grad_output, input, weight_permuted, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, output_mask)[1]
-                            weight_grad = weight_grad.permute(0, 2, 3, 1).view(k, c, r, s)
-                            return [None, weight_grad, None]
+    #                     graph.inserting_after(node)
+    #                     wgrad_node = graph.call_function(torch_wgrad_func, args=(grad_output, input, weight, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, [False, True, False]))
+    #                     wgrad_node.meta["tensor_meta"] = wgrad_output.meta["tensor_meta"]._replace()
+    #                     wgrad_output.replace_all_uses_with(wgrad_node)
+    #                 else:
+    #                     # transfer the function to nhwc
+    #                     def nhwc_wgrad_only(grad_output, input, weight, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, output_mask):
+    #                         k, c, s, r = weight.size()
+    #                         weight_permuted = weight.view(k, r, s, c).permute(0, 3, 1, 2)
+    #                         weight_grad = torch.ops.aten.convolution_backward(grad_output, input, weight_permuted, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, output_mask)[1]
+    #                         weight_grad = weight_grad.permute(0, 2, 3, 1).view(k, c, r, s)
+    #                         return [None, weight_grad, None]
                         
-                        node.target = nhwc_wgrad_only
-                
-    graph.eliminate_dead_code()
-    graph.lint()
+    #                     node.target = nhwc_wgrad_only
+    # graph.eliminate_dead_code()
+    legalize_graph(module)
+    # graph.lint()
    

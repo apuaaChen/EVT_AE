@@ -353,6 +353,62 @@ class Decomposition(PassBase):
             return log_softmax, sub
 
         self.pattern_replacement[key] = (pattern, replacement, None)
+    
+    def requires_t(self, node: torch.fx.Node):
+        # Unify transposes to permutations
+        key = f"aten.t"
+        assert len(list(node.meta['tensor_meta'].shape)) == 2
+        if key in self.pattern_replacement:
+            return
+        
+        def pattern(x):
+            return torch.ops.aten.t(x)
+        
+        def replacement(x):
+            return torch.ops.aten.permute(x, [1, 0])
+        
+        self.pattern_replacement[key] = (pattern, replacement, None)
+    
+    def requires__unsafe_view(self, node: torch.fx.Node):
+        # Unify _unsafe_view to view
+        key = f"aten._unsafe_view"
+        if key in self.pattern_replacement:
+            return
+        
+        def pattern(x, shape):
+            return torch.ops.aten._unsafe_view(x, shape)
+        
+        def replacement(x, shape):
+            return torch.ops.aten.view(x, shape)
+        
+        self.pattern_replacement[key] = (pattern, replacement, None)
+    
+    def requires_transpose(self, node: torch.fx.Node):
+        # Unify tranpose to permute
+        shape = list(node.meta['tensor_meta'].shape)
+        key = f"aten.transpose_{len(shape)}_{node.args[1]}_{node.args[2]}"
+        if key in self.pattern_replacement:
+            return
+
+        dim = [i for i in range(len(shape))]
+        dim[node.args[1]] = node.args[2]
+        dim[node.args[2]] = node.args[1]
+        
+        def pattern(x, idx1, idx2):
+            return torch.ops.aten.transpose(x, idx1, idx2)
+        
+        def replacement(x, idx1, idx2):
+            return torch.ops.aten.permute(x, dim)
+        
+        def filter(match, original_graph, pattern_graph):
+            node = match.nodes_map[match.anchors[0]]
+            shape = list(node.meta['tensor_meta'].shape)
+            _dim = [i for i in range(len(shape))]
+            _dim[node.args[1]] = node.args[2]
+            _dim[node.args[2]] = node.args[1]
+            return _dim == dim
+        
+        self.pattern_replacement[key] = (pattern, replacement, [filter,])
 
 """
     # TODO: the convolution backward is more tricky to construct the arg list

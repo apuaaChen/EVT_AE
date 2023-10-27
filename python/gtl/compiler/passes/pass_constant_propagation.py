@@ -22,7 +22,7 @@ from torch.fx.passes.infra.pass_base import PassBase, PassResult
 from enum import Enum
 import torch
 from torch._functorch.partitioners import _extract_graph_with_inputs_outputs
-from gtl.compiler.passes.print_graph import pass_print_graph
+from gtl.compiler.passes.pass_print_graph import pass_print_graph
 from torch.fx.subgraph_rewriter import replace_pattern
 from torch.utils._python_dispatch import _pop_mode_temporarily, _len_torch_dispatch_stack
 from contextlib import nullcontext

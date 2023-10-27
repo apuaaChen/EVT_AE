@@ -16,10 +16,10 @@
 # from gtl.compiler.autotuner.auto_tuner import Autotuner
 # autotuner = Autotuner(verbose=True, load_model=False, autotuning_rounds=15)
 # from gtl.compiler.passes.suffix_elimination import pass_suffix_elimination
-from gtl.compiler.passes.print_graph import pass_print_graph
+from gtl.compiler.passes.pass_print_graph import pass_print_graph
 from gtl.compiler.passes.pass_fake_shape_infer import pass_fake_shape_infer
 # from gtl.compiler.passes.eliminate_transparent import pass_eliminate_transparent_node
-from gtl.compiler.passes.eliminate_loss import pass_loss_elimination
+from gtl.compiler.passes.pass_eliminate_loss import pass_loss_elimination
 from gtl.compiler.passes.pass_decomposition import pass_decomposition
 from gtl.compiler.passes.pass_constant_propagation import pass_constant_propagation
 # from gtl.compiler.passes.substitution import pass_graph_substitution

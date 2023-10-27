@@ -185,6 +185,12 @@ def inject_ne(inject_point, graph, lhs, rhs, tmp_lhs=None, tmp_rhs=None):
     ne_node.meta['tensor_meta'] = inject_point.meta['tensor_meta']._replace(shape=tuple(shape), dtype=torch.bool)
     return ne_node
 
+def inject_squeeze(inject_point, graph, parent_node, dim, tmp_node=None):
+    if tmp_node is None: tmp_node = parent_node
+
+    graph.inserting_after(inject_point)
+    return graph.call_function(torch.ops.aten.squeeze, args=(tmp_node, dim))
+
 def inject_unsqueeze(inject_point, graph, parent_node, dim, tmp_node=None):
     if tmp_node is None: tmp_node = parent_node
 

@@ -32,5 +32,5 @@
 
 from gtl.helper.aot_helper import partition_func, compiler_fn
 from gtl.helper.profiler import GTLProfiler
-from gtl.helper.test_helper import BaseTestCase
+from gtl.helper.test_helper import BaseTestCase, UnitTestBase
 from gtl.helper.amp_helper import apex_autocast

@@ -22,6 +22,7 @@ from gtl.compiler.passes import (
     GTLFrontend, pass_loss_elimination,
     pass_decomposition, pass_cse,
     pass_constant_propagation,
+    pass_fusion,
     pass_clean_up,
     pass_print_graph)
 import torch
@@ -37,6 +38,7 @@ def joint_optimization(joint_module):
     pass_decomposition(joint_module, joint_module.graph)
     pass_cse(joint_module, joint_module.graph)
     pass_constant_propagation(joint_module, joint_module.graph)
+    pass_fusion(joint_module, joint_module.graph)
     pass_clean_up(joint_module, joint_module.graph)
     joint_module.recompile()
     # pass_print_graph(joint_module, "./bert_optimized.svg")

@@ -408,7 +408,7 @@ class Decomposition(PassBase):
             grad_gamma = torch.ops.aten.sum(mul_gamma, outer_dim_indices)
             grad_input, _, _ = torch.ops.aten.native_layer_norm_backward(
                 grad_out, input, normalized_shape, mean, rstd, gamma, beta,
-                [output_mask[0], False, False]
+                [True, False, False]
             )
             return grad_input, grad_gamma, grad_beta
 

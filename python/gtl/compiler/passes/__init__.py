@@ -43,6 +43,7 @@ from gtl.compiler.passes.pass_cse import pass_cse
 # from gtl.compiler.passes.fix_permute_issue import pass_permute_view_fix
 # from gtl.compiler.passes.tvm_preprocess import pass_tvm_preprocessing
 from gtl.compiler.passes.pass_fusion import pass_fusion
+from gtl.compiler.passes.pass_clean_up import pass_clean_up
 
 ################################################################################
 # Reformulated passes

@@ -32,14 +32,78 @@ from torch.utils._python_dispatch import _pop_mode_temporarily, _len_torch_dispa
 from contextlib import nullcontext
 from gtl.compiler.nodes import inject_get_attr, inject_squeeze
 from gtl.compiler.passes.pass_fake_shape_infer import pass_fake_shape_infer
+from torch.fx.passes.shape_prop import TensorMetadata
 
 
 def get_shape(node: Union[Node, float, int]) -> list:
     if isinstance(node, Node):
-        return list(node.meta["tensor_meta"].shape)
+        meta = node.meta["tensor_meta"]
+        if isinstance(meta, TensorMetadata):
+            return list(node.meta["tensor_meta"].shape)
+        else:
+            return list(node.meta["tensor_meta"][0].shape)
     else:
         return [1]
+
+################################################################################
+# Permutation Progataion Pass
+################################################################################
+
+class PermuteAbv:
+    """
+    The abstract value of the nodes
+    Each node is represented as a tensor (fx.Node) and its permutation
+    """
+    def __init__(self, tensor: Node, permutation: list=None):
+        self.tensor: Node = tensor
+        self.shape = get_shape(tensor)
+        if permutation is None:
+            self.permutation = list(range(len(self.shape)))
+        else:
+            self.permutation = permutation
     
+    def permute(self, indices):
+        permutation = [self.permutation[idx] for idx in indices]
+        return PermuteAbv(self.tensor, permutation)
+    
+    def try_folding(self, node: Node):
+        if self.permutation != list(range(len(self.shape))):
+            return False
+        node.replace_all_uses_with(self.tensor)
+
+
+class PermutationFolding(PassBase):
+    """
+    This pass eliminate a chain of permutation by finding constant in it
+    for instance:
+        Tensor[4096, 1024] - permute([1, 0]) - permute([0, 1])
+                                   |                 |
+                                   A                 B
+    can be folded to
+        Tensor[4096, 1024] - permute([1, 0])
+                 |                 |
+                 B                 A
+    """
+    def call(self, graph_module: GraphModule) -> PassResult | None:
+        graph: Graph = graph_module.graph
+        self.workspace = {}
+        for node in graph.nodes:
+            if node.target == torch.ops.aten.permute:
+                tensor_abv = self.workspace[node.args[0]]
+                try:
+                    self.workspace[node] = tensor_abv.permute(node.args[1])
+                except:
+                    breakpoint()
+            else:
+                self.workspace[node] = PermuteAbv(node)
+        
+        # Fold the permutations based on the abstract values
+        for node in graph.nodes:
+            if node.target == torch.ops.aten.permute:
+                self.workspace[node].try_folding(node)
+    
+    def ensures(self, graph_module: GraphModule) -> None:
+        graph_module.graph.eliminate_dead_code()
 
 ################################################################################
 # Constant Propagation Pass
@@ -1040,3 +1104,7 @@ def pass_constant_propagation(module, graph):
     # Then try to fold any constant expressions + reassociation
     reas = Reassociation()
     reas(module)
+
+    # permutation propagation
+    pf = PermutationFolding()
+    pf(module)

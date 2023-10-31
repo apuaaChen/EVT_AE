@@ -39,6 +39,9 @@ import matplotlib.pyplot as plt
 from concurrent.futures import ThreadPoolExecutor
 from torch.fx.passes.infra.pass_base import PassBase, PassResult
 from torch.fx.passes.shape_prop import TensorMetadata
+from torch.fx.passes.tools_common import legalize_graph
+
+from gtl.compiler.passes.evt_fuser import EVTFuser
 
 
 # The operators fusible
@@ -1015,8 +1018,17 @@ class Partitioning(PassBase):
         for partition in partitions:
             print("=================================")
             print(partition)
+            for par in partition:
+                fuser = EVTFuser()
+                fuser.trace(graph_module, par)
 
         return super().call(graph_module)
+
+    def ensures(self, graph_module: GraphModule) -> None:
+        # Cleanup
+        legalize_graph(graph_module)
+        graph_module.graph.eliminate_dead_code()
+        graph_module.recompile()
 
 
 def pass_fusion(module, graph):

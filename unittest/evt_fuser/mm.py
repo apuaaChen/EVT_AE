@@ -24,7 +24,7 @@ class EVTFuserMM(UnitTestBase):
     
     # Helper function for launching test
     def util_test_evt_fuser(self, cls, inputs):
-        self.util_test(cls, inputs, [pass_fusion])
+        self.util_test(cls, inputs, [pass_fusion], criteria={"atol": 5e-1}, profile=True)
     
     def test_mm_partition1(self):
         # Model

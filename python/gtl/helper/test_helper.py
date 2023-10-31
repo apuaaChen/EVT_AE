@@ -21,6 +21,7 @@ from torch.fx import symbolic_trace
 from torch.fx.passes.shape_prop import ShapeProp
 from gtl.compiler.passes import pass_print_graph
 import re
+import nvtx
 
 
 class BaseTestCase(unittest.TestCase):
@@ -68,9 +69,11 @@ class UnitTestBase(unittest.TestCase):
         super().__init__(methodName)
         # Change to True to visualize the graph before and after decomposition
         self.visualize = True
+        self.warmup_iters = 20
+        self.profiling_iters = 20
     
     # Helper function for launching test
-    def util_test(self, cls, inputs, passes):
+    def util_test(self, cls, inputs, passes, criteria={"rtol": 5e-2}, profile=False):
         ## model instances
         model = cls()
         model_reference = cls()
@@ -95,8 +98,28 @@ class UnitTestBase(unittest.TestCase):
         
         out = symbolic_traced(*inputs)
         ref = model_reference(*inputs)
+        torch.cuda.synchronize()
         if isinstance(out, tuple):
             for o, r in zip(out, ref):
-                self.assertTrue(torch.allclose(o, r, rtol=5e-2))  
+                self.assertTrue(torch.allclose(o, r, **criteria))  
         else:
-            self.assertTrue(torch.allclose(out, ref, rtol=5e-2))
+            self.assertTrue(torch.allclose(out, ref, **criteria))
+        
+        if not profile:
+            return
+        
+        # Profiling
+        for _ in range(self.warmup_iters):
+            out = symbolic_traced(*inputs)
+        
+        with nvtx.annotate("gtl"):
+            for _ in range(self.profiling_iters):
+                out = symbolic_traced(*inputs)
+        
+        for _ in range(self.warmup_iters):
+            ref = model_reference(*inputs)
+
+        with nvtx.annotate("torch"):
+            for _ in range(self.profiling_iters):
+                ref = model_reference(*inputs)
+

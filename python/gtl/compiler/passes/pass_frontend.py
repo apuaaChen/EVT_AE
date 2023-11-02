@@ -21,6 +21,7 @@ import torch
 from torch import ops
 import logging
 from torch.utils._python_dispatch import _pop_mode_temporarily
+from functools import reduce
 
 ################################################################################
 # Compiler Frontend that formalize the compute graph representation & reduce
@@ -55,6 +56,20 @@ class GTLFrontend(PassBase):
 
         graph = graph_module.graph
         pass_suffix_elimination_(graph_module, graph)
+
+        # Clean up -1 in view
+        for node in graph.nodes:
+            if node.target == torch.ops.aten.view:
+                new_shape = node.args[1]
+                if -1 in new_shape:
+                    node_shape = node.meta["tensor_meta"].shape
+                    numel = reduce(lambda x, y: x * y, node_shape, 1)
+                    for d in new_shape:
+                        if d != -1:
+                            numel /= d
+                    canonical_shape = [d if d != -1 else int(numel) for d in new_shape]
+                    node.args = (node.args[0], canonical_shape)
+
         graph.eliminate_dead_code()
         graph.lint()
         graph_module.recompile()

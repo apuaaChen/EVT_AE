@@ -27,6 +27,7 @@ from torch.fx.node import map_aggregate
 from torch.fx.passes.tools_common import legalize_graph
 from torch.fx.passes.fake_tensor_prop import FakeTensorProp
 from gtl.compiler.passes.pass_fake_shape_infer import pass_fake_shape_infer
+import operator
 
 ################################################################################
 # Graph-level pass to break down log softmax, nll_loss_forward, nll_loss_backward, 
@@ -210,6 +211,37 @@ class Decomposition(PassBase):
         def filter(match, original_graph, pattern_graph):
             _num_cls = match.nodes_map[match.anchors[0]].meta["tensor_meta"].shape[-1]
             return _num_cls == num_classes
+        
+        self.pattern_replacement[key] = (pattern, replacement, [filter])
+
+    def requires_native_dropout(self, node: torch.fx.Node):
+        prob = node.args[1]
+        scaling_factor = 1./(1-prob)
+
+        key = f"aten.native_dropout_{prob}"
+
+        if key in self.pattern_replacement.keys():
+            return
+        
+        def pattern(x):
+            dropout = torch.ops.aten.native_dropout(x, prob, True)
+            output = operator.getitem(dropout, 0)
+            mask = operator.getitem(dropout, 1)
+            return output, mask
+        
+        def replacement(x):
+            mask = torch.ops.aten.ge(torch.rand_like(x), prob)
+            output = torch.ops.aten.mul(x, mask)
+            scaled_output = torch.ops.aten.mul(output, scaling_factor)
+            return scaled_output, mask
+        
+        def filter(match, original_graph, pattern_graph):
+            for node in match.nodes_map:
+                if node.target == torch.ops.aten.native_dropout:
+                    if node.args[1] == prob:
+                        return True
+            
+            return False
         
         self.pattern_replacement[key] = (pattern, replacement, [filter])
 

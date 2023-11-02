@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 ################################################################################
-from cutlass import DataType
+from cutlass import DataType, SwizzlingFunctor
 import cutlass
 from cutlass.shape import GemmCoord
 from tqdm import tqdm
@@ -31,6 +31,68 @@ from torch._functorch.partitioners import _extract_graph_with_inputs_outputs
 from cutlass.backend.gemm_operation import GemmArguments
 import operator
 from cutlass.swizzle import ThreadblockSwizzleStreamK
+from cutlass.profiler import CUDAEventProfiler
+from concurrent.futures import ThreadPoolExecutor
+
+
+################################################################################
+# Autotuner
+################################################################################
+# TODO: probably move the autotuner to other files
+class Autotuner:
+    def __init__(self, plan, A: Node, B: Node, anchor: Node, visitor_args=None) -> None:
+        self.plan = plan
+        self.meta_A = A.meta["tensor_meta"]
+        self.meta_B = B.meta["tensor_meta"]
+        self.op = anchor.target
+        self.warmup_iterations=100
+        self.profile_iterations=100
+
+        self.swizzling_functors = [
+            SwizzlingFunctor.Identity1, SwizzlingFunctor.Identity2,
+            SwizzlingFunctor.Identity4, SwizzlingFunctor.Identity8,
+            SwizzlingFunctor.StreamK
+        ]
+
+        # self.compile(self.plan.tile_descriptions(), self.plan)
+        self.num_best_tds = 5
+        self.best_tds = self.profile()
+    
+    def compile(self, tds, plan):
+        """
+        Perform parallel compilation of the kernels
+        """
+        for td in tqdm(tds):
+            plan.compile(td, alignment_A=8, alignment_B=8, alignment_C=8)
+
+    def profile(self):
+        tensor_A = torch.empty(size=self.meta_A.shape, dtype=self.meta_A.dtype, device="cuda")
+        tensor_B = torch.empty(size=self.meta_B.shape, dtype=self.meta_B.dtype, device="cuda")
+        if self.plan._layout_a == LayoutType.ColumnMajor:
+            tensor_A = torch.transpose(tensor_A, -1, -2)
+        if self.plan._layout_b == LayoutType.ColumnMajor:
+            tensor_B = torch.transpose(tensor_B, -1, -2)
+        
+        tensor_C = self.op(tensor_A, tensor_B)
+        tensor_D = torch.empty_like(tensor_C)
+
+        # Get durations
+        durations = []
+        tds = []
+        for td in tqdm(self.plan.tile_descriptions()):
+            self.plan.tile_description = td
+            duration = CUDAEventProfiler(
+                self.plan, self.warmup_iterations, self.profile_iterations,
+                tensor_A, tensor_B, tensor_C, tensor_D
+            )()
+            durations.append(duration)
+            tds.append(td)
+        # Sort
+        combined = list(zip(durations, tds))
+        sorted_combined = sorted(combined, key=lambda x: x[0])
+        _, sorted_td = zip(*sorted_combined)
+
+        return sorted_td[:self.num_best_tds]
 
 class FusedGEMM:
     """
@@ -62,7 +124,9 @@ class FusedGEMM:
 
         # Outputs and inputs in the original graph
         self.outputs = epilogue_visitor.outputs
-        self.inputs = epilogue_visitor.inputs
+        self.inputs = [
+            input for input in epilogue_visitor.inputs 
+            if input.target != self.node.target]
 
         # Plan
         plan = cutlass.op.Gemm(
@@ -72,33 +136,39 @@ class FusedGEMM:
             element_accumulator=torch.float32
         )
 
+        # Use streamk
+        # plan.swizzling_functor = ThreadblockSwizzleStreamK
+
+        # Get candidate tds
+        # autotuner = Autotuner(plan, self.A, self.B, self.node)
+        # self.best_tds = autotuner.best_tds
+
+        epilogue_visitor.epilogue_stages = 2
         # Register epilogue
         plan.epilogue_visitor = epilogue_visitor
 
+        self.plan = plan
+
         # Get Alignment
         if self.lhs_layout == cutlass.LayoutType.RowMajor:
-            align_A = self.get_alignment(K)
+            self.align_A = self.get_alignment(K)
         else:
-            align_A = self.get_alignment(M)
+            self.align_A = self.get_alignment(M)
         
         if self.rhs_layout == cutlass.LayoutType.RowMajor:
-            align_B = self.get_alignment(N)
+            self.align_B = self.get_alignment(N)
         else:
-            align_B = self.get_alignment(K)
-        align_C = self.get_alignment(N)
-
-        # Use streamk
-        plan.swizzling_functor = ThreadblockSwizzleStreamK
-
-        # TODO: get fine-tuned cluster
+            self.align_B = self.get_alignment(K)
+        self.align_C = self.get_alignment(N)
 
         # Get the underlying kernel
-        self.operation = plan.compile(
-            alignment_A=align_A, alignment_B=align_B, alignment_C=align_C)
+        self.operation = self.plan.compile(
+            # tile_description=best_td,
+            alignment_A=self.align_A, alignment_B=self.align_B, 
+            alignment_C=self.align_C)
 
         # Stream
         self.stream = None
-
     
     def __call__(self, *args):
         default_stream = torch.cuda.current_stream()
@@ -128,11 +198,25 @@ class FusedGEMM:
                 )
             
             # Register the inputs
-            arg_idx = 0
-            for input in self.inputs:
-                if input.target != torch.ops.aten.mm:
-                    visitor_args[input.name] = args[arg_idx]
-                    arg_idx += 1
+            for idx, input in enumerate(self.inputs):
+                visitor_args[input.name] = args[idx]
+            
+            # if self.operation is None:
+            #     best_td = None
+            #     min_duration = 1e+6
+            #     C = A @ B
+            #     for td in tqdm(self.best_tds):
+            #         self.plan.tile_description = td
+            #         duration = CUDAEventProfiler(
+            #             self.plan, 100, 100, A, B, C, C, 
+            #             visitor_args=visitor_args
+            #         )()
+            #         if duration < min_duration:
+            #             best_td = td
+            #     self.operation = self.plan.compile(
+            #         tile_description=best_td,
+            #         alignment_A=self.align_A, alignment_B=self.align_B, 
+            #         alignment_C=self.align_C)
             
             arguments = GemmArguments(
                 operation=self.operation, problem_size=self.problem_size,
@@ -244,6 +328,7 @@ class EVTFuser(EVTFrontendBase):
         # Visit the nodes
         for node in subgraph.nodes:
             self.visit(node)
+        # self.visualize()
         self.pass_manager()
         # self.visualize()
         self.epilogue_thread_type = self.dag_ir.epilogue_thread_type
@@ -259,6 +344,8 @@ class EVTFuser(EVTFrontendBase):
         args = [input for input in self.inputs if input!= anchor] + fused_kernel.args
         graph_module.graph.inserting_after(anchor)
         fused_node = graph_module.graph.call_function(fused_kernel, args=tuple(args))
+        fused_node.meta = {}
+        fused_node.meta["evt"] = True
         graph_module.graph.inserting_after(fused_node)
 
         for idx, output_node in enumerate(self.outputs):
@@ -266,6 +353,8 @@ class EVTFuser(EVTFrontendBase):
             get_item_node = graph_module.graph.call_function(operator.getitem, args=(fused_node, idx))
             graph_module.graph.inserting_after(get_item_node)
             view_node = graph_module.graph.call_function(torch.ops.aten.view, args=(get_item_node, output_node.meta["tensor_meta"].shape))
+            view_node.meta = {}
+            view_node.meta["tensor_meta"] = output_node.meta["tensor_meta"]._replace()
             output_node.replace_all_uses_with(view_node)
             graph_module.graph.inserting_after(view_node)
 
@@ -278,8 +367,8 @@ class EVTFuser(EVTFrontendBase):
         if node.op in ["placeholder", "get_attr"]:
             self._visit_source(node)
         elif node.op == "call_function":
-            if hasattr(self, f"visit_{node.target}".replace(".", "_")):
-                getattr(self, f"visit_{node.target}".replace(".", "_"))(node)
+            if hasattr(self, f"visit_{node.target.__name__}"):
+                getattr(self, f"visit_{node.target.__name__}")(node)
             else:
                 raise NotImplementedError(f"Doesn't support target {node.target}")
     
@@ -298,7 +387,7 @@ class EVTFuser(EVTFrontendBase):
 
     def _get_name(self, node: Node):
         if node in self.outputs_subgraph:
-            return node.name + "_"
+            return node.name + "_t"
         else:
             return node.name  
     
@@ -337,16 +426,25 @@ class EVTFuser(EVTFrontendBase):
             self.add_edge(name, node.name, weight=0)
         return node.name
     
-    def visit_aten_add(self, node: Node):
+    def visit_add(self, node: Node):
         return self._visit_compute(node, FunctionalOp.Plus)
 
-    def visit_aten_mul(self, node: Node):
+    def visit_mul(self, node: Node):
         return self._visit_compute(node, FunctionalOp.Multiplies)
     
-    def visit_aten_gelu(self, node: Node):
+    def visit_gelu(self, node: Node):
         return self._visit_compute(node, ActivationOp.Gelu)
     
-    def visit_aten_view(self, node: Node):
+    def visit_tanh(self, node: Node):
+        return self._visit_compute(node, ActivationOp.Tanh)
+
+    def visit_rand_like(self, node: Node):
+        return self._visit_compute(node, FunctionalOp.Rand)
+    
+    def visit_ge(self, node: Node):
+        return self._visit_compute(node, FunctionalOp.GreaterEqual)
+    
+    def visit_view(self, node: Node):
         name = self._get_name(node)
         op = self.layout_fns["reshape"]
         input, new_shape = node.args

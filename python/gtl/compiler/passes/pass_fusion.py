@@ -40,6 +40,7 @@ from concurrent.futures import ThreadPoolExecutor
 from torch.fx.passes.infra.pass_base import PassBase, PassResult
 from torch.fx.passes.shape_prop import TensorMetadata
 from torch.fx.passes.tools_common import legalize_graph
+from gtl.compiler.passes.pass_constant_propagation import PermuteAbv
 
 from gtl.compiler.passes.evt_fuser import EVTFuser
 
@@ -63,7 +64,11 @@ FUSIBLE_TGT = [
     torch.ops.aten.tanh_backward,
     torch.ops.aten.sum,
     torch.ops.aten.gelu_backward,
-    torch.ops.aten.native_dropout_backward
+    torch.ops.aten.native_dropout_backward,
+    torch.ops.aten.ne,
+    torch.ops.aten.one_hot,
+    torch.rand_like,
+    torch.ops.aten.ge
 ]
 
 ################################################################################
@@ -954,6 +959,10 @@ class ComputeGraphIR:
         connected_components = list(nx.connected_components(self.partition_graph))
 
         # Support multi-thread solving. Although it doesn't bring much benefits
+        # results = []
+        # for component in tqdm(connected_components):
+        #     solver = ILPSolver(component, self._graph, self.node_topo, self.solution_cache)
+        #     results.append(solver())
         with ThreadPoolExecutor(1) as executor:
             with tqdm(total=len(connected_components)) as pbar:
                 def solve_component(component):
@@ -1015,16 +1024,59 @@ class Partitioning(PassBase):
         compute_graph_ir.shortest_length_matrix()
         partitions = compute_graph_ir.initialize_same_partition_matrix()
 
-        for partition in partitions:
-            print("=================================")
+        for idx, partition in enumerate(partitions):
+            print(f"==============={idx}==================")
             print(partition)
+            if idx >= 22: break
+            if idx in [2,16,17,18,19,20,21]: 
+                print("skipped")
+                continue
             for par in partition:
-                fuser = EVTFuser()
-                fuser.trace(graph_module, par)
+                if len(par) > 1:
+                    fuser = EVTFuser()
+                    fuser.trace(graph_module, par)
 
         return super().call(graph_module)
 
+    def enforce_contiguous_format(self, graph: Graph):
+        """
+        Insert "clone" nodes to incomming edges of fused nodes if they are not
+        contiguous.
+
+        Intuition: The fused kernels assume that all the incoming tensors are
+        under contiguous layout. This function enforces this assumption.
+        """
+        self.workspace = {}
+        for node in graph.nodes:
+            if node.target == torch.ops.aten.permute:
+                tensor_abv = self.workspace[node.args[0]]
+                try:
+                    self.workspace[node] = tensor_abv.permute(node.args[1])
+                except:
+                    breakpoint()
+            else:
+                self.workspace[node] = PermuteAbv(node)
+        
+        # Insert the clone nodes
+        for node in graph.nodes:
+            if "evt" in node.meta:
+                for input in node.all_input_nodes:
+                    abv = self.workspace[input]
+                    if not abv.is_contiguous():
+                        # Insert the clone node
+                        graph.inserting_after(input)
+                        clone_node = graph.call_function(
+                            torch.ops.aten.clone, args=(input,), 
+                            kwargs={"memory_format": torch.contiguous_format})
+                        
+                        clone_node.meta = {}
+                        clone_node.meta["tensor_meta"] = input.meta["tensor_meta"]._replace()
+                        node.replace_input_with(input, clone_node)
+
     def ensures(self, graph_module: GraphModule) -> None:
+        # Inject clone nodes
+        self.enforce_contiguous_format(graph_module.graph)
+
         # Cleanup
         legalize_graph(graph_module)
         graph_module.graph.eliminate_dead_code()

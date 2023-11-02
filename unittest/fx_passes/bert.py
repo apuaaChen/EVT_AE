@@ -39,9 +39,10 @@ def joint_optimization(joint_module):
     pass_cse(joint_module, joint_module.graph)
     pass_constant_propagation(joint_module, joint_module.graph)
     pass_fusion(joint_module, joint_module.graph)
+    # pass_print_graph(joint_module, "./bert_optimized.svg")
     pass_clean_up(joint_module, joint_module.graph)
     joint_module.recompile()
-    # pass_print_graph(joint_module, "./bert_optimized.svg")
+    
     return joint_module
 
 
@@ -71,9 +72,13 @@ class BertTest(BaseTestCase):
             )
         )
 
-        self.run_reference_model(model, optimizer, sample_inputs, 4096.)
+        model.capture_graph(
+            batch=2, sequence_length=512, optimizer=optimizer
+        )
+
+        self.run_target_model(model, optimizer, sample_inputs)
         
-        self.verify(mode_ref, model, verbose=0)
+        self.verify(mode_ref, model, verbose=1)
     def is_close(self, grad1, grad2):
         return (
             torch.sum(

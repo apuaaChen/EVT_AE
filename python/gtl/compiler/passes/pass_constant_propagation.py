@@ -37,11 +37,14 @@ from torch.fx.passes.shape_prop import TensorMetadata
 
 def get_shape(node: Union[Node, float, int]) -> list:
     if isinstance(node, Node):
-        meta = node.meta["tensor_meta"]
-        if isinstance(meta, TensorMetadata):
-            return list(node.meta["tensor_meta"].shape)
+        if "tensor_meta" in node.meta:
+            meta = node.meta["tensor_meta"]
+            if isinstance(meta, TensorMetadata):
+                return list(node.meta["tensor_meta"].shape)
+            else:
+                return list(node.meta["tensor_meta"][0].shape)
         else:
-            return list(node.meta["tensor_meta"][0].shape)
+            return [1]  # return a fake tensor shape
     else:
         return [1]
 
@@ -66,10 +69,22 @@ class PermuteAbv:
         permutation = [self.permutation[idx] for idx in indices]
         return PermuteAbv(self.tensor, permutation)
     
-    def try_folding(self, node: Node):
+    def try_folding(self, node: Node, graph):
         if self.permutation != list(range(len(self.shape))):
-            return False
-        node.replace_all_uses_with(self.tensor)
+            # Fold to tensor->permute
+            graph.inserting_before(node)
+            permute_node = graph.call_function(torch.ops.aten.permute,
+                                               args=(self.tensor, self.permutation))
+            permute_node.meta = {}
+            permute_node.meta["tensor_meta"] = node.meta["tensor_meta"]._replace()
+            node.replace_all_uses_with(permute_node)
+        else:
+            # Fold to tensor
+            node.replace_all_uses_with(self.tensor)
+    
+    def is_contiguous(self):
+        return self.permutation == list(range(len(self.shape)))
+
 
 
 class PermutationFolding(PassBase):
@@ -100,7 +115,7 @@ class PermutationFolding(PassBase):
         # Fold the permutations based on the abstract values
         for node in graph.nodes:
             if node.target == torch.ops.aten.permute:
-                self.workspace[node].try_folding(node)
+                self.workspace[node].try_folding(node, graph)
     
     def ensures(self, graph_module: GraphModule) -> None:
         graph_module.graph.eliminate_dead_code()

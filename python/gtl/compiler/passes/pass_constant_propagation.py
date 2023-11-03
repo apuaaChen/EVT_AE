@@ -145,6 +145,25 @@ class ConstantPropagation(PassBase):
                         self.workspace[node],
                         "const_" + node.name)
                     node.replace_all_uses_with(const_node)
+        # Special case for Div for strength reduction
+        for node in graph.nodes:
+            if node.target == torch.ops.aten.div:
+                divisor = node.args[1]
+                if isinstance(divisor, Node) and divisor.op == "get_attr":
+                    with (_pop_mode_temporarily() 
+                        if _len_torch_dispatch_stack() > 0 else nullcontext()):
+                            multiplier = inject_get_attr(
+                                divisor, self.module, self.module.graph,
+                                1./getattr(self.module, divisor.target),
+                                "inv_" + divisor.name
+                            )
+                else:
+                    multiplier = 1./divisor
+                
+                graph.inserting_after(node)
+                mul_node = graph.call_function(torch.ops.aten.mul, args=(node.args[0], multiplier))
+                node.replace_all_uses_with(mul_node)
+
 
     def binary_transfer(self, abv1, abv2):
         if abv1 is None:

@@ -666,7 +666,8 @@ class ILPSolver:
         while enforce t/permute->mm/bmm fusion
         """
         A = []
-        b = []
+        ub = []
+        lb = []
         for node in self.node_list:
             # For unfusible nodes
             if not self.is_fusible(node):
@@ -684,7 +685,8 @@ class ILPSolver:
                         for s in range(self.nc):
                             At[0][self.z(min(i,j), max(i,j), s)] = 1
                         A.append(At)
-                        b.append(np.ones(shape=At.shape[0]))
+                        ub.append(np.ones(shape=At.shape[0]))
+                        lb.append(np.ones(shape=At.shape[0]))
                         # Find the input of i
                         in_edges_input = list(self.subgraph.in_edges(input))
                         assert len(in_edges_input) <= 1
@@ -692,26 +694,27 @@ class ILPSolver:
                             if grand_input not in self.node_list:
                                 continue
                             k = self.node_list.index(grand_input)
-                            At = np.zeros(shape=(1, self.num_all))
-                            ik_s = min(i, k)
-                            ik_l = max(i, k)
+                            At = np.zeros(shape=(self.nc, self.num_all))
                             for s in range(self.nc):
-                                At[0][self.z(ik_s, ik_l, s)] = 1
+                                At[s][self.x(i, s)] = 1
+                                At[s][self.x(k, s)] = 1
                             A.append(At)
-                            b.append(np.zeros(shape=At.shape[0]))
+                            ub.append(np.ones(shape=At.shape[0]))
+                            lb.append(np.full(shape=At.shape[0], fill_value=-np.inf))
                     else:
-                        At = np.zeros(shape=(1, self.num_all))
-                        ij_s = min(i, j)
-                        ij_l = max(i, j)
+                        At = np.zeros(shape=(self.nc, self.num_all))
                         for s in range(self.nc):
-                            At[0][self.z(ij_s, ij_l, s)] = 1
+                            At[s][self.x(i, s)] = 1
+                            At[s][self.x(j, s)] = 1
                         A.append(At)
-                        b.append(np.zeros(shape=At.shape[0]))
+                        ub.append(np.ones(shape=At.shape[0]))
+                        lb.append(np.full(shape=At.shape[0], fill_value=-np.inf))
         if len(A) > 0:
             A = np.concatenate(A, axis=0)
-            b = np.concatenate(b, axis=0)
+            ub = np.concatenate(ub, axis=0)
+            lb = np.concatenate(lb, axis=0)
 
-            return scipy.optimize.LinearConstraint(A, ub=b, lb=b)
+            return scipy.optimize.LinearConstraint(A, ub=ub, lb=lb)
         return None
     
     def constraint_sum_is_leaf(self):
@@ -728,18 +731,17 @@ class ILPSolver:
                     i = self.node_list.index(node)
                     j = self.node_list.index(output)
 
-                    At = np.zeros(shape=(1, self.num_all))
-                    ij_s = min(i, j)
-                    ij_l = max(i, j)
+                    At = np.zeros(shape=(self.nc, self.num_all))
                     for s in range(self.nc):
-                        At[0][self.z(ij_s, ij_l, s)] = 1
+                        At[s][self.x(i, s)] = 1
+                        At[s][self.x(j, s)] = 1
                     A.append(At)
 
         if len(A) > 0:
             A = np.concatenate(A, axis=0)
-            b = np.zeros(shape=A.shape[0])
+            b = np.ones(shape=A.shape[0])
 
-            return scipy.optimize.LinearConstraint(A, ub=b, lb=b)
+            return scipy.optimize.LinearConstraint(A, ub=b)
         return None
     
     #
@@ -1028,7 +1030,7 @@ class Partitioning(PassBase):
             print(f"==============={idx}==================")
             print(partition)
             if idx >= 22: break
-            if idx in [2,16,17,18,19,20,21]: 
+            if idx in [2,16,17,18,19,21]: 
                 print("skipped")
                 continue
             for par in partition:

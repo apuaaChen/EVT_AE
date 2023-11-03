@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 ################################################################################
-from cutlass import DataType, SwizzlingFunctor
+from cutlass import DataType, GemmUniversalMode, SwizzlingFunctor
 import cutlass
 from cutlass.shape import GemmCoord
 from tqdm import tqdm
@@ -28,11 +28,58 @@ from typing import Union
 import pdb
 from torch.fx.graph_module import GraphModule
 from torch._functorch.partitioners import _extract_graph_with_inputs_outputs
-from cutlass.backend.gemm_operation import GemmArguments
+from cutlass.backend.gemm_operation import GemmArguments, GemmArguments2x, ArgumentBase, GemmOperationUniversal
+from cutlass.backend.evt.ir.tensor import Tensor
 import operator
 from cutlass.swizzle import ThreadblockSwizzleStreamK
 from cutlass.profiler import CUDAEventProfiler
 from concurrent.futures import ThreadPoolExecutor
+
+
+# Overloaded argument type for BMM to support permutation
+class BmmArguments2x(GemmArguments2x):
+    def __init__(self, operation, problem_size, A, B, output_op, **kwargs):
+        self.operation = operation
+        self.layout_A = operation.A.layout
+        self.layout_B = operation.B.layout
+        self.layout_C = operation.C.layout
+
+        self.element_A = operation.A.element
+        self.element_B = operation.B.element
+        self.element_C = operation.C.element
+
+        ArgumentBase.__init__(self, A, B, None, None)
+
+        fake_A = Tensor(tensor=A)
+        fake_B = Tensor(tensor=B)
+
+        if "permute_A" in kwargs:
+            fake_A.permute(kwargs["permute_A"])
+        
+        if "permute_B" in kwargs:
+            fake_B.permute(kwargs["permute_B"])
+        
+        self.problem_size = problem_size
+        self.lda = self.get_leading_dim(fake_A, self.layout_A)
+        self.ldb = self.get_leading_dim(fake_B, self.layout_B)
+        self.ldc = fake_A.shape[1]
+        self.ldd = self.ldc
+        self.output_op = output_op
+        self.gemm_mode = GemmUniversalMode.Batched
+        self.batch_count = fake_A.shape[0]
+        self.batched_stride_A = fake_A.stride[0]
+        self.batched_stride_B = fake_B.stride[0]
+        self.batched_stride_C = fake_A.shape[1] * fake_B.shape[2]
+        self.batched_stride_D = self.batched_stride_C
+
+        if isinstance(self.operation, GemmOperationUniversal):
+            self.initialize()
+    
+    def get_leading_dim(self, fake_tensor, layout):
+        if layout == LayoutType.RowMajor:
+            return fake_tensor.stride[1]
+        else:
+            return fake_tensor.stride[2]
 
 
 ################################################################################
@@ -263,6 +310,190 @@ class FusedGEMM:
         else: return 1
 
 
+
+class FusedBMM:
+    """
+    The fused operator of BMM epilogue_visitor(A*B, args)
+    """
+    __name__ = "cutlass_bmm_with_visitor"
+    def __init__(self, node, epilogue_visitor) -> None:
+        assert node.target == torch.ops.aten.bmm
+        self.node = node
+
+        # Whether the problem is tranposed
+        self.tranposed = epilogue_visitor.transposed
+
+        # Get A and B
+        lhs_node = node.args[0]
+        rhs_node = node.args[1]
+
+        # Switch the lhs and rhs nodes
+        if self.tranposed:
+            lhs_node, rhs_node = rhs_node, lhs_node
+
+        self.lhs_layout, self.permute_A = self.get_src_layout(lhs_node)
+        self.rhs_layout, self.permute_B = self.get_src_layout(rhs_node)
+
+        self.A = self.get_src(lhs_node)
+        self.B = self.get_src(rhs_node)
+        self.args = [self.A, self.B]
+
+        # Get problem size
+        lhs_shape = lhs_node.meta["tensor_meta"].shape
+        rhs_shape = rhs_node.meta["tensor_meta"].shape
+
+        if self.tranposed:
+            lhs_shape = [lhs_shape[i] for i in [0, 2, 1]]
+            rhs_shape = [rhs_shape[i] for i in [0, 2, 1]]
+
+        M, K = lhs_shape[-2:]
+        N = rhs_shape[-1]
+
+        self.problem_size = GemmCoord(M, N, K)
+
+        # Outputs and inputs in the original graph
+        self.outputs = epilogue_visitor.outputs
+        self.inputs = [
+            input for input in epilogue_visitor.inputs 
+            if input.target != self.node.target]
+
+        # Plan
+        plan = cutlass.op.Gemm(
+            element=lhs_node.meta["tensor_meta"].dtype,
+            layout_A=self.lhs_layout, layout_B=self.rhs_layout,
+            layout_C=cutlass.LayoutType.RowMajor,
+            element_accumulator=torch.float32
+        )
+
+        # Use streamk
+        # plan.swizzling_functor = ThreadblockSwizzleStreamK
+
+        # Get candidate tds
+        # autotuner = Autotuner(plan, self.A, self.B, self.node)
+        # self.best_tds = autotuner.best_tds
+
+        epilogue_visitor.epilogue_stages = 2
+        # Register epilogue
+        plan.epilogue_visitor = epilogue_visitor
+
+        self.plan = plan
+
+        # Get Alignment
+        if self.lhs_layout == cutlass.LayoutType.RowMajor:
+            self.align_A = self.get_alignment(K)
+        else:
+            self.align_A = self.get_alignment(M)
+        
+        if self.rhs_layout == cutlass.LayoutType.RowMajor:
+            self.align_B = self.get_alignment(N)
+        else:
+            self.align_B = self.get_alignment(K)
+        self.align_C = self.get_alignment(N)
+
+        # Get the underlying kernel
+        self.operation = self.plan.compile(
+            # tile_description=best_td,
+            alignment_A=self.align_A, alignment_B=self.align_B, 
+            alignment_C=self.align_C)
+
+        # Stream
+        self.stream = None
+    
+    def __call__(self, *args):
+        default_stream = torch.cuda.current_stream()
+
+        if self.stream is not None:
+            self.stream.wait_stream(default_stream)
+            stream = self.stream
+        else:
+            stream = default_stream
+        
+        with torch.cuda.stream(stream):
+            A = args[-2]
+            B = args[-1]
+            # breakpoint()
+            # A = torch.ops.aten.permute(A, self.permute_A)
+            # B = torch.ops.aten.permute(B, self.permute_B)
+
+
+            # Create the output nodes
+            visitor_args = {}
+            for output_node in self.outputs:
+                visitor_args[output_node.name] = torch.empty(
+                    size=output_node.meta['tensor_meta'].shape,
+                    dtype=output_node.meta['tensor_meta'].dtype,
+                    device="cuda"
+                )
+            
+            # Register the inputs
+            for idx, input in enumerate(self.inputs):
+                visitor_args[input.name] = args[idx]
+            
+            # if self.operation is None:
+            #     best_td = None
+            #     min_duration = 1e+6
+            #     C = A @ B
+            #     for td in tqdm(self.best_tds):
+            #         self.plan.tile_description = td
+            #         duration = CUDAEventProfiler(
+            #             self.plan, 100, 100, A, B, C, C, 
+            #             visitor_args=visitor_args
+            #         )()
+            #         if duration < min_duration:
+            #             best_td = td
+            #     self.operation = self.plan.compile(
+            #         tile_description=best_td,
+            #         alignment_A=self.align_A, alignment_B=self.align_B, 
+            #         alignment_C=self.align_C)
+            
+            arguments = BmmArguments2x(
+                operation=self.operation, problem_size=self.problem_size,
+                A=A, B=B, permute_A=self.permute_A, permute_B=self.permute_B,
+                output_op = self.operation.epilogue_type(visitor_args)
+            )
+
+            self.operation.run(arguments, stream=stream.cuda_stream)
+
+            if self.stream is not None:
+                # without the code below, the caching allocator might reuse
+                # the memory unexpectedly
+                # https://pytorch.org/docs/stable/generated/torch.Tensor.record_stream.html?highlight=stream#torch.Tensor.record_stream
+                for arg in args:
+                    if isinstance(arg, torch.Tensor):
+                        arg.record_stream(self.stream)
+
+        # get the results
+        return [visitor_args[output.name] for output in self.outputs]
+
+    def get_src_layout(self, node: Node):
+        if node.target == torch.ops.aten.permute:
+            indices = node.args[1]
+        else:
+            indices = [0, 1, 2]
+
+        if self.tranposed:
+            indices = [indices[i] for i in [0, 2, 1]]
+        
+        if indices in [[0, 1, 2], [1, 0, 2]]:
+            return cutlass.LayoutType.RowMajor, indices
+        elif indices in [[0, 2, 1], [2, 0, 1]]:
+            return cutlass.LayoutType.ColumnMajor, indices
+        else:
+            raise ValueError(f"Invalid permutation: {indices}")
+    
+    def get_src(self, node):
+        if node.target == torch.ops.aten.permute:
+            return node.args[0]
+        else:
+            return node
+    
+    def get_alignment(self, dim):
+        if dim % 8 == 0: return 8
+        elif dim % 4 == 0: return 4
+        elif dim % 2 == 0: return 2
+        else: return 1
+
+
 class EVTFuser(EVTFrontendBase):
     """
     The entry point of CUTLASS EVT Fuser 
@@ -298,6 +529,13 @@ class EVTFuser(EVTFrontendBase):
         subgraph: Graph = _extract_graph_with_inputs_outputs(graph_module.graph,
                                                             inputs, outputs)
         
+        # Step 2.1 Remove the clone nodes if there are
+        for node in subgraph.nodes:
+            if node.target == torch.ops.aten.clone:
+                input = node.all_input_nodes[0]
+                node.replace_all_uses_with(input)
+                subgraph.erase_node(node)
+        
         # Step 3: register the input and output nodes in the original graph & subgraph
         # 3.1 Output nodes in subgraph
         # This is used to figure out whether a store node should be inserted
@@ -330,10 +568,11 @@ class EVTFuser(EVTFrontendBase):
             self.visit(node)
         # self.visualize()
         self.pass_manager()
-        # self.visualize()
+        self.visualize()
         self.epilogue_thread_type = self.dag_ir.epilogue_thread_type
         self.reduction_names = self.dag_ir.reduction_names
         self.return_names = [output.name for output in self.outputs]
+        self.transposed = self.dag_ir.transposed
 
         #
         # Step 4: compose the fused kernel
@@ -444,6 +683,18 @@ class EVTFuser(EVTFrontendBase):
     def visit_ge(self, node: Node):
         return self._visit_compute(node, FunctionalOp.GreaterEqual)
     
+    def visit_sum(self, node: Node):
+        name = self._get_name(node)
+        op = (FunctionalOp.Plus, FunctionalOp.AtomicAdd)
+        self.add_compute_node(op=op, name=name)
+        arg_name = node.args[0].name
+        # Add the edges
+        self.add_edge(arg_name, name, weight=0)
+        if node in self.outputs_subgraph:
+            self.insert_store_node(node)
+            self.add_edge(name, node.name, weight=0)
+        return node.name
+    
     def visit_view(self, node: Node):
         name = self._get_name(node)
         op = self.layout_fns["reshape"]
@@ -456,6 +707,20 @@ class EVTFuser(EVTFrontendBase):
             self.insert_store_node(node)
             self.add_edge(name, node.name, weight=0)
         return node.name
+    
+    def visit_permute(self, node: Node):
+        name = self._get_name(node)
+        op = self.layout_fns["permute"]
+        input, indices = node.args
+        kwargs = {"indices": tuple(indices)}
+        self.add_layout_node(op, kwargs, name)
+        # Add edge
+        self.add_edge(input.name, name, weight=0)
+        if node in self.outputs_subgraph:
+            self.insert_store_node(node)
+            self.add_edge(name, node.name, weight=0)
+        return node.name
+
 
     #
     # Mainloop Op
@@ -464,6 +729,8 @@ class EVTFuser(EVTFrontendBase):
     def get_fused_node(self, node: Node):
         if node.target == torch.ops.aten.mm:
             op = FusedGEMM(node, self)
+        elif node.target == torch.ops.aten.bmm:
+            op = FusedBMM(node, self)
         else:
             raise NotImplementedError()
         return op

@@ -1029,8 +1029,8 @@ class Partitioning(PassBase):
         for idx, partition in enumerate(partitions):
             print(f"==============={idx}==================")
             print(partition)
-            if idx >= 22: break
-            if idx in [2,16,17,18,19,21]: 
+            if idx >= 26: break
+            if idx in [2,16,18,19,24]: 
                 print("skipped")
                 continue
             for par in partition:

@@ -411,19 +411,34 @@ class FusedBMM:
         with torch.cuda.stream(stream):
             A = args[-2]
             B = args[-1]
-            # breakpoint()
-            # A = torch.ops.aten.permute(A, self.permute_A)
-            # B = torch.ops.aten.permute(B, self.permute_B)
+            if self.permute_A in [[1, 2, 0], [2, 1, 0]]:
+                A = torch.ops.aten.permute(A, self.permute_A).contiguous()
+                permute_A = [0, 1, 2]
+            else:
+                permute_A = self.permute_A
+            if self.permute_B in [[1, 2, 0], [2, 1, 0]]:
+                B = torch.ops.aten.permute(B, self.permute_B).contiguous()
+                permute_B = [0, 1, 2]
+            else:
+                permute_B = self.permute_B
+
 
 
             # Create the output nodes
             visitor_args = {}
             for output_node in self.outputs:
-                visitor_args[output_node.name] = torch.empty(
-                    size=output_node.meta['tensor_meta'].shape,
-                    dtype=output_node.meta['tensor_meta'].dtype,
-                    device="cuda"
-                )
+                if output_node.target in [torch.ops.aten.sum]:
+                    visitor_args[output_node.name] = torch.zeros(
+                        size=output_node.meta['tensor_meta'].shape,
+                        dtype=output_node.meta['tensor_meta'].dtype,
+                        device="cuda"
+                    )
+                else:
+                    visitor_args[output_node.name] = torch.zeros(
+                        size=output_node.meta['tensor_meta'].shape,
+                        dtype=output_node.meta['tensor_meta'].dtype,
+                        device="cuda"
+                    )
             
             # Register the inputs
             for idx, input in enumerate(self.inputs):
@@ -448,7 +463,7 @@ class FusedBMM:
             
             arguments = BmmArguments2x(
                 operation=self.operation, problem_size=self.problem_size,
-                A=A, B=B, permute_A=self.permute_A, permute_B=self.permute_B,
+                A=A, B=B, permute_A=permute_A, permute_B=permute_B,
                 output_op = self.operation.epilogue_type(visitor_args)
             )
 
@@ -479,7 +494,8 @@ class FusedBMM:
         elif indices in [[0, 2, 1], [2, 0, 1]]:
             return cutlass.LayoutType.ColumnMajor, indices
         else:
-            raise ValueError(f"Invalid permutation: {indices}")
+            # Force RowMajor and set them contiguous
+            return cutlass.LayoutType.RowMajor, indices
     
     def get_src(self, node):
         if node.target == torch.ops.aten.permute:
@@ -707,6 +723,21 @@ class EVTFuser(EVTFrontendBase):
             self.insert_store_node(node)
             self.add_edge(name, node.name, weight=0)
         return node.name
+
+    def visit_unsqueeze(self, node: Node):
+        name = self._get_name(node)
+        op = self.layout_fns["reshape"]
+        input = node.args[0]
+        new_shape = node.meta["tensor_meta"].shape
+        kwargs = {"new_shape": new_shape}
+        self.add_layout_node(op, kwargs, name)
+        # Add edge
+        self.add_edge(input.name, name, weight=0)
+        if node in self.outputs_subgraph:
+            self.insert_store_node(node)
+            self.add_edge(name, node.name, weight=0)
+        return node.name
+
     
     def visit_permute(self, node: Node):
         name = self._get_name(node)

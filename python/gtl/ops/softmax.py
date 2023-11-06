@@ -86,14 +86,14 @@ class SoftmaxRT(ReduceApplyRT):
 
 class SoftmaxOperation(ReduceApplyOperation):
     def __init__(
-        self, input: TensorDescription,
-        rows_per_cta, warp_count: 'list[int]',
+        self, input: TensorDescription, num_columns,
+        rows_per_cta, warp_count: int,
         epilogue_visitor, element_accumulator=DataType.f32) -> None:
 
         self.element = input.element
         self.alignment = input.alignment
 
-        super().__init__(rows_per_cta, warp_count, element_accumulator, epilogue_visitor)
+        super().__init__(rows_per_cta, num_columns, warp_count, self.alignment, element_accumulator, epilogue_visitor)
 
         self.rt_module = SoftmaxRT(self)
         self.argument_type = self.rt_module.argument_type
@@ -109,6 +109,7 @@ class EmitSoftmaxUniversalInstance:
         self.includes = [
             # "softmax/fake_device.h",
             "cutlass/cutlass.h",
+            "cutlass/matrix_shape.h",
             "cutlass/numeric_types.h",
             "cutlass/arch/arch.h",
             "cutlass/arch/mma.h",
@@ -125,15 +126,14 @@ class EmitSoftmaxUniversalInstance:
         self.cutlass_template_visitor = """
 
 using OutputTileThreadMap = cutlass::reduce_apply::threadblock::OutputTileThreadLayout1D<
-    ${num_threads}, ${element}, ${alignment}, ${rows_per_cta}>;
+    ${num_threads}, ${element}, ${alignment}, cutlass::MatrixShape<${cta_rows}, ${cta_columns}>>;
         
 using ${operation_name}_reduction = 
     cutlass::softmax::threadblock::SoftmaxReduction<
         ${element},
         ${alignment},
         ${element_accumulator},
-        OutputTileThreadMap,
-        ${num_threads}
+        OutputTileThreadMap
     >;
 
 ${callback_decl}
@@ -142,7 +142,8 @@ ${callback_decl}
 using ${operation_name}_base = 
     cutlass::reduce_apply::kernel::ReduceApplyWithCallbacks<
         ${operation_name}_reduction,
-        ${callback_name}
+        ${callback_name},
+        OutputTileThreadMap
     >;
 
 // Define named type
@@ -155,7 +156,8 @@ struct ${operation_name}${operation_suffix} :
             'num_threads': str(operation.num_threads),
             'element': DataTypeTag[operation.element],
             'alignment': str(operation.alignment),
-            'rows_per_cta': str(operation.rows_per_cta),
+            'cta_rows': str(operation.threadblock_shape.row),
+            'cta_columns': str(operation.threadblock_shape.column),
             'element_accumulator': DataTypeTag[operation.element_accumulator],
             'operation_name': operation.procedural_name(),
             'callback_name': callback_name,

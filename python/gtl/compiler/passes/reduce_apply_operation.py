@@ -152,7 +152,6 @@ class ReduceApplyOperation:
     
     def procedural_name(self):
         raise NotImplementedError("procedural name")
-        # return "softmax_kernel"
     
     def run(self, arguments: ReduceApplyArguments, stream=cuda.CUstream(0)) -> cuda.CUresult:
         """

@@ -1,6 +1,6 @@
 import ctypes
 import torch
-from cutlass.backend import TorchFrontend, ExecutableOperation, LaunchConfiguration
+from cutlass.backend import TorchFrontend, ExecutableOperation, LaunchConfiguration, MatrixCoord
 from cutlass.backend.evt import EpilogueFunctorVisitor
 from cuda import cuda
 
@@ -128,7 +128,7 @@ class ReduceApplyOperation:
     CUTLASS Reduce Apply Operation
     """
 
-    def __init__(self, rows_per_cta, warp_count, 
+    def __init__(self, rows_per_cta, num_columns, warp_count, alignment, 
                  element_accumulator, epilogue_visitor) -> None:
 
         self.arch = 80
@@ -136,6 +136,8 @@ class ReduceApplyOperation:
         self.epilogue_functor = EpilogueFunctorVisitor(self.arch, epilogue_visitor)
         self.num_threads = warp_count * 32
         self.rows_per_cta = rows_per_cta
+        self.column_per_cta = int((num_columns + self.num_threads * alignment - 1)/(self.num_threads * alignment)) * (self.num_threads * alignment)
+        self.threadblock_shape = MatrixCoord(rows_per_cta, self.column_per_cta)
         self.element_accumulator = element_accumulator
 
     

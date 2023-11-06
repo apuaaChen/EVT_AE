@@ -78,7 +78,7 @@ struct VisitorCompute : VisitorImpl2x<> {
   template <class ProblemShape>
   CUTLASS_DEVICE auto
   get_callbacks(
-    MatrixCoord threadblock_tile_offset,
+    gemm::GemmCoord threadblock_tile_offset,
     int thread_idx,
     ProblemShape problem_shape
   ) {

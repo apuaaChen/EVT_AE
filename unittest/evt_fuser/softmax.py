@@ -94,7 +94,34 @@ class EVTFuserSoftmax(UnitTestBase):
         input = torch.randn((16384, 512), dtype=torch.float16, device="cuda")
 
         self.util_test_evt_fuser(Softmax, [input,])
+    
+    def test_softmax_column_reduce(self):
+        # Model
+        class Softmax(torch.nn.Module):
+            def forward(self, input):
+                _softmax = torch.ops.aten._softmax(input, -1, False)
+                out = torch.ops.aten.mul(_softmax, 2.)
+                sum = torch.ops.aten.sum(out, [1], True)
+                return out, sum
+        
+        # Inputs
+        input = torch.randn((16384, 512), dtype=torch.float16, device="cuda")
 
+        self.util_test_evt_fuser(Softmax, [input,])
+    
+    def test_softmax_column_reduce(self):
+        # Model
+        class Softmax(torch.nn.Module):
+            def forward(self, input):
+                _softmax = torch.ops.aten._softmax(input, -1, False)
+                out = torch.ops.aten.mul(_softmax, 2.)
+                sum = torch.ops.aten.sum(out, [0], True)
+                return out, sum
+
+        # Inputs
+        input = torch.randn((16, 512), dtype=torch.float16, device="cuda")
+
+        self.util_test_evt_fuser(Softmax, [input,])
 
     
 if __name__ == '__main__':

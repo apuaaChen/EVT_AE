@@ -32,14 +32,14 @@ namespace threadblock {
 template<  
   class Element,                   // Data type of input data
   int Alignment,                   // Alignment of input data
-  class ElementAccumulator_,        // Data type to perform reduction
-  class ThreadMap,                 // Thread map
-  int kNumThreads                  // Number of warps per threadblock
+  class ElementAccumulator_,       // Data type to perform reduction
+  class ThreadMap                  // Thread map
 > 
 struct SoftmaxReduction : 
   reduce_apply::threadblock::ReductionBase<
-    ElementAccumulator_, kNumThreads> {
-    
+    ElementAccumulator_, ThreadMap::kNumThreads> {
+  
+  static const int kNumThreads = ThreadMap::kNumThreads;
   using ElementAccumulator = ElementAccumulator_;
 
   using Base = reduce_apply::threadblock::ReductionBase<
@@ -107,23 +107,21 @@ struct SoftmaxReduction :
     ):
       tC_gInput(cute::forward<GTensor>(tC_gInput)),
       tC_cInput(cute::forward<CTensor>(tC_cInput)),
-      iterations_per_row(cute::get<1>(tC_gInput.shape())),
       problem_shape(problem_shape),
       null_default(null_default)
       { }
     
     GTensor tC_gInput;
     CTensor tC_cInput;
-    int iterations_per_row;
     ProblemShape problem_shape;
     Element null_default;
 
     CUTLASS_DEVICE
     Array<Element, VecLength> get(int row_idx, int column_idx) {
-      bool guard = elem_less(tC_cInput(row_idx, column_idx), problem_shape);
+      bool guard = elem_less(tC_cInput(column_idx, row_idx), problem_shape);
       Array<Element, VecLength> value;
       VecType* value_ptr = reinterpret_cast<VecType*>(&value);
-      cutlass::arch::global_load<VecType, sizeof(VecType)>(*value_ptr, (void*)&tC_gInput(row_idx, column_idx), guard);
+      cutlass::arch::global_load<VecType, sizeof(VecType)>(*value_ptr, (void*)&tC_gInput(column_idx, row_idx), guard);
       if (!guard) value.fill(null_default);
       return value;
     }
@@ -132,7 +130,7 @@ struct SoftmaxReduction :
   template <class ProblemShape>
   CUTLASS_DEVICE auto
   get_input_cache(
-    MatrixCoord threadblock_tile_offset,
+    gemm::GemmCoord threadblock_tile_offset,
     int thread_idx,
     ProblemShape problem_shape
   ) {
@@ -142,14 +140,14 @@ struct SoftmaxReduction :
       params_ptr->dInput
     );
 
-    // ITERATION_ROW, ITERATION_COLUMN
+    // ITERATION_COLUMN, ITERATION_ROW
     Tensor tC_gInput = recast<VecType>(
-      ThreadMap::partition(mInput, thread_idx, threadblock_tile_offset))(_,_0{},_);
+      ThreadMap::partition(mInput, thread_idx, threadblock_tile_offset))(_0{},_,_);
 
     // Generate the pred tensor
     Tensor cInput = make_identity_tensor(mInput.shape());
     Tensor tC_cInput = ThreadMap::partition(
-      cInput, thread_idx, threadblock_tile_offset)(_,_0{},_);
+      cInput, thread_idx, threadblock_tile_offset)(_0{},_,_);
 
     return InputCache<
       decltype(tC_gInput), decltype(tC_cInput), 
@@ -173,9 +171,9 @@ struct SoftmaxReduction :
     ConvertInput convert_input{};
 
     Array<ElementAccumulator, VecLength> max_accum;
-    max_accum.fill(-1e+6);
+    max_accum.fill(params_ptr->null_default);
 
-    for (int column_idx=0; column_idx < inputs.iterations_per_row; ++column_idx) {
+    for (int column_idx=0; column_idx < ThreadMap::kIterationColumn; ++column_idx) {
       Array<Element, VecLength> value = inputs.get(row_idx, column_idx);
       max_accum = max(max_accum, convert_input(value));
     }
@@ -185,7 +183,7 @@ struct SoftmaxReduction :
     Array<ElementAccumulator, VecLength> sum_exp_accum;
     sum_exp_accum.clear();
 
-    for (int column_idx=0; column_idx < inputs.iterations_per_row; ++column_idx) {
+    for (int column_idx=0; column_idx < ThreadMap::kIterationColumn; ++column_idx) {
       Array<Element, VecLength> value = inputs.get(row_idx, column_idx);
       sum_exp_accum = exp(convert_input(value) - reduction_result.row_max) + sum_exp_accum;
     }
@@ -203,6 +201,18 @@ struct SoftmaxReduction :
     return exp(compute_frg - reduction_result.row_max) / reduction_result.row_sum;
   }
 };
+
+// template<
+//   class Element,                    // Data type of input data
+//   int Alignment,                    // Alignment of input data
+//   class ElementAccumulator_,        // Data type to perform reduction
+//   class ThreadMap                   // Thread map
+// > 
+// struct SoftmaxReduction<Element, Alignment, ElementAccumulator_,ThreadMap> :
+//   reduce_apply::threadblock::ReductionBase<
+//     ElementAccumulator_, kNumThreads> {
+
+// };
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 

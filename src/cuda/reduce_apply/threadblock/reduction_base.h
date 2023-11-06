@@ -141,36 +141,53 @@ using cute::tuple;
 using X = Underscore;
 
 template <
-  int kNumThreads,
+  int kNumThreads_,
   typename Element, 
   int Alignment,
-  int kRowsPerBlock = 1
+  typename ThreadblockShape  // The tile size handled by each threadblock
 >
 struct OutputTileThreadLayout1D {
+  static const int kNumThreads = kNumThreads_;
+  static const int kRowsPerBlock = ThreadblockShape::kRow;
+  static const int kColumnsPerBlock = ThreadblockShape::kColumn;
 
   static const int kElementsPerAccess = Alignment;
 
   // The shape of CTA Tile
   using CtaShapeMNL = cute::Shape<
     Int<kRowsPerBlock>, 
-    Int<kNumThreads * Alignment>,
+    Int<kColumnsPerBlock>,
     _1
+  >;
+
+  static const int kIterationColumn = kColumnsPerBlock / (kElementsPerAccess * kNumThreads);
+  static_assert(kIterationColumn >= 1);
+
+  // The shape of CTA Tile
+  using ThreadMapShape = cute::Shape<
+    // Column
+    Int<kElementsPerAccess>,
+    Int<kNumThreads>,
+    Int<kIterationColumn>,
+    // Row
+    Int<kRowsPerBlock>
   >;
 
   template <class TensorInput>
   CUTLASS_DEVICE
-  static auto partition(TensorInput &&xT, int thread_idx, MatrixCoord threadblock_tile_offset) {
-    // (kRowsPerBlock, kNumThreads*Alignment, ITERATION_COLUMN)
+  static auto partition(TensorInput &&xT, int thread_idx, gemm::GemmCoord threadblock_tile_offset) {
+    // (kRowsPerBlock, kColumnsPerBlock)
     Tensor bCxT = local_tile(
       xT, CtaShapeMNL{}, make_coord(_,_,_), Step<_1,_1,X>{}
-    )(_,_,threadblock_tile_offset.row(), _, threadblock_tile_offset.column());
+    )(_,_,threadblock_tile_offset.m(),threadblock_tile_offset.n(), threadblock_tile_offset.k());
     
-    // 
-    Tensor tCxT = local_tile(
-      bCxT, Shape<Int<kRowsPerBlock>, Int<Alignment>>{}, make_coord(_0{},_), Step<_1,_1>{}
-    )(_,_,thread_idx,_);
+    // Transform to column-major
+    // VECTOR, THREADS, ITERATION_COLUMN, ITERATION_ROW
+    Tensor bCxT_nm = make_tensor(
+      std::forward<decltype(bCxT)>(bCxT).data(), make_layout(get<1>(bCxT.layout()), get<0>(bCxT.layout()))
+    ).compose(make_layout(ThreadMapShape{}));
 
-    return tCxT;
+    return bCxT_nm(_,thread_idx,_,_);
   }
 };
 

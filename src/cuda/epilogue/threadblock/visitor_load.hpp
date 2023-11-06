@@ -58,7 +58,7 @@ struct VisitorAccFetch : VisitorImpl2x<> {
   template <class ProblemShape>
   CUTLASS_DEVICE auto
   get_callbacks(
-    MatrixCoord threadblock_tile_offset,
+    gemm::GemmCoord threadblock_tile_offset,
     int thread_idx,
     ProblemShape problem_shape
   ) {
@@ -141,7 +141,7 @@ struct VisitorRand {
   template <class ProblemShape>
   CUTLASS_DEVICE auto
   get_callbacks(
-    MatrixCoord threadblock_tile_offset,
+    gemm::GemmCoord threadblock_tile_offset,
     int thread_idx,
     ProblemShape problem_shape
   ) {
@@ -221,7 +221,7 @@ struct VisitorScalarBroadcast {
   template <class ProblemShape>
   CUTLASS_DEVICE auto
   get_callbacks(
-    MatrixCoord threadblock_tile_offset,
+    gemm::GemmCoord threadblock_tile_offset,
     int thread_idx,
     ProblemShape problem_shape
   ) {
@@ -229,7 +229,7 @@ struct VisitorScalarBroadcast {
     if constexpr (
       cute::is_same_v<StrideMNL, Stride<_0,_0,_1>> ||
       cute::is_same_v<StrideMNL, Stride<_0,_0,int>>) {
-      update_scalar(threadblock_tile_offset.column());
+      update_scalar(threadblock_tile_offset.k());
     }
     return Callbacks(scalar);
   }
@@ -336,11 +336,11 @@ struct VisitorAuxLoad{
     CUTLASS_DEVICE auto // returns an Array
     visit(int row_idx, int column_idx, 
           Array<ElementAccumulator, FragmentSize> const& frg_acc) {
-      bool guard = elem_less(tC_cAux(row_idx, column_idx), problem_shape);
+      bool guard = elem_less(tC_cAux(column_idx, row_idx), problem_shape);
       Array<Element, VecLength> value;
       VecType* value_ptr = reinterpret_cast<VecType*>(&value);
       cutlass::arch::global_load<VecType, sizeof(VecType)>(
-        *value_ptr, (void const*)&tC_gAux(row_idx, column_idx), guard);
+        *value_ptr, (void const*)&tC_gAux(column_idx, row_idx), guard);
       if (!guard) value.fill(params_ptr->null_default);
       return value;
     }
@@ -349,7 +349,7 @@ struct VisitorAuxLoad{
   template <class ProblemShape>
   CUTLASS_DEVICE auto
   get_callbacks(
-    MatrixCoord threadblock_tile_offset,
+    gemm::GemmCoord threadblock_tile_offset,
     int thread_idx,
     ProblemShape problem_shape
   ) { 
@@ -359,12 +359,12 @@ struct VisitorAuxLoad{
       params_ptr->dAux);   // (M,N,L)
     // VECTOR, ITERATION_ROW, ITERATION_COLUMN
     Tensor tC_gAux = recast<VecType>(
-      ThreadMap::partition(mAux, thread_idx, threadblock_tile_offset))(_,_0{},_);
+      ThreadMap::partition(mAux, thread_idx, threadblock_tile_offset))(_0{},_,_);
 
     // Generate the pred tensor
     Tensor cAux = make_identity_tensor(mAux.shape());
     Tensor tC_cAux = ThreadMap::partition(
-      cAux, thread_idx, threadblock_tile_offset)(_,_0{},_);
+      cAux, thread_idx, threadblock_tile_offset)(_0{},_,_);
 
     return Callbacks<
       decltype(tC_gAux), decltype(tC_cAux), ProblemShape>(
@@ -458,7 +458,7 @@ struct VisitorRowBroadcast {
   template <class ProblemShape>
   CUTLASS_DEVICE auto
   get_callbacks(
-    MatrixCoord threadblock_tile_offset,
+    gemm::GemmCoord threadblock_tile_offset,
     int thread_idx,
     ProblemShape problem_shape
   ) {
@@ -468,11 +468,11 @@ struct VisitorRowBroadcast {
       params_ptr->dRow);   // (M,N,L)
     // ITERATION_ROW, VECTOR, ITERATION_COLUMN
     Tensor tC_gRow = recast<VecType>(
-      ThreadMap::partition(mRow, thread_idx, threadblock_tile_offset))(_0{},_0{},_);
+      ThreadMap::partition(mRow, thread_idx, threadblock_tile_offset))(_0{},_,_0{});
 
     // Generate the pred tensor
     Tensor cRow = make_identity_tensor(mRow.shape());
-    Tensor tC_cRow = ThreadMap::partition(cRow, thread_idx, threadblock_tile_offset)(_0{},_0{},_);
+    Tensor tC_cRow = ThreadMap::partition(cRow, thread_idx, threadblock_tile_offset)(_0{},_,_0{});
     
     return Callbacks<
       decltype(tC_gRow), decltype(tC_cRow), ProblemShape>(
@@ -572,7 +572,7 @@ struct VisitorColBroadcast {
   template <class ProblemShape>
   CUTLASS_DEVICE auto
   get_callbacks(
-    MatrixCoord threadblock_tile_offset,
+    gemm::GemmCoord threadblock_tile_offset,
     int thread_idx,
     ProblemShape problem_shape
   ) {
@@ -583,13 +583,13 @@ struct VisitorColBroadcast {
 
     // ITERATION_ROW, VECTOR, ITERATION_COLUMN
     Tensor tC_gCol = ThreadMap::partition(
-      mCol, thread_idx, threadblock_tile_offset)(_,_0{},_0{});
+      mCol, thread_idx, threadblock_tile_offset)(_0{},_0{},_);
     Tensor tC_rCol = make_tensor_like(tC_gCol);
 
     // Generate the pred tensor
     Tensor cCol = make_identity_tensor(mCol.shape());
     Tensor tC_cCol = ThreadMap::partition(
-      cCol, thread_idx, threadblock_tile_offset)(_,_0{},_0{});
+      cCol, thread_idx, threadblock_tile_offset)(_0{},_0{},_);
 
     return Callbacks<
       decltype(tC_gCol), decltype(tC_rCol),

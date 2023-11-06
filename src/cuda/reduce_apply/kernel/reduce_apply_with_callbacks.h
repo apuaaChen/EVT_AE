@@ -27,8 +27,7 @@ namespace kernel {
 template<
   class RedCallbacks,
   class EpiCallbacks,
-  int kRowsPerBlock = 1,    // Number of rows handled by each threadblock
-  bool CacheRow = false     // If true, the results will be cached in registers
+  class ThreadMap
 >
 struct ReduceApplyWithCallbacks {
 
@@ -76,8 +75,8 @@ struct ReduceApplyWithCallbacks {
     int thread_idx = threadIdx.x;
     // It is assumed that each row has a single threadblock
     // So that the blockIdx.x is assigned to rows
-    MatrixCoord threadblock_tile_offset{
-      int(blockIdx.x), int(blockIdx.z)
+    gemm::GemmCoord threadblock_tile_offset{
+      int(blockIdx.x), int(blockIdx.y), int(blockIdx.z)
     };
 
     // Instantiate callbacks
@@ -97,13 +96,13 @@ struct ReduceApplyWithCallbacks {
     epi_callbacks.begin_epilogue();
 
     CUTLASS_PRAGMA_UNROLL
-    for (int row_idx = 0; row_idx < kRowsPerBlock; ++row_idx) {
+    for (int row_idx = 0; row_idx < ThreadMap::kRowsPerBlock; ++row_idx) {
       ReductionResult reduction_result;
       reduction_callbacks.reduce(reduction_result, inputs, row_idx);
 
       epi_callbacks.begin_row(row_idx);
       CUTLASS_PRAGMA_UNROLL
-      for (int column_idx = 0; column_idx < inputs.iterations_per_row; ++column_idx) {
+      for (int column_idx = 0; column_idx < ThreadMap::kIterationColumn; ++column_idx) {
         Array<ElementAccumulator, kElementsPerAccess> accum = reduction_callbacks.apply(
           reduction_result, inputs, row_idx, column_idx);
         epi_callbacks.visit(row_idx, column_idx, accum);

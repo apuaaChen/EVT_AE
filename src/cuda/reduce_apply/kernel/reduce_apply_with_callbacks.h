@@ -98,9 +98,9 @@ struct ReduceApplyWithCallbacks {
     CUTLASS_PRAGMA_UNROLL
     for (int row_idx = 0; row_idx < ThreadMap::kRowsPerBlock; ++row_idx) {
       ReductionResult reduction_result;
-      reduction_callbacks.reduce(reduction_result, inputs, row_idx);
-
+      inputs.begin_row(row_idx);
       epi_callbacks.begin_row(row_idx);
+      reduction_callbacks.reduce(reduction_result, inputs, row_idx);
       CUTLASS_PRAGMA_UNROLL
       for (int column_idx = 0; column_idx < ThreadMap::kIterationColumn; ++column_idx) {
         Array<ElementAccumulator, kElementsPerAccess> accum = reduction_callbacks.apply(

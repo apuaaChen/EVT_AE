@@ -33,7 +33,8 @@ template<
   class Element,                   // Data type of input data
   int Alignment,                   // Alignment of input data
   class ElementAccumulator_,       // Data type to perform reduction
-  class ThreadMap                  // Thread map
+  class ThreadMap,                 // Thread map
+  bool CacheInput = true           // Whether cache the inputs in registers
 > 
 struct SoftmaxReduction : 
   reduce_apply::threadblock::ReductionBase<
@@ -117,6 +118,9 @@ struct SoftmaxReduction :
     Element null_default;
 
     CUTLASS_DEVICE
+    void begin_row(int row_idx) {}
+
+    CUTLASS_DEVICE
     Array<Element, VecLength> get(int row_idx, int column_idx) {
       bool guard = elem_less(tC_cInput(column_idx, row_idx), problem_shape);
       Array<Element, VecLength> value;
@@ -124,6 +128,37 @@ struct SoftmaxReduction :
       cutlass::arch::global_load<VecType, sizeof(VecType)>(*value_ptr, (void*)&tC_gInput(column_idx, row_idx), guard);
       if (!guard) value.fill(null_default);
       return value;
+    }
+  };
+
+  template <class GTensor, class RTensor, class CTensor, class ProblemShape>
+  struct InputCacheReg: InputCache<GTensor, CTensor, ProblemShape> {
+
+    using Base = InputCache<GTensor, CTensor, ProblemShape>;
+    CUTLASS_DEVICE
+    InputCacheReg(
+      GTensor&& tC_gInput,
+      RTensor&& tC_rInput,
+      CTensor&& tC_cInput,
+      ProblemShape problem_shape,
+      Element null_default
+    ):
+      Base(cute::move(tC_gInput), cute::move(tC_cInput), problem_shape, null_default),
+      tC_rInput(cute::forward<RTensor>(tC_rInput)) { }
+
+    RTensor tC_rInput;
+
+    CUTLASS_DEVICE
+    void begin_row(int row_idx) {
+      CUTLASS_PRAGMA_UNROLL
+      for (int column_idx=0; column_idx < ThreadMap::kIterationColumn; ++column_idx) {
+        tC_rInput(column_idx) = Base::get(row_idx, column_idx);
+      }
+    }
+
+    CUTLASS_DEVICE
+    Array<Element, VecLength> get(int row_idx, int column_idx) {
+      return tC_rInput(column_idx);
     }
   };
 
@@ -149,14 +184,30 @@ struct SoftmaxReduction :
     Tensor tC_cInput = ThreadMap::partition(
       cInput, thread_idx, threadblock_tile_offset)(_0{},_,_);
 
-    return InputCache<
-      decltype(tC_gInput), decltype(tC_cInput), 
-      decltype(problem_shape)>(
-      cute::move(tC_gInput),
-      cute::move(tC_cInput),
-      problem_shape,
-      params_ptr->null_default
-    );
+    if constexpr (!CacheInput) {
+      return InputCache<
+        decltype(tC_gInput), decltype(tC_cInput), 
+        decltype(problem_shape)>(
+        cute::move(tC_gInput),
+        cute::move(tC_cInput),
+        problem_shape,
+        params_ptr->null_default
+      );
+    } else {
+      Tensor tC_rInput = recast<Array<Element, Alignment>>(
+        make_tensor_like(tC_gInput(_,_0{}))
+      );
+
+      return InputCacheReg<
+        decltype(tC_gInput), decltype(tC_rInput),
+        decltype(tC_cInput), decltype(problem_shape)>(
+        cute::move(tC_gInput),
+        cute::move(tC_rInput),
+        cute::move(tC_cInput),
+        problem_shape,
+        params_ptr->null_default
+      );
+    }
   }
 
   //

@@ -88,10 +88,11 @@ class SoftmaxOperation(ReduceApplyOperation):
     def __init__(
         self, input: TensorDescription, num_columns,
         rows_per_cta, warp_count: int,
-        epilogue_visitor, element_accumulator=DataType.f32) -> None:
+        epilogue_visitor, element_accumulator=DataType.f32, cache_input=True) -> None:
 
         self.element = input.element
         self.alignment = input.alignment
+        self.cache_input = cache_input
 
         super().__init__(rows_per_cta, num_columns, warp_count, self.alignment, element_accumulator, epilogue_visitor)
 
@@ -133,7 +134,8 @@ using ${operation_name}_reduction =
         ${element},
         ${alignment},
         ${element_accumulator},
-        OutputTileThreadMap
+        OutputTileThreadMap,
+        ${cache_input}
     >;
 
 ${callback_decl}
@@ -152,6 +154,7 @@ struct ${operation_name}${operation_suffix} :
 """
     def emit(self, operation):
         callback_name, callback_decl = operation.epilogue_functor.emit(operation)
+        cache_input = 'true' if operation.cache_input else 'false'
         values = {
             'num_threads': str(operation.num_threads),
             'element': DataTypeTag[operation.element],
@@ -162,7 +165,8 @@ struct ${operation_name}${operation_suffix} :
             'operation_name': operation.procedural_name(),
             'callback_name': callback_name,
             'callback_decl': callback_decl,
-            'operation_suffix': self.operation_suffix
+            'operation_suffix': self.operation_suffix,
+            'cache_input': cache_input
         }
         
         code = SubstituteTemplate(self.cutlass_template_visitor, values)

@@ -1,11 +1,24 @@
+/********************************************************************************
+* Copyright [yyyy] [name of copyright owner]
+*
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+*     http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License.
+********************************************************************************/
 #pragma once
-#include "softmax/threadblock/row_tile_iterator.h"
-#include "softmax/threadblock/reduction_base.h"
-#include <cub/block/block_reduce.cuh>
-#include <cub/warp/warp_reduce.cuh>
+#include "reduce_apply/threadblock/reduction_base.h"
+#include "cutlass/arch/memory.h"
 
-
-
+using namespace cute;
+using cute::tuple;
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -15,213 +28,180 @@ namespace threadblock {
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
-
-template<
-    typename ThreadblockShape_,
-    typename WarpCount_,
-    typename ElementInput_,
-    int AlignmentInput_,
-    typename ElementAccumulator_>
-struct SoftmaxBlockReduction : 
-    cutlass::reduce_apply::threadblock::BlockReductionBase <
-        ThreadblockShape_, WarpCount_, ElementInput_,
-        AlignmentInput_, ElementAccumulator_> {
+// Reduction of softmax
+template<  
+  class Element,                   // Data type of input data
+  int Alignment,                   // Alignment of input data
+  class ElementAccumulator_,        // Data type to perform reduction
+  class ThreadMap,                 // Thread map
+  int kNumThreads                  // Number of warps per threadblock
+> 
+struct SoftmaxReduction : 
+  reduce_apply::threadblock::ReductionBase<
+    ElementAccumulator_, kNumThreads> {
     
-    using Base = cutlass::reduce_apply::threadblock::BlockReductionBase <
-        ThreadblockShape_,
-        WarpCount_,
-        ElementInput_,
-        AlignmentInput_,
-        ElementAccumulator_>;
+  using ElementAccumulator = ElementAccumulator_;
 
-    //
-    // Structures
-    //
+  using Base = reduce_apply::threadblock::ReductionBase<
+    ElementAccumulator, kNumThreads>;
 
-    struct Arguments {
-        typename Base::ElementInput* input;
-        MatrixCoord problem_size;
-    };
+  using StrideMNL = cute::Stride<int64_t, _1, int64_t>;
 
-    struct Params {
-        typename Base::ElementInput* input;
-        MatrixCoord problem_size;
+  // The reduction result produced by the current softmax
+  struct ReductionResult{
+    ElementAccumulator row_max;
+    ElementAccumulator row_sum;
+  };
 
-        CUTLASS_HOST_DEVICE
-        Params(Arguments const &args):
-            input(args.input),
-            problem_size(args.problem_size)
-        { }
-    };
+  static const int kElementsPerAccess = Alignment;
 
-    struct ReductionResult {
-        typename Base::ElementAccumulator row_max;
-        typename Base::ElementAccumulator row_sum;
-    };
+  struct Arguments {
+    Element const* ptr_input = nullptr;
+    StrideMNL dInput = {};
+  };
 
-    struct InputCache {};
+  struct Params {
+    Element const* ptr_input = nullptr;
+    StrideMNL dInput = {};
+    Element null_default = std::numeric_limits<Element>::lowest();
+  };
 
-    union SharedStorage {
-        typename Base::SharedStorage shared_storage;
-    };
+  template <class ProblemShape>
+  static constexpr Params
+  to_underlying_arguments(ProblemShape const& problem_shape, Arguments const& args) {
+    return {args.ptr_input, args.dInput};
+  }
 
-private:
+  using SharedStorage = typename Base::SharedStorage;
 
-    typename Base::InputIterator max_iterator_;
-    typename Base::InputIterator sum_exp_iterator_;
+  //
+  // Constructor and data members
+  //
 
-public:
-    /// Constructor
+  CUTLASS_HOST_DEVICE
+  SoftmaxReduction() { }
+
+  CUTLASS_HOST_DEVICE
+  SoftmaxReduction(Params const& params, SharedStorage& shared_storage, int thread_idx)
+    : params_ptr(&params),
+    Base(thread_idx, shared_storage) { }
+  
+  Params const* params_ptr;
+
+  //
+  // Input cache
+  //
+
+  static int constexpr vec_bits = ThreadMap::kElementsPerAccess * sizeof_bits<Element>::value;
+  using VecType = uint_bit_t<cute::min(128, vec_bits)>;
+  static int constexpr VecLength = sizeof(VecType) / sizeof(Element);
+
+  template <class GTensor, class CTensor, class ProblemShape>
+  struct InputCache {
     CUTLASS_DEVICE
-    SoftmaxBlockReduction(
-        Params const & params,
-        SharedStorage &shared_storage,
-        int thread_idx,
-        MatrixCoord threadblock_offset = MatrixCoord()
+    InputCache(
+      GTensor&& tC_gInput,
+      CTensor&& tC_cInput,
+      ProblemShape problem_shape,
+      Element null_default
     ):
-        max_iterator_(
-            params.input, params.problem_size, thread_idx, threadblock_offset
-        ),
-        sum_exp_iterator_(
-            params.input, params.problem_size, thread_idx, threadblock_offset
-        ),
-        Base(thread_idx, shared_storage.shared_storage)
-        { }
-
-
-    /// Execute one softmax
-    CUTLASS_DEVICE
-    void operator()(ReductionResult &reduction_result) {
-
-        /// Get the max of each row
-        typename Base::AccumulatorFragment max_accumulator;
-        max_accumulator.fill(-1e+6);
-
-        for (int i = 0; i < Base::InputIterator::Iterations::kColumn; i ++) {
-            typename Base::InputFragment tmp_input = max_iterator_.load();
-            max_accumulator = max(input2acc(tmp_input), max_accumulator);
-        }
-
-        this->max(max_accumulator, reduction_result.row_max);
-
-        typename Base::AccumulatorFragment sum_exp_accumulator;
-        sum_exp_accumulator.clear();
-
-        for (int i = 0; i < Base::InputIterator::Iterations::kColumn; i ++) {
-            typename Base::InputFragment tmp_input = sum_exp_iterator_.load();
-            sum_exp_accumulator = exp(input2acc(tmp_input) - reduction_result.row_max) + sum_exp_accumulator;
-        }
-
-        this->sum(sum_exp_accumulator, reduction_result.row_sum);
-    }
-};
-
-
-template<
-    typename ThreadblockShape_,
-    typename WarpCount_,
-    typename ElementInput_,
-    int AlignmentInput_,
-    typename ElementAccumulator_>
-struct SoftmaxWarpReduction :
-    cutlass::reduce_apply::threadblock::WarpReductionBase <
-        ThreadblockShape_, WarpCount_, ElementInput_,
-        AlignmentInput_, ElementAccumulator_> {
+      tC_gInput(cute::forward<GTensor>(tC_gInput)),
+      tC_cInput(cute::forward<CTensor>(tC_cInput)),
+      iterations_per_row(cute::get<1>(tC_gInput.shape())),
+      problem_shape(problem_shape),
+      null_default(null_default)
+      { }
     
-    using Base = cutlass::reduce_apply::threadblock::WarpReductionBase <
-        ThreadblockShape_,
-        WarpCount_,
-        ElementInput_,
-        AlignmentInput_,
-        ElementAccumulator_>;
+    GTensor tC_gInput;
+    CTensor tC_cInput;
+    int iterations_per_row;
+    ProblemShape problem_shape;
+    Element null_default;
 
-    //
-    // Structures
-    //
-
-    struct Arguments {
-        typename Base::ElementInput* input;
-        MatrixCoord problem_size;
-    };
-
-    struct Params {
-        typename Base::ElementInput* input;
-        MatrixCoord problem_size;
-
-        CUTLASS_HOST_DEVICE
-        Params(Arguments const &args):
-            input(args.input),
-            problem_size(args.problem_size)
-        { }
-
-    };
-
-    struct InputCache {
-        static const int kInputBufferSize = 
-            Base::InputIterator::Iterations::kColumn * Base::kElementsPerAccess;
-        Array<typename Base::ElementAccumulator, kInputBufferSize> input_buffer;
-    };
-
-    struct ReductionResult {
-        typename Base::ElementAccumulator row_max;
-        typename Base::ElementAccumulator row_sum;
-    };
-
-    union SharedStorage {
-        typename Base::SharedStorage shared_storage;
-    };    
-
-private:
-
-    typename Base::InputIterator input_iterator_;
-
-public:
-    /// Constructor
     CUTLASS_DEVICE
-    SoftmaxWarpReduction(
-        Params const & params,
-        SharedStorage &shared_storage,
-        int thread_idx,
-        MatrixCoord threadblock_offset = MatrixCoord()
-    ):
-        input_iterator_(
-            params.input, params.problem_size, thread_idx, threadblock_offset
-        ),
-        Base(thread_idx, shared_storage.shared_storage) { }
-    
-    /// Execute one softmax
-    CUTLASS_DEVICE
-    void operator()(InputCache & input_cache, ReductionResult & reduction_result) {
-
-        /// Get the max of each row
-        typename Base::AccumulatorFragment max_accumulator;
-        max_accumulator.fill(-1e+6);
-
-        typename Base::AccumulatorFragment* input_buffer_ptr = 
-            reinterpret_cast<typename Base::AccumulatorFragment*>(&input_cache.input_buffer);
-
-        for (int i = 0; i < Base::InputIterator::Iterations::kColumn; i ++) {
-            typename Base::InputFragment tmp_input= input_iterator_.load();
-            *input_buffer_ptr = input2acc(tmp_input);
-            max_accumulator = max(*input_buffer_ptr, max_accumulator);
-            input_buffer_ptr ++;
-        }
-
-        this->max(max_accumulator, reduction_result.row_max);
-
-        typename Base::AccumulatorFragment sum_exp_accumulator;
-        sum_exp_accumulator.clear();
-
-        input_buffer_ptr = reinterpret_cast<typename Base::AccumulatorFragment*>(&input_cache.input_buffer);
-
-        for (int i = 0; i < Base::InputIterator::Iterations::kColumn; i ++) {
-            *input_buffer_ptr = exp(*input_buffer_ptr - reduction_result.row_max);
-            sum_exp_accumulator = *input_buffer_ptr + sum_exp_accumulator;
-            input_buffer_ptr ++;
-        }
-
-        this->sum(sum_exp_accumulator, reduction_result.row_sum);
+    Array<Element, VecLength> get(int row_idx, int column_idx) {
+      bool guard = elem_less(tC_cInput(row_idx, column_idx), problem_shape);
+      Array<Element, VecLength> value;
+      VecType* value_ptr = reinterpret_cast<VecType*>(&value);
+      cutlass::arch::global_load<VecType, sizeof(VecType)>(*value_ptr, (void*)&tC_gInput(row_idx, column_idx), guard);
+      if (!guard) value.fill(null_default);
+      return value;
     }
+  };
+
+  template <class ProblemShape>
+  CUTLASS_DEVICE auto
+  get_input_cache(
+    MatrixCoord threadblock_tile_offset,
+    int thread_idx,
+    ProblemShape problem_shape
+  ) {
+    Tensor mInput = make_tensor(
+      make_gmem_ptr(params_ptr->ptr_input),
+      problem_shape,
+      params_ptr->dInput
+    );
+
+    // ITERATION_ROW, ITERATION_COLUMN
+    Tensor tC_gInput = recast<VecType>(
+      ThreadMap::partition(mInput, thread_idx, threadblock_tile_offset))(_,_0{},_);
+
+    // Generate the pred tensor
+    Tensor cInput = make_identity_tensor(mInput.shape());
+    Tensor tC_cInput = ThreadMap::partition(
+      cInput, thread_idx, threadblock_tile_offset)(_,_0{},_);
+
+    return InputCache<
+      decltype(tC_gInput), decltype(tC_cInput), 
+      decltype(problem_shape)>(
+      cute::move(tC_gInput),
+      cute::move(tC_cInput),
+      problem_shape,
+      params_ptr->null_default
+    );
+  }
+
+  //
+  // Functions
+  //
+
+  template <class InputCache>
+  CUTLASS_DEVICE
+  void reduce(ReductionResult &reduction_result, InputCache &inputs, int row_idx) {
+
+    using ConvertInput = NumericArrayConverter<ElementAccumulator, Element, VecLength>;
+    ConvertInput convert_input{};
+
+    Array<ElementAccumulator, VecLength> max_accum;
+    max_accum.fill(-1e+6);
+
+    for (int column_idx=0; column_idx < inputs.iterations_per_row; ++column_idx) {
+      Array<Element, VecLength> value = inputs.get(row_idx, column_idx);
+      max_accum = max(max_accum, convert_input(value));
+    }
+
+    this->max(max_accum, reduction_result.row_max);
+
+    Array<ElementAccumulator, VecLength> sum_exp_accum;
+    sum_exp_accum.clear();
+
+    for (int column_idx=0; column_idx < inputs.iterations_per_row; ++column_idx) {
+      Array<Element, VecLength> value = inputs.get(row_idx, column_idx);
+      sum_exp_accum = exp(convert_input(value) - reduction_result.row_max) + sum_exp_accum;
+    }
+
+    this->sum(sum_exp_accum, reduction_result.row_sum);
+  }
+
+  template <class InputCache>
+  CUTLASS_DEVICE
+  Array<ElementAccumulator, VecLength> apply(ReductionResult &reduction_result, InputCache &inputs, int row_idx, int column_idx) {
+    using ConvertInput = NumericArrayConverter<ElementAccumulator, Element, VecLength>;
+    ConvertInput convert_input{};
+    Array<ElementAccumulator, VecLength> compute_frg = convert_input(inputs.get(row_idx, column_idx));
+
+    return exp(compute_frg - reduction_result.row_max) / reduction_result.row_sum;
+  }
 };
 
 /////////////////////////////////////////////////////////////////////////////////////////////////

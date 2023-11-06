@@ -15,16 +15,16 @@
 ################################################################################
 from cutlass import DataType, GemmUniversalMode, SwizzlingFunctor
 import cutlass
-from cutlass.shape import GemmCoord
+from cutlass.shape import GemmCoord, MatrixCoord
 from tqdm import tqdm
 from torch.fx import Graph, Node
 import torch
 from torch.fx.passes.utils.fuser_utils import topo_sort, validate_partition
 from cutlass.backend.evt.frontend.frontend_base import EVTFrontendBase
 from cutlass.backend.evt.ir.tensor import Tensor as fakeTensor
-from cutlass import LayoutType
+from cutlass import LayoutType, TensorDescription
 from cutlass.backend.library import FunctionalOp, ActivationOp
-from typing import Union
+from typing import Any, Union
 import pdb
 from torch.fx.graph_module import GraphModule
 from torch._functorch.partitioners import _extract_graph_with_inputs_outputs
@@ -34,6 +34,10 @@ import operator
 from cutlass.swizzle import ThreadblockSwizzleStreamK
 from cutlass.profiler import CUDAEventProfiler
 from concurrent.futures import ThreadPoolExecutor
+from cutlass.backend import compiler
+from cutlass.backend.utils.datatypes import torch_to_cutlass
+from gtl.ops.softmax import SoftmaxOperation, SoftmaxArguments
+from cutlass.backend.compiler import CompilationOptions
 
 
 # Overloaded argument type for BMM to support permutation
@@ -141,15 +145,90 @@ class Autotuner:
 
         return sorted_td[:self.num_best_tds]
 
-class FusedGEMM:
+
+class FusedOpBase:
+    """
+    The base implementation of all the fused operators
+    """
+    def __init__(self, node: Node, epilogue_visitor) -> None:
+        assert node.target == self.target
+        self.node = node
+
+        # Outputs and inputs in the original graph
+        self.outputs = epilogue_visitor.outputs
+        self.inputs = [
+            input for input in epilogue_visitor.inputs 
+            if input.target != self.node.target]
+
+        # Stream
+        self.stream = None
+    
+    def call(self, visitor_args, stream, *args) -> Any:
+        raise NotImplementedError("Should be Overwritten by child class")
+    
+    def __call__(self, *args):
+        default_stream = torch.cuda.current_stream()
+        if self.stream is not None:
+            self.stream.wait_stream(default_stream)
+            stream = self.stream
+        else:
+            stream = default_stream
+        
+        with torch.cuda.stream(stream):
+            # Create the output nodes
+            visitor_args = {}
+            for output_node in self.outputs:
+                if output_node.target in [torch.ops.aten.sum]:
+                    visitor_args[output_node.name] = torch.zeros(
+                        size=output_node.meta['tensor_meta'].shape,
+                        dtype=output_node.meta['tensor_meta'].dtype,
+                        device="cuda"
+                    )
+                else:
+                    visitor_args[output_node.name] = torch.zeros(
+                        size=output_node.meta['tensor_meta'].shape,
+                        dtype=output_node.meta['tensor_meta'].dtype,
+                        device="cuda"
+                    )
+            # Register the inputs
+            for idx, input in enumerate(self.inputs):
+                visitor_args[input.name] = args[idx]
+
+            self.call(visitor_args, stream, *args)
+
+            if self.stream is not None:
+                # without the code below, the caching allocator might reuse
+                # the memory unexpectedly
+                # https://pytorch.org/docs/stable/generated/torch.Tensor.record_stream.html?highlight=stream#torch.Tensor.record_stream
+                for arg in args:
+                    if isinstance(arg, torch.Tensor):
+                        arg.record_stream(self.stream)
+            
+            # get the results
+            return [visitor_args[output.name] for output in self.outputs]
+    
+    def get_src(self, node):
+        if node.target in self.mainloop_fusion_targets:
+            return node.args[0]
+        else:
+            return node
+    
+    def get_alignment(self, dim):
+        if dim % 8 == 0: return 8
+        elif dim % 4 == 0: return 4
+        elif dim % 2 == 0: return 2
+        else: return 1
+
+
+class FusedGEMM(FusedOpBase):
     """
     The fused operator of GEMM epilogue_visitor(A*B, args)
     """
     __name__ = "cutlass_gemm_with_visitor"
-    def __init__(self, node, epilogue_visitor) -> None:
-        assert node.target == torch.ops.aten.mm
-        self.node = node
-
+    target = torch.ops.aten.mm
+    mainloop_fusion_targets = [torch.ops.aten.permute]
+    def __init__(self, node: Node, epilogue_visitor) -> None:
+        super().__init__(node, epilogue_visitor)
         # Get A and B
         lhs_node = node.args[0]
         rhs_node = node.args[1]
@@ -168,13 +247,6 @@ class FusedGEMM:
         N = rhs_shape[-1]
 
         self.problem_size = GemmCoord(M, N, K)
-
-        # Outputs and inputs in the original graph
-        self.outputs = epilogue_visitor.outputs
-        self.inputs = [
-            input for input in epilogue_visitor.inputs 
-            if input.target != self.node.target]
-
         # Plan
         plan = cutlass.op.Gemm(
             element=lhs_node.meta["tensor_meta"].dtype,
@@ -182,7 +254,6 @@ class FusedGEMM:
             layout_C=cutlass.LayoutType.RowMajor,
             element_accumulator=torch.float32
         )
-
         # Use streamk
         # plan.swizzling_functor = ThreadblockSwizzleStreamK
 
@@ -213,78 +284,24 @@ class FusedGEMM:
             # tile_description=best_td,
             alignment_A=self.align_A, alignment_B=self.align_B, 
             alignment_C=self.align_C)
-
-        # Stream
-        self.stream = None
     
-    def __call__(self, *args):
-        default_stream = torch.cuda.current_stream()
+    def call(self, visitor_args, stream, *args) -> Any:
+        A = args[-2]
+        B = args[-1]
+        if self.lhs_layout == cutlass.LayoutType.ColumnMajor:
+            A = torch.transpose(A, -1, -2)
+        if self.rhs_layout == cutlass.LayoutType.ColumnMajor:
+            B = torch.transpose(B, -1, -2)
 
-        if self.stream is not None:
-            self.stream.wait_stream(default_stream)
-            stream = self.stream
-        else:
-            stream = default_stream
-        
-        with torch.cuda.stream(stream):
-            A = args[-2]
-            B = args[-1]
-            if self.lhs_layout == cutlass.LayoutType.ColumnMajor:
-                A = torch.transpose(A, -1, -2)
-            if self.rhs_layout == cutlass.LayoutType.ColumnMajor:
-                B = torch.transpose(B, -1, -2)
+        arguments = GemmArguments(
+            operation=self.operation, problem_size=self.problem_size,
+            A=A, B=B, C=None, D=None,
+            output_op = self.operation.epilogue_type(visitor_args),
+            gemm_mode=cutlass.GemmUniversalMode.Gemm
+        )
 
-
-            # Create the output nodes
-            visitor_args = {}
-            for output_node in self.outputs:
-                visitor_args[output_node.name] = torch.empty(
-                    size=output_node.meta['tensor_meta'].shape,
-                    dtype=output_node.meta['tensor_meta'].dtype,
-                    device="cuda"
-                )
-            
-            # Register the inputs
-            for idx, input in enumerate(self.inputs):
-                visitor_args[input.name] = args[idx]
-            
-            # if self.operation is None:
-            #     best_td = None
-            #     min_duration = 1e+6
-            #     C = A @ B
-            #     for td in tqdm(self.best_tds):
-            #         self.plan.tile_description = td
-            #         duration = CUDAEventProfiler(
-            #             self.plan, 100, 100, A, B, C, C, 
-            #             visitor_args=visitor_args
-            #         )()
-            #         if duration < min_duration:
-            #             best_td = td
-            #     self.operation = self.plan.compile(
-            #         tile_description=best_td,
-            #         alignment_A=self.align_A, alignment_B=self.align_B, 
-            #         alignment_C=self.align_C)
-            
-            arguments = GemmArguments(
-                operation=self.operation, problem_size=self.problem_size,
-                A=A, B=B, C=None, D=None,
-                output_op = self.operation.epilogue_type(visitor_args),
-                gemm_mode=cutlass.GemmUniversalMode.Gemm
-            )
-
-            self.operation.run(arguments, stream=stream.cuda_stream)
-
-            if self.stream is not None:
-                # without the code below, the caching allocator might reuse
-                # the memory unexpectedly
-                # https://pytorch.org/docs/stable/generated/torch.Tensor.record_stream.html?highlight=stream#torch.Tensor.record_stream
-                for arg in args:
-                    if isinstance(arg, torch.Tensor):
-                        arg.record_stream(self.stream)
-
-        # get the results
-        return [visitor_args[output.name] for output in self.outputs]
-
+        self.operation.run(arguments, stream=stream.cuda_stream)
+    
     def get_src_layout(self, node: Node):
         if node.target == torch.ops.aten.permute:
             indices = node.args[1]
@@ -296,29 +313,18 @@ class FusedGEMM:
                 raise ValueError(f"Invalid permutation: {indices}")
         else:
             return cutlass.LayoutType.RowMajor
-    
-    def get_src(self, node):
-        if node.target == torch.ops.aten.permute:
-            return node.args[0]
-        else:
-            return node
-    
-    def get_alignment(self, dim):
-        if dim % 8 == 0: return 8
-        elif dim % 4 == 0: return 4
-        elif dim % 2 == 0: return 2
-        else: return 1
 
 
-
-class FusedBMM:
+class FusedBMM(FusedOpBase):
     """
     The fused operator of BMM epilogue_visitor(A*B, args)
     """
     __name__ = "cutlass_bmm_with_visitor"
-    def __init__(self, node, epilogue_visitor) -> None:
-        assert node.target == torch.ops.aten.bmm
-        self.node = node
+    target = torch.ops.aten.bmm
+    mainloop_fusion_targets = [torch.ops.aten.permute]
+
+    def __init__(self, node: Node, epilogue_visitor) -> None:
+        super().__init__(node, epilogue_visitor)
 
         # Whether the problem is tranposed
         self.tranposed = epilogue_visitor.transposed
@@ -351,12 +357,6 @@ class FusedBMM:
 
         self.problem_size = GemmCoord(M, N, K)
 
-        # Outputs and inputs in the original graph
-        self.outputs = epilogue_visitor.outputs
-        self.inputs = [
-            input for input in epilogue_visitor.inputs 
-            if input.target != self.node.target]
-
         # Plan
         plan = cutlass.op.Gemm(
             element=lhs_node.meta["tensor_meta"].dtype,
@@ -395,90 +395,45 @@ class FusedBMM:
             # tile_description=best_td,
             alignment_A=self.align_A, alignment_B=self.align_B, 
             alignment_C=self.align_C)
-
-        # Stream
-        self.stream = None
     
-    def __call__(self, *args):
-        default_stream = torch.cuda.current_stream()
-
-        if self.stream is not None:
-            self.stream.wait_stream(default_stream)
-            stream = self.stream
+    def call(self, visitor_args, stream, *args) -> Any:
+        A = args[-2]
+        B = args[-1]
+        if self.permute_A in [[1, 2, 0], [2, 1, 0]]:
+            A = torch.ops.aten.permute(A, self.permute_A).contiguous()
+            permute_A = [0, 1, 2]
         else:
-            stream = default_stream
+            permute_A = self.permute_A
+        if self.permute_B in [[1, 2, 0], [2, 1, 0]]:
+            B = torch.ops.aten.permute(B, self.permute_B).contiguous()
+            permute_B = [0, 1, 2]
+        else:
+            permute_B = self.permute_B
+
+        # if self.operation is None:
+        #     best_td = None
+        #     min_duration = 1e+6
+        #     C = A @ B
+        #     for td in tqdm(self.best_tds):
+        #         self.plan.tile_description = td
+        #         duration = CUDAEventProfiler(
+        #             self.plan, 100, 100, A, B, C, C, 
+        #             visitor_args=visitor_args
+        #         )()
+        #         if duration < min_duration:
+        #             best_td = td
+        #     self.operation = self.plan.compile(
+        #         tile_description=best_td,
+        #         alignment_A=self.align_A, alignment_B=self.align_B, 
+        #         alignment_C=self.align_C)
         
-        with torch.cuda.stream(stream):
-            A = args[-2]
-            B = args[-1]
-            if self.permute_A in [[1, 2, 0], [2, 1, 0]]:
-                A = torch.ops.aten.permute(A, self.permute_A).contiguous()
-                permute_A = [0, 1, 2]
-            else:
-                permute_A = self.permute_A
-            if self.permute_B in [[1, 2, 0], [2, 1, 0]]:
-                B = torch.ops.aten.permute(B, self.permute_B).contiguous()
-                permute_B = [0, 1, 2]
-            else:
-                permute_B = self.permute_B
+        arguments = BmmArguments2x(
+            operation=self.operation, problem_size=self.problem_size,
+            A=A, B=B, permute_A=permute_A, permute_B=permute_B,
+            output_op = self.operation.epilogue_type(visitor_args)
+        )
 
-
-
-            # Create the output nodes
-            visitor_args = {}
-            for output_node in self.outputs:
-                if output_node.target in [torch.ops.aten.sum]:
-                    visitor_args[output_node.name] = torch.zeros(
-                        size=output_node.meta['tensor_meta'].shape,
-                        dtype=output_node.meta['tensor_meta'].dtype,
-                        device="cuda"
-                    )
-                else:
-                    visitor_args[output_node.name] = torch.zeros(
-                        size=output_node.meta['tensor_meta'].shape,
-                        dtype=output_node.meta['tensor_meta'].dtype,
-                        device="cuda"
-                    )
-            
-            # Register the inputs
-            for idx, input in enumerate(self.inputs):
-                visitor_args[input.name] = args[idx]
-            
-            # if self.operation is None:
-            #     best_td = None
-            #     min_duration = 1e+6
-            #     C = A @ B
-            #     for td in tqdm(self.best_tds):
-            #         self.plan.tile_description = td
-            #         duration = CUDAEventProfiler(
-            #             self.plan, 100, 100, A, B, C, C, 
-            #             visitor_args=visitor_args
-            #         )()
-            #         if duration < min_duration:
-            #             best_td = td
-            #     self.operation = self.plan.compile(
-            #         tile_description=best_td,
-            #         alignment_A=self.align_A, alignment_B=self.align_B, 
-            #         alignment_C=self.align_C)
-            
-            arguments = BmmArguments2x(
-                operation=self.operation, problem_size=self.problem_size,
-                A=A, B=B, permute_A=permute_A, permute_B=permute_B,
-                output_op = self.operation.epilogue_type(visitor_args)
-            )
-
-            self.operation.run(arguments, stream=stream.cuda_stream)
-
-            if self.stream is not None:
-                # without the code below, the caching allocator might reuse
-                # the memory unexpectedly
-                # https://pytorch.org/docs/stable/generated/torch.Tensor.record_stream.html?highlight=stream#torch.Tensor.record_stream
-                for arg in args:
-                    if isinstance(arg, torch.Tensor):
-                        arg.record_stream(self.stream)
-
-        # get the results
-        return [visitor_args[output.name] for output in self.outputs]
+        self.operation.run(arguments, stream=stream.cuda_stream)
 
     def get_src_layout(self, node: Node):
         if node.target == torch.ops.aten.permute:
@@ -496,18 +451,59 @@ class FusedBMM:
         else:
             # Force RowMajor and set them contiguous
             return cutlass.LayoutType.RowMajor, indices
+
+
+class FusedSoftmax(FusedOpBase):
+    """
+    The fused operator of Softmax epilogue_visitor(_softmax, args)
+    """
+    __name__ = "cutlass_softmax_with_visitor"
+    target = torch.ops.aten._softmax
+    mainloop_fusion_targets = []
+
+    def __init__(self, node: Node, epilogue_visitor) -> None:
+        super().__init__(node, epilogue_visitor)
+
+        # Get input
+        input = node.args[0]
+        self.args = [input]
+        shape = node.meta["tensor_meta"].shape
+        reduction_dim = node.args[1]
+        if reduction_dim < 0:
+            reduction_dim = len(shape) + reduction_dim
+        self.problem_size = MatrixCoord(shape[0], shape[1])
+
+        # Get alignment
+        alignment = self.get_alignment(shape[-1])
+        element = torch_to_cutlass(node.meta["tensor_meta"].dtype)
+
+        # Get softmax operation
+        self.operation = SoftmaxOperation(
+            input=TensorDescription(element, LayoutType.RowMajor, alignment),
+            rows_per_cta=4, warp_count=2,
+            epilogue_visitor=epilogue_visitor
+        )
+        # TODO: hardcode
+        MLCOMPILER_SRC_DIR = '/workspace/SEAL-PICASSO-ML-Compiler/src/cuda'
+        include_paths = [
+            MLCOMPILER_SRC_DIR
+        ] + compiler.default_include_paths
+
+        compile_options = CompilationOptions(
+            compiler.default_compile_options, 80, include_paths=include_paths
+        )
+        compiler.add_module([self.operation], compile_options)
     
-    def get_src(self, node):
-        if node.target == torch.ops.aten.permute:
-            return node.args[0]
-        else:
-            return node
-    
-    def get_alignment(self, dim):
-        if dim % 8 == 0: return 8
-        elif dim % 4 == 0: return 4
-        elif dim % 2 == 0: return 2
-        else: return 1
+    def call(self, visitor_args, stream, *args) -> Any:
+        input = args[-1]
+
+        arguments = SoftmaxArguments(
+            self.operation, self.problem_size,
+            input, self.operation.epilogue_type(visitor_args)
+        )
+
+        self.operation.run(arguments, stream=stream.cuda_stream)
+
 
 
 class EVTFuser(EVTFrontendBase):
@@ -521,7 +517,7 @@ class EVTFuser(EVTFrontendBase):
         # We use the heavy operation (mm, bmm, softmax, etc) as the anchor
         anchor = None
         for node in partition:
-            if node.target in [torch.ops.aten.mm, torch.ops.aten.bmm]:
+            if node.target in [torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten._softmax]:
                 anchor = node
         for node in partition:
             if anchor in node.users:
@@ -762,6 +758,8 @@ class EVTFuser(EVTFrontendBase):
             op = FusedGEMM(node, self)
         elif node.target == torch.ops.aten.bmm:
             op = FusedBMM(node, self)
+        elif node.target == torch.ops.aten._softmax:
+            op = FusedSoftmax(node, self)
         else:
             raise NotImplementedError()
         return op

@@ -565,9 +565,12 @@ class ILPSolver:
                 A.append(A_tmp)
                 ub.append(np.zeros(shape=(A_tmp.shape[0],)))
 
-        A = np.concatenate(A, axis=0)
-        ub = np.concatenate(ub, axis=0)
-        return scipy.optimize.LinearConstraint(A, ub=ub)
+        if len(A) > 0:
+            A = np.concatenate(A, axis=0)
+            ub = np.concatenate(ub, axis=0)
+            return scipy.optimize.LinearConstraint(A, ub=ub)
+        else:
+            return None
 
     def constraint_py(self):
         """

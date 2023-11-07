@@ -1069,7 +1069,7 @@ class Partitioning(PassBase):
             print(f"==============={idx}==================")
             print(partition)
             if idx >= 26: break
-            if idx in [2,16,19]: 
+            if idx in [2,16]: 
                 print("skipped")
                 continue
             for par in partition:

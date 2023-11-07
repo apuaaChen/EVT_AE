@@ -86,7 +86,7 @@ class SoftmaxRT(ReduceApplyRT):
 
 class SoftmaxOperation(ReduceApplyOperation):
     def __init__(
-        self, input: TensorDescription, num_columns,
+        self, input: TensorDescription, num_columns, num_rows,
         rows_per_cta, warp_count: int,
         epilogue_visitor, element_accumulator=DataType.f32, cache_input=True) -> None:
 
@@ -95,6 +95,8 @@ class SoftmaxOperation(ReduceApplyOperation):
         self.cache_input = cache_input
         if warp_count == -1:
             warp_count = self.propose_warp_count(self.alignment, num_columns)
+        if rows_per_cta == -1:
+            rows_per_cta = self.propose_rows_per_cta(num_rows)
 
         super().__init__(rows_per_cta, num_columns, warp_count, self.alignment, element_accumulator, epilogue_visitor)
 
@@ -109,6 +111,16 @@ class SoftmaxOperation(ReduceApplyOperation):
         maximum_columns_per_warp = 32 * alignment * 16
         num_warps = int((num_columns + maximum_columns_per_warp - 1) / maximum_columns_per_warp)
         return min(num_warps, 16)
+    
+    def propose_rows_per_cta(self, rows):
+        if rows / 81 >= 8:
+            return 8
+        elif rows / 81 >= 4:
+            return 4
+        elif rows / 81 >= 2:
+            return 2
+        else:
+            return 1
 
     
 

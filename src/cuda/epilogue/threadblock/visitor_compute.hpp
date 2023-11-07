@@ -211,51 +211,51 @@ struct ne {};
 template <typename T, int N>
 struct ne<Array<T, N>> {
 
-  using OutputConvert = NumericArrayConverter<T, bool, N>;
+  using OutputConvert = NumericConverter<T, bool>;
 
   CUTLASS_HOST_DEVICE
   Array<T, N> operator()(Array<T, N> const &lhs, Array<T, N> const &rhs) const {
 
-    Array<bool, N> result;
+    Array<T, N> result;
 
     OutputConvert converter{};
 
     CUTLASS_PRAGMA_UNROLL
     for (int i = 0; i < N; ++i) {
-      result[i] = lhs[i] != rhs[i];
+      result[i] = converter(lhs[i] != rhs[i]);
     }
 
-    return converter(result);
+    return result;
   }
 
   CUTLASS_HOST_DEVICE
   Array<T, N> operator()(Array<T, N> const &lhs, T const &scalar) const {
 
-    Array<bool, N> result;
+    Array<T, N> result;
 
     OutputConvert converter{};
 
     CUTLASS_PRAGMA_UNROLL
     for (int i = 0; i < N; ++i) {
-      result[i] = lhs[i] != scalar;
+      result[i] = converter(lhs[i] != scalar);
     }
 
-    return converter(result);
+    return result;
   }
 
   CUTLASS_HOST_DEVICE
   Array<T, N> operator()( T const &scalar, Array<T, N> const &rhs) const {
 
-    Array<bool, N> result;
+    Array<T, N> result;
 
     OutputConvert converter{};
 
     CUTLASS_PRAGMA_UNROLL
     for (int i = 0; i < N; ++i) {
-      result[i] = scalar != rhs[i];
+      result[i] = converter(scalar != rhs[i]);
     }
 
-    return converter(result);
+    return result;
   }
 };
 } // namespace cutlass

@@ -480,8 +480,8 @@ class FusedSoftmax(FusedOpBase):
         # Get softmax operation
         self.operation = SoftmaxOperation(
             input=TensorDescription(element, LayoutType.RowMajor, alignment),
-            rows_per_cta=4, num_columns=self.problem_size.column, warp_count=-1,
-            epilogue_visitor=epilogue_visitor, cache_input=False
+            rows_per_cta=-1, num_columns=self.problem_size.column, num_rows=self.problem_size.row, 
+            warp_count=-1, epilogue_visitor=epilogue_visitor, cache_input=False
         )
         # TODO: hardcode
         MLCOMPILER_SRC_DIR = '/workspace/SEAL-PICASSO-ML-Compiler/src/cuda'

@@ -1020,9 +1020,45 @@ class DuplicationBeforePartition(PassBase):
 # Pass 2: partitioning pass
 ################################################################################
 class Partitioning(PassBase):
+
+    def requires_rank_2_softmax(self, graph_module: GraphModule) -> None:
+        graph = graph_module.graph
+        # Make softmax's rank to be 2
+        for node in graph.nodes:
+            if node.target == torch.ops.aten._softmax:
+                shape = list(node.meta["tensor_meta"].shape)
+                if len(shape) > 2:
+                    input, reduction_dim = node.args[:2]
+                    users = list(node.users)
+                    if reduction_dim < 0:
+                        reduction_dim = len(shape) + reduction_dim
+                    assert reduction_dim == len(shape) - 1
+                    # Get flatten shape
+                    num_row = 1
+                    for dim in shape[:-1]:
+                        num_row *= dim
+                    new_shape = [num_row, shape[reduction_dim]]
+                    # Insert pre-view node
+                    graph.inserting_before(node)
+                    view_node_pre = graph.call_function(torch.ops.aten.view,
+                                        args=(input, new_shape))
+                    view_node_pre.meta = {}
+                    view_node_pre.meta["tensor_meta"] = node.meta["tensor_meta"]._replace(shape=new_shape)
+                    node.replace_input_with(input, view_node_pre)
+                    graph.inserting_after(node)
+                    view_node_post = graph.call_function(torch.ops.aten.view,
+                                        args=(node, shape))
+                    view_node_post.meta = {}
+                    view_node_post.meta["tensor_meta"] = node.meta["tensor_meta"]._replace()
+                    for user in users:
+                        user.replace_input_with(node, view_node_post)
+                    
+                    node.meta["tensor_meta"] = node.meta["tensor_meta"]._replace(shape=new_shape)       
+
     def requires(self, graph_module: GraphModule) -> None:
         duplicate_pass = DuplicationBeforePartition()
         duplicate_pass(graph_module)
+        self.requires_rank_2_softmax(graph_module)
 
     def call(self, graph_module: GraphModule) -> PassResult | None:
         compute_graph_ir = ComputeGraphIR(graph_module.graph)
@@ -1032,9 +1068,11 @@ class Partitioning(PassBase):
         for idx, partition in enumerate(partitions):
             print(f"==============={idx}==================")
             print(partition)
-            if idx >= 26: break
-            if idx in [2,16,18,19,24]: 
-                print("skipped")
+            # if idx >= 26: break
+            # if idx in [2,16,19]: 
+            #     print("skipped")
+            #     continue
+            if idx != 18:
                 continue
             for par in partition:
                 if len(par) > 1:

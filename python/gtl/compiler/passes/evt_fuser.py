@@ -578,7 +578,6 @@ class EVTFuser(EVTFrontendBase):
         # Visit the nodes
         for node in subgraph.nodes:
             self.visit(node)
-        # self.visualize()
         self.pass_manager()
         self.visualize()
         self.epilogue_thread_type = self.dag_ir.epilogue_thread_type
@@ -658,9 +657,9 @@ class EVTFuser(EVTFrontendBase):
         else:
             raise ValueError(f"Invalid source: {node}")
     
-    def _visit_compute(self, node: Node, op: FunctionalOp):
+    def _visit_compute(self, node: Node, op: FunctionalOp, **kwargs):
         name = self._get_name(node)
-        self.add_compute_node(op=op, name=name)
+        self.add_compute_node(op=op, name=name, **kwargs)
         # Add the source operands if they are not in graph
         arg_names = []
         for arg in node.args:
@@ -692,8 +691,27 @@ class EVTFuser(EVTFrontendBase):
     def visit_rand_like(self, node: Node):
         return self._visit_compute(node, FunctionalOp.Rand)
     
+    def visit_one_hot(self, node: Node):
+        one_hot_name: str = self._visit_compute(
+            node, FunctionalOp.OneHot, num_classes=node.kwargs["num_classes"])
+        # Insert an unsqueeze node before onehot to ensure correct shape infer
+        name = f"unsqueeze_{one_hot_name}"
+        op = self.layout_fns["reshape"]
+        input = node.args[0]
+        new_shape = input.meta["tensor_meta"].shape + (1,)
+        kwargs = {"new_shape": new_shape}
+        self.add_layout_node(op, kwargs, name)
+        # Add edge
+        self.add_edge(input.name, name, weight=0)
+        self.remove_edge(input.name, one_hot_name)
+        self.add_edge(name, one_hot_name)
+        return one_hot_name
+    
     def visit_ge(self, node: Node):
         return self._visit_compute(node, FunctionalOp.GreaterEqual)
+    
+    def visit_ne(self, node: Node):
+        return self._visit_compute(node, FunctionalOp.Ne)
     
     def visit_sum(self, node: Node):
         name = self._get_name(node)

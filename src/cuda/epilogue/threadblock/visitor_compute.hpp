@@ -87,6 +87,63 @@ struct VisitorCompute : VisitorImpl2x<> {
 
 };
 
+
+template<
+  class ThreadMap,
+  class ElementOutput,
+  class ElementCompute,
+  FloatRoundStyle RoundStyle,
+  class = void
+>
+struct VisitorComputeOneHot : VisitorImpl2x<> {
+
+  using VisitorImpl2x<>::VisitorImpl2x;
+
+  template <class CTensor>
+  struct Callbacks : EmptyCallbacks {
+
+    CUTLASS_DEVICE
+    Callbacks(
+      CTensor&& tC_cOneHot
+    ): tC_cOneHot(tC_cOneHot) {}
+
+    CTensor tC_cOneHot;
+
+    template <typename ElementAccumulator, typename ElementInput, int FragmentSize>
+    CUTLASS_DEVICE Array<ElementOutput, FragmentSize>
+    visit(int row_idx, int column_idx,
+          Array<ElementAccumulator, FragmentSize> const& frg_acc,
+          Array<ElementInput, FragmentSize> const& frg_input) {
+      
+      Array<ElementOutput, FragmentSize> frg_output;
+      CUTLASS_PRAGMA_UNROLL
+      for (int i=0; i < FragmentSize; ++i) {
+        frg_output[i] = ElementOutput(frg_input[0] == get<1>(tC_cOneHot(i, column_idx, row_idx)));
+      }
+      return frg_output;
+    }
+
+  };
+
+  template <class ProblemShape>
+  CUTLASS_DEVICE auto
+  get_callbacks(
+    gemm::GemmCoord threadblock_tile_offset,
+    int thread_idx,
+    ProblemShape problem_shape
+  ) {
+    Tensor cOneHot = make_identity_tensor(problem_shape);
+    // Vector, ITERATION_COLUMN, ITERATION_ROW
+    Tensor tC_cOneHot = ThreadMap::partition(
+      cOneHot, thread_idx, threadblock_tile_offset
+    );
+    return Callbacks<decltype(tC_cOneHot)>(
+      cute::move(tC_cOneHot)
+    );
+  }
+
+};
+
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 } // namespace cutlass::epilogue::threadblock
@@ -94,57 +151,111 @@ struct VisitorCompute : VisitorImpl2x<> {
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass{
-  template <typename T, int N>
-  struct greater_equal<Array<T, N>> {
+template <typename T, int N>
+struct greater_equal<Array<T, N>> {
 
-    using OutputConvert = NumericArrayConverter<T, bool, N>;
+  using OutputConvert = NumericArrayConverter<T, bool, N>;
 
-    CUTLASS_HOST_DEVICE
-    Array<T, N> operator()(Array<T, N> const &lhs, Array<T, N> const &rhs) const {
+  CUTLASS_HOST_DEVICE
+  Array<T, N> operator()(Array<T, N> const &lhs, Array<T, N> const &rhs) const {
 
-      Array<bool, N> result;
-      greater_equal<T> scalar_op;
+    Array<bool, N> result;
+    greater_equal<T> scalar_op;
 
-      OutputConvert converter{};
+    OutputConvert converter{};
 
-      CUTLASS_PRAGMA_UNROLL
-      for (int i = 0; i < N; ++i) {
-        result[i] = scalar_op(lhs[i], rhs[i]);
-      }
-
-      return converter(result);
+    CUTLASS_PRAGMA_UNROLL
+    for (int i = 0; i < N; ++i) {
+      result[i] = scalar_op(lhs[i], rhs[i]);
     }
 
-    CUTLASS_HOST_DEVICE
-    Array<T, N> operator()(Array<T, N> const &lhs, T const &scalar) const {
+    return converter(result);
+  }
 
-      Array<bool, N> result;
-      greater_equal<T> scalar_op;
+  CUTLASS_HOST_DEVICE
+  Array<T, N> operator()(Array<T, N> const &lhs, T const &scalar) const {
 
-      OutputConvert converter{};
+    Array<bool, N> result;
+    greater_equal<T> scalar_op;
 
-      CUTLASS_PRAGMA_UNROLL
-      for (int i = 0; i < N; ++i) {
-        result[i] = scalar_op(lhs[i], scalar);
-      }
+    OutputConvert converter{};
 
-      return converter(result);
+    CUTLASS_PRAGMA_UNROLL
+    for (int i = 0; i < N; ++i) {
+      result[i] = scalar_op(lhs[i], scalar);
     }
 
-    CUTLASS_HOST_DEVICE
-    Array<T, N> operator()( T const &scalar, Array<T, N> const &rhs) const {
+    return converter(result);
+  }
 
-      Array<bool, N> result;
-      greater_equal<T> scalar_op;
+  CUTLASS_HOST_DEVICE
+  Array<T, N> operator()( T const &scalar, Array<T, N> const &rhs) const {
 
-      OutputConvert converter{};
+    Array<bool, N> result;
+    greater_equal<T> scalar_op;
 
-      CUTLASS_PRAGMA_UNROLL
-      for (int i = 0; i < N; ++i) {
-        result[i] = scalar_op(scalar, rhs[i]);
-      }
+    OutputConvert converter{};
 
-      return converter(result);
+    CUTLASS_PRAGMA_UNROLL
+    for (int i = 0; i < N; ++i) {
+      result[i] = scalar_op(scalar, rhs[i]);
     }
-  };
+
+    return converter(result);
+  }
+};
+
+template <typename T>
+struct ne {};
+
+template <typename T, int N>
+struct ne<Array<T, N>> {
+
+  using OutputConvert = NumericArrayConverter<T, bool, N>;
+
+  CUTLASS_HOST_DEVICE
+  Array<T, N> operator()(Array<T, N> const &lhs, Array<T, N> const &rhs) const {
+
+    Array<bool, N> result;
+
+    OutputConvert converter{};
+
+    CUTLASS_PRAGMA_UNROLL
+    for (int i = 0; i < N; ++i) {
+      result[i] = lhs[i] != rhs[i];
+    }
+
+    return converter(result);
+  }
+
+  CUTLASS_HOST_DEVICE
+  Array<T, N> operator()(Array<T, N> const &lhs, T const &scalar) const {
+
+    Array<bool, N> result;
+
+    OutputConvert converter{};
+
+    CUTLASS_PRAGMA_UNROLL
+    for (int i = 0; i < N; ++i) {
+      result[i] = lhs[i] != scalar;
+    }
+
+    return converter(result);
+  }
+
+  CUTLASS_HOST_DEVICE
+  Array<T, N> operator()( T const &scalar, Array<T, N> const &rhs) const {
+
+    Array<bool, N> result;
+
+    OutputConvert converter{};
+
+    CUTLASS_PRAGMA_UNROLL
+    for (int i = 0; i < N; ++i) {
+      result[i] = scalar != rhs[i];
+    }
+
+    return converter(result);
+  }
+};
 } // namespace cutlass

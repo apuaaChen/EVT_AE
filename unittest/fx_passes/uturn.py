@@ -17,7 +17,7 @@
 import torch
 import unittest
 from gtl.helper import UnitTestBase
-from gtl.compiler.passes import pass_decomposition, pass_constant_propagation
+from gtl.compiler.passes import pass_decomposition, pass_constant_propagation, pass_fusion
 
 def pass_dead_code_elimination(model, graph):
     graph.eliminate_dead_code()
@@ -28,7 +28,7 @@ class Uturn(UnitTestBase):
     def util_test_uturn(self, cls, inputs):
         self.util_test(cls, inputs, [
             pass_decomposition, pass_dead_code_elimination,
-            pass_constant_propagation])
+            pass_constant_propagation, pass_fusion])
 
     def test_uturn(self):
         # Model

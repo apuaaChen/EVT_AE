@@ -466,7 +466,7 @@ struct VisitorRowBroadcast {
       make_gmem_ptr(params_ptr->ptr_row), 
       make_shape(get<0>(problem_shape), get<1>(problem_shape), params_ptr->sRow),
       params_ptr->dRow);   // (M,N,L)
-    // ITERATION_ROW, VECTOR, ITERATION_COLUMN
+    // VECTOR, ITERATION_ROW, ITERATION_COLUMN
     Tensor tC_gRow = recast<VecType>(
       ThreadMap::partition(mRow, thread_idx, threadblock_tile_offset))(_0{},_,_0{});
 

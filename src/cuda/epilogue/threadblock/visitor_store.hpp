@@ -103,7 +103,7 @@ struct VisitorAuxStore{
       Array<Element, FragmentSize> frg_output = convert_input(frg_input);
       VecType const* value_ptr = reinterpret_cast<VecType const*>(&frg_output);
       bool guard = elem_less(tC_cAux(column_idx, row_idx), problem_shape);
-      cutlass::arch::global_store<VecType, sizeof(VecType)>(*value_ptr, (void*)&tC_gAux(column_idx, row_idx), guard); 
+      cutlass::arch::global_store<VecType, sizeof(VecType)>(*value_ptr, (void*)&tC_gAux(column_idx, row_idx), guard);
 
       return frg_input;
     }
@@ -121,7 +121,7 @@ struct VisitorAuxStore{
       make_gmem_ptr(params_ptr->ptr_aux), 
       problem_shape,
       params_ptr->dAux);   // (M,N,L)
-    // VECTOR, ITERATION_ROW, ITERATION_COLUMN
+    // VECTOR, ITERATION_COLUMN, ITERATION_ROW
     Tensor tC_gAux = recast<VecType>(
       ThreadMap::partition(mAux, thread_idx, threadblock_tile_offset))(_0{},_,_);
 
@@ -547,7 +547,7 @@ struct VisitorRowReduction {
       Tensor pred = tC_cRow(_,_,0);
       CUTLASS_PRAGMA_UNROLL
       for (int j=0; j < size(tC_rRow); ++j) {
-        if (get<1>(tC_cRow(j)) < get<1>(problem_shape)) {
+        if (get<1>(pred(j)) < get<1>(problem_shape)) {
           atomic_reduce<AtomicReduceFn, RoundStyle>(&tC_gRow(j), tC_rRow(j));
         }
       }

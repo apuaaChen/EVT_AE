@@ -80,7 +80,7 @@ class SoftmaxRT(ReduceApplyRT):
                 self.batch_count = batch_count
                 self.epilogue_args = epilogue_args
                 self.stride_input = stride_type((problem_size.column, 1, problem_size.row * problem_size.column))
-        
+
         return _SoftmaxArguments, _EpilogueOutputOpParams
 
 
@@ -93,6 +93,8 @@ class SoftmaxOperation(ReduceApplyOperation):
         self.element = input.element
         self.alignment = input.alignment
         self.cache_input = cache_input
+        if warp_count == -1:
+            warp_count = self.propose_warp_count(self.alignment, num_columns)
 
         super().__init__(rows_per_cta, num_columns, warp_count, self.alignment, element_accumulator, epilogue_visitor)
 
@@ -102,6 +104,12 @@ class SoftmaxOperation(ReduceApplyOperation):
     
     def procedural_name(self):
         return "softmax_kernel"
+    
+    def propose_warp_count(self, alignment, num_columns):
+        maximum_columns_per_warp = 32 * alignment * 16
+        num_warps = int((num_columns + maximum_columns_per_warp - 1) / maximum_columns_per_warp)
+        return min(num_warps, 16)
+
     
 
 class EmitSoftmaxUniversalInstance:

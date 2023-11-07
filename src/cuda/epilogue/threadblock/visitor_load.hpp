@@ -581,7 +581,7 @@ struct VisitorColBroadcast {
       make_shape(get<0>(problem_shape), get<1>(problem_shape), params_ptr->sCol),
       params_ptr->dCol);   // (M,N,L)
 
-    // ITERATION_ROW, VECTOR, ITERATION_COLUMN
+    // VECTOR, ITERATION_COLUMN, ITERATION_ROW
     Tensor tC_gCol = ThreadMap::partition(
       mCol, thread_idx, threadblock_tile_offset)(_0{},_0{},_);
     Tensor tC_rCol = make_tensor_like(tC_gCol);

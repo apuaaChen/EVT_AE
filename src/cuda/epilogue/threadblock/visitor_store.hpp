@@ -537,16 +537,17 @@ struct VisitorRowReduction {
       using ConvertInput = NumericArrayConverter<ElementCompute, ElementInput, FragmentSize, RoundStyle>;
       ConvertInput convert_input{};
       Tensor tC_rRow_frg = recast<Array<ElementCompute, FragmentSize>>(coalesce(tC_rRow));
-      if (elem_less(tC_cRow(column_idx, row_idx), problem_shape))
+      if (elem_less(tC_cRow(_0{}, column_idx, row_idx), problem_shape))
         reduction(tC_rRow_frg[column_idx], convert_input(frg_input));
       return frg_input;
     }
 
     CUTLASS_DEVICE void 
     end_epilogue() {
+      Tensor pred = tC_cRow(_,_,0);
       CUTLASS_PRAGMA_UNROLL
       for (int j=0; j < size(tC_rRow); ++j) {
-        if (get<1>(tC_cRow(j,0)) < get<1>(problem_shape)) {
+        if (get<1>(tC_cRow(j)) < get<1>(problem_shape)) {
           atomic_reduce<AtomicReduceFn, RoundStyle>(&tC_gRow(j), tC_rRow(j));
         }
       }
@@ -589,7 +590,7 @@ struct VisitorRowReduction {
     // Pred tensor
     Tensor cRow = make_identity_tensor(mRow.shape());
     Tensor tC_cRow = ThreadMap::partition(
-      cRow, thread_idx, threadblock_tile_offset)(_0{},_,_);
+      cRow, thread_idx, threadblock_tile_offset);
 
     return Callbacks<
       decltype(tC_gRow), decltype(tC_rRow),

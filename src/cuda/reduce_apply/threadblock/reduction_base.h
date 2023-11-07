@@ -191,6 +191,67 @@ struct OutputTileThreadLayout1D {
   }
 };
 
+
+// Specialized for kNumThreads=32
+template<
+  typename ElementAccumulator>
+struct ReductionBase<ElementAccumulator, 32> {
+public:
+  //
+  // Reduction
+  //
+  using WarpReduce = cub::WarpReduce<ElementAccumulator>;
+  union SharedStorage {
+    typename WarpReduce::TempStorage temp_storage;
+  };
+
+private:
+  WarpReduce warp_reduce_;
+  int thread_idx_;
+
+public:
+  //
+  // Constructor
+  //
+  CUTLASS_DEVICE
+  ReductionBase (
+    int thread_idx,
+    SharedStorage & shared_storage
+  ):
+    warp_reduce_(shared_storage.temp_storage),
+    thread_idx_(thread_idx) { }
+
+  /// Sum reduction
+  template <int FragmentSize>
+  CUTLASS_DEVICE
+  void sum(Array<ElementAccumulator, FragmentSize> & partial_sum, ElementAccumulator &row_sum) {
+    /// Get the sum in the array of each thread
+    ElementAccumulator row_sum_local = ElementAccumulator(0);
+    #pragma unroll
+    for (int i = 0; i < FragmentSize; i ++) {
+      row_sum_local += *(partial_sum.data() + i);
+    }
+    row_sum = warp_reduce_.Sum(row_sum_local);
+
+    row_sum = __shfl_sync(0xffffffff, row_sum, 0);
+  }
+
+  /// Max reduction
+  template <int FragmentSize>
+  CUTLASS_DEVICE
+  void max(Array<ElementAccumulator, FragmentSize> & partial_max, ElementAccumulator & row_max) {
+    ElementAccumulator row_max_local = ElementAccumulator(-1e+6);
+    #pragma unroll
+    for (int i = 0; i < FragmentSize; i ++) {
+      row_max_local = *(partial_max.data() + i) < row_max_local ? row_max_local : *(partial_max.data() + i);
+    }
+
+    row_max = warp_reduce_.Reduce(row_max_local, cub::Max());
+
+    row_max = __shfl_sync(0xffffffff, row_max, 0);
+  }
+};
+
 ////////////////////////////////////////////////////////////////////////////////
 
 } // namespace threadblock

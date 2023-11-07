@@ -480,7 +480,7 @@ class FusedSoftmax(FusedOpBase):
         # Get softmax operation
         self.operation = SoftmaxOperation(
             input=TensorDescription(element, LayoutType.RowMajor, alignment),
-            rows_per_cta=4, num_columns=self.problem_size.column, warp_count=2,
+            rows_per_cta=4, num_columns=self.problem_size.column, warp_count=1,
             epilogue_visitor=epilogue_visitor, cache_input=False
         )
         # TODO: hardcode

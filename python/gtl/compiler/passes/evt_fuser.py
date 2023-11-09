@@ -37,6 +37,7 @@ from concurrent.futures import ThreadPoolExecutor
 from cutlass.backend import compiler
 from cutlass.backend.utils.datatypes import torch_to_cutlass
 from gtl.ops.softmax import SoftmaxOperation, SoftmaxArguments
+from gtl.ops.softmax_backward import SoftmaxBackwardOperation, SoftmaxBackwardArguments
 from gtl.ops.layernorm import LayerNormOperation, LayerNormArguments
 from gtl.ops.layernorm_backward import LayerNormBackwardOperation, LayerNormBackwardArguments
 from cutlass.backend.compiler import CompilationOptions
@@ -522,6 +523,57 @@ class FusedSoftmax(FusedOpBase):
         self.operation.run(arguments, stream=stream.cuda_stream)
 
 
+class FusedSoftmaxBackward(FusedOpBase):
+    """
+    The fused operator of Softmax epilogue_visitor(_softmax_backward_data, args)
+    """
+    __name__ = "cutlass_softmax_backward_with_visitor"
+    target = torch.ops.aten._softmax_backward_data
+    mainloop_fusion_targets = []
+
+    def __init__(self, node: Node, epilogue_visitor) -> None:
+        super().__init__(node, epilogue_visitor)
+
+        # Get input
+        grad, softmax, reduction_dim = node.args[:3]
+        self.args = [grad, softmax]
+        shape = node.meta["tensor_meta"].shape
+        if reduction_dim < 0:
+            reduction_dim = len(shape) + reduction_dim
+        self.problem_size = MatrixCoord(shape[0], shape[2])
+
+        # Get alignment
+        alignment = self.get_alignment(shape[-1])
+        element = torch_to_cutlass(node.meta["tensor_meta"].dtype)
+
+        # Get softmax operation
+        self.operation = SoftmaxBackwardOperation(
+            input=TensorDescription(element, LayoutType.RowMajor, alignment),
+            rows_per_cta=-1, num_columns=self.problem_size.column, num_rows=self.problem_size.row, 
+            warp_count=-1, epilogue_visitor=epilogue_visitor, cache_input=False
+        )
+        # TODO: hardcode
+        MLCOMPILER_SRC_DIR = '/workspace/SEAL-PICASSO-ML-Compiler/src/cuda'
+        include_paths = [
+            MLCOMPILER_SRC_DIR
+        ] + compiler.default_include_paths
+
+        compile_options = CompilationOptions(
+            compiler.default_compile_options, 80, include_paths=include_paths
+        )
+        compiler.add_module([self.operation], compile_options)
+    
+    def call(self, visitor_args, stream, *args) -> Any:
+        grad, softmax = args[-2:]
+
+        arguments = SoftmaxBackwardArguments(
+            self.operation, self.problem_size,
+            grad, softmax, self.operation.epilogue_type(visitor_args)
+        )
+
+        self.operation.run(arguments, stream=stream.cuda_stream)
+
+
 class FusedLayerNorm(FusedOpBase):
     """
     The fused operator of LayerNorm epilogue_visitor(native_layer_norm, args)
@@ -639,6 +691,7 @@ class EVTFuser(EVTFrontendBase):
     """
     supported_targets = [
         torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten._softmax, 
+        torch.ops.aten._softmax_backward_data,
         torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward]
 
     def get_node_with_name(name, graph_module):
@@ -959,6 +1012,8 @@ class EVTFuser(EVTFrontendBase):
             op = FusedBMM(node, self)
         elif node.target == torch.ops.aten._softmax:
             op = FusedSoftmax(node, self)
+        elif node.target == torch.ops.aten._softmax_backward_data:
+            op = FusedSoftmaxBackward(node, self)
         elif node.target == torch.ops.aten.native_layer_norm:
             op = FusedLayerNorm(node, self)
         elif node.target == torch.ops.aten.native_layer_norm_backward:

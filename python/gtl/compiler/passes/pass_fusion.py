@@ -1093,7 +1093,38 @@ class Partitioning(PassBase):
                     for user in users:
                         user.replace_input_with(node, view_node_post)
                     
-                    node.meta["tensor_meta"] = node.meta["tensor_meta"]._replace(shape=new_shape)       
+                    node.meta["tensor_meta"] = node.meta["tensor_meta"]._replace(shape=new_shape)
+            elif node.target == torch.ops.aten._softmax_backward_data:
+                shape = list(node.meta["tensor_meta"].shape) 
+                if len(shape) != 3 and shape[1] != 1:
+                    grad, input, reduction_dim = node.args[:3]
+                    users = list(node.users)
+                    if reduction_dim < 0:
+                        reduction_dim = len(shape) + reduction_dim
+                    assert reduction_dim == len(shape) - 1
+                    # Get flatten shape
+                    num_row = 1
+                    for dim in shape[:-1]:
+                        num_row *= dim
+                    new_shape = [num_row, 1, shape[reduction_dim]]
+                    node.args = (node.args[0], node.args[1], 2, node.args[3])
+                    # Insert pre-view node
+                    for x in [grad, input]:
+                        graph.inserting_before(node)
+                        view_node_pre = graph.call_function(torch.ops.aten.view,
+                                            args=(x, new_shape))
+                        view_node_pre.meta = {}
+                        view_node_pre.meta["tensor_meta"] = node.meta["tensor_meta"]._replace(shape=new_shape)
+                        node.replace_input_with(x, view_node_pre)
+                    graph.inserting_after(node)
+                    view_node_post = graph.call_function(torch.ops.aten.view,
+                                        args=(node, shape))
+                    view_node_post.meta = {}
+                    view_node_post.meta["tensor_meta"] = node.meta["tensor_meta"]._replace()
+                    for user in users:
+                        user.replace_input_with(node, view_node_post)
+                    
+                    node.meta["tensor_meta"] = node.meta["tensor_meta"]._replace(shape=new_shape)
             elif node.target == torch.ops.aten.native_layer_norm:
                 shape = node.meta["tensor_meta"][0].shape
                 if len(shape) != 3 or shape[1] != 1:
@@ -1193,10 +1224,7 @@ class Partitioning(PassBase):
         for idx, par in enumerate(partitions):
             print(f"==============={idx}==================")
             print(par)
-            if idx >= 90: 
-                print("todo")
-                continue
-            if idx in [2,74]: 
+            if idx in [2,74,106]: 
                 print("skipped")
                 continue
             if EVTFuser.fusible(par, graph_module):

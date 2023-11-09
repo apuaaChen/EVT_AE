@@ -41,6 +41,7 @@ from torch.fx.passes.infra.pass_base import PassBase, PassResult
 from torch.fx.passes.shape_prop import TensorMetadata
 from torch.fx.passes.tools_common import legalize_graph
 from gtl.compiler.passes.pass_constant_propagation import PermuteAbv
+import operator
 
 from gtl.compiler.passes.evt_fuser import EVTFuser
 
@@ -747,6 +748,35 @@ class ILPSolver:
             return scipy.optimize.LinearConstraint(A, ub=b)
         return None
     
+    def constraint_layernorm_mean_std_is_leaf(self):
+        """
+        The mean & std output of layernorm cannot be fused with others
+        """
+        A = []
+        for node in self.node_list:
+            meta = self.get_node_meta(node)
+            if str(meta.target) == 'aten.native_layer_norm':
+                for user_meta in meta.users:
+                    if user_meta.args[1] != 0:
+                        src = user_meta.name
+                        out_edges = list(self.subgraph.out_edges(src))
+                        for _, output in out_edges:
+                            if output not in self.node_list:
+                                continue
+                            i = self.node_list.index(src)
+                            j = self.node_list.index(output)
+                            At = np.zeros(shape=(self.nc, self.num_all))
+                            for s in range(self.nc):
+                                At[s][self.x(i, s)] = 1
+                                At[s][self.x(j, s)] = 1
+                            A.append(At)
+        if len(A) > 0:
+            A = np.concatenate(A, axis=0)
+            b = np.ones(shape=A.shape[0])
+
+            return scipy.optimize.LinearConstraint(A, ub=b)
+        return None
+    
     #
     # Integrality and bound
     #
@@ -1021,13 +1051,13 @@ class DuplicationBeforePartition(PassBase):
 ################################################################################
 class Partitioning(PassBase):
 
-    def requires_rank_2_softmax(self, graph_module: GraphModule) -> None:
+    def requires_rank_3_reduce_apply(self, graph_module: GraphModule) -> None:
         graph = graph_module.graph
         # Make softmax's rank to be 2
         for node in graph.nodes:
             if node.target == torch.ops.aten._softmax:
                 shape = list(node.meta["tensor_meta"].shape)
-                if len(shape) > 2:
+                if len(shape) != 3 and shape[1] != 1:
                     input, reduction_dim = node.args[:2]
                     users = list(node.users)
                     if reduction_dim < 0:
@@ -1037,7 +1067,8 @@ class Partitioning(PassBase):
                     num_row = 1
                     for dim in shape[:-1]:
                         num_row *= dim
-                    new_shape = [num_row, shape[reduction_dim]]
+                    new_shape = [num_row, 1, shape[reduction_dim]]
+                    node.args = (node.args[0], 2, node.args[2])
                     # Insert pre-view node
                     graph.inserting_before(node)
                     view_node_pre = graph.call_function(torch.ops.aten.view,
@@ -1054,11 +1085,48 @@ class Partitioning(PassBase):
                         user.replace_input_with(node, view_node_post)
                     
                     node.meta["tensor_meta"] = node.meta["tensor_meta"]._replace(shape=new_shape)       
+            elif node.target == torch.ops.aten.native_layer_norm:
+                if node.name not in [
+                    "native_layer_norm_5",
+                    "native_layer_norm_6",
+                    "native_layer_norm_7",
+                    "native_layer_norm_8"
+                ]:
+                    continue
+                shape = node.meta["tensor_meta"][0].shape
+                if len(shape) != 3 or shape[1] != 1:
+                    input = node.args[0]
+                    num_row = 1
+                    for dim in shape[:-1]:
+                        num_row *= dim
+                    new_shape = [num_row, 1, shape[-1]]
+                    # Insert pre-view node
+                    graph.inserting_before(node)
+                    view_node_pre = graph.call_function(torch.ops.aten.view,
+                                        args=(input, new_shape))
+                    view_node_pre.meta = {}
+                    view_node_pre.meta["tensor_meta"] = node.meta["tensor_meta"][0]._replace(shape=new_shape)
+                    node.replace_input_with(input, view_node_pre)
+                    # Layernorm node has 3 getitem children
+                    for user in node.users:
+                        assert user.target == operator.getitem
+                        user_shape = node.meta["tensor_meta"][user.args[1]].shape
+                        grand_users = list(user.users)
+                        graph.inserting_after(user)
+                        if user.args[1] == 0:
+                            view_node_post = graph.call_function(
+                                torch.ops.aten.view, args=(user, user_shape))
+                            view_node_post.meta = {}
+                            view_node_post.meta["tensor_meta"] = user.meta["tensor_meta"]._replace()
+                            for gu in grand_users:
+                                gu.replace_input_with(user, view_node_post)
+                            user.meta["tensor_meta"] = user.meta["tensor_meta"]._replace(shape=[num_row, user_shape[-1]])  
+                    node.meta["tensor_meta"] = view_node_pre.meta["tensor_meta"]._replace()
 
     def requires(self, graph_module: GraphModule) -> None:
         duplicate_pass = DuplicationBeforePartition()
         duplicate_pass(graph_module)
-        self.requires_rank_2_softmax(graph_module)
+        self.requires_rank_3_reduce_apply(graph_module)
 
     def call(self, graph_module: GraphModule) -> PassResult | None:
         compute_graph_ir = ComputeGraphIR(graph_module.graph)
@@ -1068,14 +1136,16 @@ class Partitioning(PassBase):
         for idx, partition in enumerate(partitions):
             print(f"==============={idx}==================")
             print(partition)
-            if idx >= 26: break
-            if idx in [2,16]: 
+            if idx >= 37: continue
+            if idx in [2]: 
                 print("skipped")
                 continue
             for par in partition:
-                if len(par) > 1:
+                if EVTFuser.fusible(par):
                     fuser = EVTFuser()
                     fuser.trace(graph_module, par)
+                else:
+                    print("need nvfuser")
 
         return super().call(graph_module)
 

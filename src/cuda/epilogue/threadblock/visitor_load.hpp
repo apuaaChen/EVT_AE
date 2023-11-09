@@ -157,23 +157,132 @@ struct VisitorRand {
 //
 /////////////////////////////////////////////////////////////////////////////////////////////////
 // Scalar broadcast
+
 template<
+  class ThreadMap,
   class Element,
-  class StrideMNL = Stride<_0,_0,_0>,
-  int BroadcastCount = 1,
-  template <class> class ReductionFn = multiplies
+  class StrideMNL = Stride<_0,_0,_1>
 >
 struct VisitorScalarBroadcast {
-  static_assert(
-    (cute::is_same_v<StrideMNL, Stride<_0,_0,_0>>) || // scalar broadcast, e.g. alpha
-    (cute::is_same_v<StrideMNL, Stride<_0,_0,_1>>) ||
-    (cute::is_same_v<StrideMNL, Stride<_0,_0,int>>));  // batched scalar broadcast, e.g. per-batch alpha
+
+  using ShapeL = decltype(repeat_like(get<2>(StrideMNL{}), int32_t(0)));
+
+  struct Arguments {
+    Element const* ptr_scalar = nullptr;
+    Element null_default = Element(0);
+    StrideMNL dScalar = {};
+    ShapeL sScalar = {};
+  };
+
+  using Params = Arguments;
+
+  template <class ProblemShape>
+  static constexpr Params
+  to_underlying_arguments(ProblemShape const& problem_shape, Arguments const& args, void* workspace) {
+    return args;
+  }
+
+  struct SharedStorage { };
+
+  CUTLASS_HOST_DEVICE
+  VisitorScalarBroadcast() { }
+
+  CUTLASS_HOST_DEVICE
+  VisitorScalarBroadcast(Params const& params, SharedStorage const& shared_storage)
+    : params_ptr(&params) { }
+  
+  Params const* params_ptr;
+
+  template <class GTensor, class RTensor, class CTensor, class ProblemShape>
+  struct Callbacks : EmptyCallbacks {
+    CUTLASS_DEVICE
+    Callbacks(
+      GTensor&& tC_gScalar,
+      RTensor&& tC_rScalar,
+      CTensor&& tC_cScalar,
+      ProblemShape problem_shape,
+      Params const* params_ptr
+    ):
+      tC_gScalar(cute::forward<GTensor>(tC_gScalar)),
+      tC_rScalar(cute::forward<RTensor>(tC_rScalar)),
+      tC_cScalar(cute::forward<CTensor>(tC_cScalar)),
+      problem_shape(problem_shape),
+      params_ptr(params_ptr) { }
+    
+    GTensor tC_gScalar;
+    RTensor tC_rScalar;
+    CTensor tC_cScalar;
+    Params const* params_ptr;
+    ProblemShape problem_shape;
+
+    CUTLASS_DEVICE void
+    begin_epilogue() {
+      clear(tC_rScalar);
+      Tensor pred = make_tensor<bool>(shape(tC_gScalar));
+      CUTLASS_PRAGMA_UNROLL
+      for (int i = 0; i < size(pred); ++i) {
+        pred(i) = elem_less(tC_cScalar(i), problem_shape);
+      }
+      copy_if(pred, tC_gScalar, tC_rScalar);
+    }
+
+    template <class ElementAccumulator, int FragmentSize>
+    CUTLASS_DEVICE auto // returns an Array
+    visit(int row_idx, int column_idx, 
+          Array<ElementAccumulator, FragmentSize> const& frg_acc) {
+      Array<Element, FragmentSize> frg_scalar;
+      frg_scalar.fill(tC_rScalar(row_idx));
+      return frg_scalar;
+    }
+  };
+
+  template <class ProblemShape>
+  CUTLASS_DEVICE auto
+  get_callbacks(
+    gemm::GemmCoord threadblock_tile_offset,
+    int thread_idx,
+    ProblemShape problem_shape_
+  ) {
+    auto problem_shape = make_shape(get<0>(problem_shape_), get<1>(problem_shape_), params_ptr->sScalar);
+    Tensor mScalar = make_tensor(
+      make_gmem_ptr(params_ptr->ptr_scalar), 
+      problem_shape,
+      params_ptr->dScalar);   // (M,N,L)
+
+    // VECTOR, ITERATION_COLUMN, ITERATION_ROW
+    Tensor tC_gScalar = ThreadMap::partition(
+      mScalar, thread_idx, threadblock_tile_offset)(_0{},_0{},_);
+    Tensor tC_rScalar = make_tensor_like(tC_gScalar);
+
+    // Generate the pred tensor
+    Tensor cScalar = make_identity_tensor(mScalar.shape());
+    Tensor tC_cScalar = ThreadMap::partition(
+      cScalar, thread_idx, threadblock_tile_offset)(_0{},_0{},_);
+
+    return Callbacks<
+      decltype(tC_gScalar), decltype(tC_rScalar),
+      decltype(tC_cScalar), decltype(problem_shape)>(
+      cute::move(tC_gScalar),
+      cute::move(tC_rScalar),
+      cute::move(tC_cScalar),
+      problem_shape,
+      params_ptr
+    );
+  }
+};
+
+template<
+  class ThreadMap,
+  class Element
+>
+struct VisitorScalarBroadcast<ThreadMap, Element, Stride<_0,_0,_0>> {
+  using StrideMNL = Stride<_0,_0,_0>;
   
   struct SharedStorage { };
 
   struct Arguments {
-    Element scalars[BroadcastCount] = {};
-    Element const* scalar_ptrs[BroadcastCount] = {};
+    Element scalar;
+    Element const* ptr_scalar = nullptr;
     StrideMNL dScalar = {};
   };
 
@@ -192,9 +301,7 @@ struct VisitorScalarBroadcast {
   VisitorScalarBroadcast(Params const& params, SharedStorage const& shared_storage)
       : params_ptr(&params) {
     // Get the scalar for non-batched broadcast
-    if constexpr (cute::is_same_v<StrideMNL, Stride<_0,_0,_0>>) {
-      update_scalar();
-    }
+    update_scalar();
   }
 
   Element scalar;
@@ -226,40 +333,22 @@ struct VisitorScalarBroadcast {
     ProblemShape problem_shape
   ) {
     // Get the scalar for batched broadcast
-    if constexpr (
-      cute::is_same_v<StrideMNL, Stride<_0,_0,_1>> ||
-      cute::is_same_v<StrideMNL, Stride<_0,_0,int>>) {
-      update_scalar(threadblock_tile_offset.k());
-    }
     return Callbacks(scalar);
   }
 
 private:
   CUTLASS_DEVICE void
-  update_scalar(int l_coord = 0) {
-    int l_offset = l_coord * size<2>(params_ptr->dScalar);
-
-    if (params_ptr->scalar_ptrs[0] != nullptr) {
-      scalar = params_ptr->scalar_ptrs[0][l_offset];
+  update_scalar() {
+    if (params_ptr->ptr_scalar != nullptr) {
+      scalar = *params_ptr->ptr_scalar;
     } else {
       // batch stride is ignored for nullptr fallback
-      scalar = params_ptr->scalars[0];
-    }
-
-    // Do reduction over multiple broadcasts if necessary
-    ReductionFn<Element> reduction_fn;
-    CUTLASS_PRAGMA_UNROLL
-    for (int i = 1; i < BroadcastCount; ++i) {
-      if (params_ptr->scalar_ptrs[i] != nullptr) {
-        scalar = reduction_fn(scalar, params_ptr->scalar_ptrs[i][l_offset]);
-      } else {
-        // batch stride is ignored for nullptr fallback
-        scalar = reduction_fn(scalar, params_ptr->scalars[i]);
-      }
+      scalar = params_ptr->scalar;
     }
   }
 
 };
+
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 //
@@ -287,11 +376,7 @@ struct VisitorAuxLoad{
   template <class ProblemShape>
   static constexpr Params
   to_underlying_arguments(ProblemShape const& problem_shape, Arguments const& args, void* workspace) {
-    if constexpr (!is_tuple<ShapeL>::value) {
-      return {args.ptr_aux, args.null_default, args.dAux, get<2>(problem_shape)};
-    } else {
-      return args;
-    }
+    return args;
   }
 
   // Software pipeline stages
@@ -351,11 +436,13 @@ struct VisitorAuxLoad{
   get_callbacks(
     gemm::GemmCoord threadblock_tile_offset,
     int thread_idx,
-    ProblemShape problem_shape
+    ProblemShape problem_shape_
   ) { 
+    auto problem_shape = make_shape(
+      get<0>(problem_shape_), get<1>(problem_shape_), params_ptr->sAux);
     Tensor mAux = make_tensor(
       make_gmem_ptr(params_ptr->ptr_aux), 
-      make_shape(get<0>(problem_shape), get<1>(problem_shape), params_ptr->sAux),
+      problem_shape,
       params_ptr->dAux);   // (M,N,L)
     // VECTOR, ITERATION_ROW, ITERATION_COLUMN
     Tensor tC_gAux = recast<VecType>(
@@ -367,7 +454,7 @@ struct VisitorAuxLoad{
       cAux, thread_idx, threadblock_tile_offset)(_0{},_,_);
 
     return Callbacks<
-      decltype(tC_gAux), decltype(tC_cAux), ProblemShape>(
+      decltype(tC_gAux), decltype(tC_cAux), decltype(problem_shape)>(
       cute::move(tC_gAux),
       cute::move(tC_cAux),
       problem_shape,
@@ -399,11 +486,7 @@ struct VisitorRowBroadcast {
   template <class ProblemShape>
   static constexpr Params
   to_underlying_arguments(ProblemShape const& problem_shape, Arguments const& args, void* workspace) {
-    if constexpr (!is_tuple<ShapeL>::value) {
-      return {args.ptr_row, args.null_default, args.dRow, get<2>(problem_shape)};
-    } else {
-      return args;
-    }
+    return args;
   }
 
   struct SharedStorage {};
@@ -433,23 +516,23 @@ struct VisitorRowBroadcast {
     ):
       tC_gRow(cute::forward<GTensor>(tC_gRow)),
       tC_cRow(cute::forward<CTensor>(tC_cRow)),
-      n(get<1>(problem_shape)),
+      problem_shape(problem_shape),
       params_ptr(params_ptr) { }
     
     GTensor tC_gRow;
     CTensor tC_cRow;
     Params const* params_ptr;
-    int n;
+    ProblemShape problem_shape;
 
     template <class ElementAccumulator, int FragmentSize>
     CUTLASS_DEVICE auto // returns an Array
     visit(int row_idx, int column_idx,
           Array<ElementAccumulator, FragmentSize> const& frg_acc) {
-      bool guard = get<1>(tC_cRow(column_idx)) < n;
+      bool guard = elem_less(tC_cRow(column_idx, row_idx), problem_shape);
       Array<Element, VecLength> value;
       VecType* value_ptr = reinterpret_cast<VecType*>(&value);
       cutlass::arch::global_load<VecType, sizeof(VecType)>(
-        *value_ptr, (void const*)&tC_gRow(column_idx), guard);
+        *value_ptr, (void const*)&tC_gRow(column_idx, row_idx), guard);
       if (!guard) value.fill(params_ptr->null_default);
       return value;
     }
@@ -460,22 +543,24 @@ struct VisitorRowBroadcast {
   get_callbacks(
     gemm::GemmCoord threadblock_tile_offset,
     int thread_idx,
-    ProblemShape problem_shape
+    ProblemShape problem_shape_
   ) {
+    auto problem_shape = make_shape(
+      get<0>(problem_shape_), get<1>(problem_shape_), params_ptr->sRow);
     Tensor mRow = make_tensor(
       make_gmem_ptr(params_ptr->ptr_row), 
-      make_shape(get<0>(problem_shape), get<1>(problem_shape), params_ptr->sRow),
+      problem_shape,
       params_ptr->dRow);   // (M,N,L)
-    // VECTOR, ITERATION_ROW, ITERATION_COLUMN
+    // VECTOR, ITERATION_COLUMN, ITERATION_ROW
     Tensor tC_gRow = recast<VecType>(
-      ThreadMap::partition(mRow, thread_idx, threadblock_tile_offset))(_0{},_,_0{});
+      ThreadMap::partition(mRow, thread_idx, threadblock_tile_offset))(_0{},_,_);
 
     // Generate the pred tensor
     Tensor cRow = make_identity_tensor(mRow.shape());
-    Tensor tC_cRow = ThreadMap::partition(cRow, thread_idx, threadblock_tile_offset)(_0{},_,_0{});
+    Tensor tC_cRow = ThreadMap::partition(cRow, thread_idx, threadblock_tile_offset)(_0{},_,_);
     
     return Callbacks<
-      decltype(tC_gRow), decltype(tC_cRow), ProblemShape>(
+      decltype(tC_gRow), decltype(tC_cRow), decltype(problem_shape)>(
       cute::move(tC_gRow),
       cute::move(tC_cRow),
       problem_shape,
@@ -483,124 +568,6 @@ struct VisitorRowBroadcast {
     );
   }
 
-};
-
-/////////////////////////////////////////////////////////////////////////////////////////////////
-
-// Column vector broadcast
-template<
-  class ThreadMap,
-  class Element,
-  class StrideMNL = Stride<_1,_0,_0>
->
-struct VisitorColBroadcast {
-
-  using ShapeL = decltype(repeat_like(get<2>(StrideMNL{}), int32_t(0)));
-  struct Arguments {
-    Element const* ptr_col = nullptr;
-    Element null_default = Element(0);
-    StrideMNL dCol = {};
-    ShapeL sCol = {};
-  };
-
-  using Params = Arguments;
-
-  template <class ProblemShape>
-  static constexpr Params
-  to_underlying_arguments(ProblemShape const& problem_shape, Arguments const& args, void* workspace) {
-    if constexpr (!is_tuple<ShapeL>::value) {
-      return {args.ptr_col, args.null_default, args.dCol, get<2>(problem_shape)};
-    } else {
-      return args;
-    }
-  }
-
-  struct SharedStorage { };
-
-  CUTLASS_HOST_DEVICE
-  VisitorColBroadcast() { }
-
-  CUTLASS_HOST_DEVICE
-  VisitorColBroadcast(Params const& params, SharedStorage const& shared_storage)
-    : params_ptr(&params) { }
-  
-  Params const* params_ptr;
-
-  template <class GTensor, class RTensor, class CTensor, class ProblemShape>
-  struct Callbacks : EmptyCallbacks {
-    CUTLASS_DEVICE
-    Callbacks(
-      GTensor&& tC_gCol,
-      RTensor&& tC_rCol,
-      CTensor&& tC_cCol,
-      ProblemShape problem_shape,
-      Params const* params_ptr
-    ):
-      tC_gCol(cute::forward<GTensor>(tC_gCol)),
-      tC_rCol(cute::forward<RTensor>(tC_rCol)),
-      tC_cCol(cute::forward<CTensor>(tC_cCol)),
-      m(get<0>(problem_shape)),
-      params_ptr(params_ptr) { }
-    
-    GTensor tC_gCol;
-    RTensor tC_rCol;
-    CTensor tC_cCol;
-    Params const* params_ptr;
-    int m;
-
-    CUTLASS_DEVICE void
-    begin_epilogue() {
-      clear(tC_rCol);
-      Tensor pred = make_tensor<bool>(shape(tC_gCol));
-      CUTLASS_PRAGMA_UNROLL
-      for (int i = 0; i < size(pred); ++i) {
-        pred(i) = get<0>(tC_cCol(i)) < m;
-      }
-      copy_if(pred, tC_gCol, tC_rCol);
-    }
-
-    template <class ElementAccumulator, int FragmentSize>
-    CUTLASS_DEVICE auto // returns an Array
-    visit(int row_idx, int column_idx, 
-          Array<ElementAccumulator, FragmentSize> const& frg_acc) {
-      Array<Element, FragmentSize> frg_col;
-      frg_col.fill(tC_rCol(row_idx));
-      return frg_col;
-    }
-  };
-
-  template <class ProblemShape>
-  CUTLASS_DEVICE auto
-  get_callbacks(
-    gemm::GemmCoord threadblock_tile_offset,
-    int thread_idx,
-    ProblemShape problem_shape
-  ) {
-    Tensor mCol = make_tensor(
-      make_gmem_ptr(params_ptr->ptr_col), 
-      make_shape(get<0>(problem_shape), get<1>(problem_shape), params_ptr->sCol),
-      params_ptr->dCol);   // (M,N,L)
-
-    // VECTOR, ITERATION_COLUMN, ITERATION_ROW
-    Tensor tC_gCol = ThreadMap::partition(
-      mCol, thread_idx, threadblock_tile_offset)(_0{},_0{},_);
-    Tensor tC_rCol = make_tensor_like(tC_gCol);
-
-    // Generate the pred tensor
-    Tensor cCol = make_identity_tensor(mCol.shape());
-    Tensor tC_cCol = ThreadMap::partition(
-      cCol, thread_idx, threadblock_tile_offset)(_0{},_0{},_);
-
-    return Callbacks<
-      decltype(tC_gCol), decltype(tC_rCol),
-      decltype(tC_cCol), ProblemShape>(
-      cute::move(tC_gCol),
-      cute::move(tC_rCol),
-      cute::move(tC_cCol),
-      problem_shape,
-      params_ptr
-    );
-  }
 };
 
 /////////////////////////////////////////////////////////////////////////////////////////////////

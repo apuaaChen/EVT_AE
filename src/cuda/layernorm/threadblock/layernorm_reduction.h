@@ -23,7 +23,7 @@ using cute::tuple;
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
-namespace softmax {
+namespace layernorm {
 namespace threadblock {
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
@@ -36,7 +36,7 @@ template<
   class ThreadMap,                 // Thread map
   bool CacheInput = true           // Whether cache the inputs in registers
 > 
-struct SoftmaxReduction : 
+struct LayerNormReduction : 
   reduce_apply::threadblock::ReductionBase<
     ElementAccumulator_, ThreadMap::kNumThreads> {
   
@@ -50,8 +50,8 @@ struct SoftmaxReduction :
 
   // The reduction result produced by the current softmax
   struct ReductionResult{
-    ElementAccumulator row_max;
-    ElementAccumulator row_sum;
+    ElementAccumulator mean;
+    ElementAccumulator inv_std;
   };
 
   static const int kElementsPerAccess = Alignment;
@@ -59,18 +59,25 @@ struct SoftmaxReduction :
   struct Arguments {
     Element const* ptr_input = nullptr;
     StrideMNL dInput = {};
+    float eps;
+    // memory buffer storing the mean and std vectors
+    ElementAccumulator* ptr_mean = nullptr;
+    ElementAccumulator* ptr_invstd = nullptr;
   };
 
   struct Params {
     Element const* ptr_input = nullptr;
     StrideMNL dInput = {};
-    Element null_default = std::numeric_limits<Element>::lowest();
+    float eps;
+    ElementAccumulator* ptr_mean = nullptr;
+    ElementAccumulator* ptr_invstd = nullptr;
+    Element null_default = Element(0);
   };
 
   template <class ProblemShape>
   static constexpr Params
   to_underlying_arguments(ProblemShape const& problem_shape, Arguments const& args) {
-    return {args.ptr_input, args.dInput};
+    return {args.ptr_input, args.dInput, args.eps, args.ptr_mean, args.ptr_invstd};
   }
 
   using SharedStorage = typename Base::SharedStorage;
@@ -80,10 +87,10 @@ struct SoftmaxReduction :
   //
 
   CUTLASS_HOST_DEVICE
-  SoftmaxReduction() { }
+  LayerNormReduction() { }
 
   CUTLASS_HOST_DEVICE
-  SoftmaxReduction(Params const& params, SharedStorage& shared_storage, int thread_idx)
+  LayerNormReduction(Params const& params, SharedStorage& shared_storage, int thread_idx)
     : params_ptr(&params),
     Base(thread_idx, shared_storage) { }
   
@@ -128,6 +135,11 @@ struct SoftmaxReduction :
       cutlass::arch::global_load<VecType, sizeof(VecType)>(*value_ptr, (void*)&tC_gInput(column_idx, row_idx), guard);
       if (!guard) value.fill(null_default);
       return value;
+    }
+
+    CUTLASS_DEVICE
+    int get_row_idx(int row_idx) {
+      return cute::get<2>(tC_cInput(_0{}, row_idx));
     }
   };
 
@@ -221,25 +233,34 @@ struct SoftmaxReduction :
     using ConvertInput = NumericArrayConverter<ElementAccumulator, Element, VecLength>;
     ConvertInput convert_input{};
 
-    Array<ElementAccumulator, VecLength> max_accum;
-    max_accum.fill(params_ptr->null_default);
+    Array<ElementAccumulator, VecLength> x_accum;
+    Array<ElementAccumulator, VecLength> x2_accum;
+    x_accum.clear();
+    x2_accum.clear();
 
+    CUTLASS_PRAGMA_UNROLL
     for (int column_idx=0; column_idx < ThreadMap::kIterationColumn; ++column_idx) {
       Array<Element, VecLength> value = inputs.get(row_idx, column_idx);
-      max_accum = max(max_accum, convert_input(value));
+      x_accum = convert_input(value) + x_accum;
+      x2_accum = convert_input(value * value) + x2_accum;
     }
 
-    this->max(max_accum, reduction_result.row_max);
+    ElementAccumulator m1;
+    ElementAccumulator m2;
+    this->sum(x_accum, m1);
+    this->sum(x2_accum, m2);
 
-    Array<ElementAccumulator, VecLength> sum_exp_accum;
-    sum_exp_accum.clear();
+    float num_column = ElementAccumulator(get<1>(inputs.problem_shape));
+    m1 = m1/num_column;
+    m2 = m2/num_column;
 
-    for (int column_idx=0; column_idx < ThreadMap::kIterationColumn; ++column_idx) {
-      Array<Element, VecLength> value = inputs.get(row_idx, column_idx);
-      sum_exp_accum = exp(convert_input(value) - reduction_result.row_max) + sum_exp_accum;
+    reduction_result.mean = m1;
+    reduction_result.inv_std = ElementAccumulator(1) / ElementAccumulator(cutlass::sqrt(m2 - m1 * m1 + params_ptr->eps));
+    int global_row_idx = inputs.get_row_idx(row_idx);
+    if (threadIdx.x == 0 && global_row_idx < get<2>(inputs.problem_shape) ) {
+      *(params_ptr->ptr_mean + global_row_idx) = reduction_result.mean;
+      *(params_ptr->ptr_invstd + global_row_idx) = reduction_result.inv_std;
     }
-
-    this->sum(sum_exp_accum, reduction_result.row_sum);
   }
 
   template <class InputCache>
@@ -248,15 +269,14 @@ struct SoftmaxReduction :
     using ConvertInput = NumericArrayConverter<ElementAccumulator, Element, VecLength>;
     ConvertInput convert_input{};
     Array<ElementAccumulator, VecLength> compute_frg = convert_input(inputs.get(row_idx, column_idx));
-
-    return exp(compute_frg - reduction_result.row_max) / reduction_result.row_sum;
+    return (compute_frg - reduction_result.mean) * reduction_result.inv_std;
   }
 };
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 } // namespace threadblock
-} // namespace softmax
+} // namespace layernorm
 } // namespace cutlass
 
 /////////////////////////////////////////////////////////////////////////////////////////////////

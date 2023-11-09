@@ -37,7 +37,9 @@ from concurrent.futures import ThreadPoolExecutor
 from cutlass.backend import compiler
 from cutlass.backend.utils.datatypes import torch_to_cutlass
 from gtl.ops.softmax import SoftmaxOperation, SoftmaxArguments
+from gtl.ops.layernorm import LayerNormOperation, LayerNormArguments
 from cutlass.backend.compiler import CompilationOptions
+from torch.fx.passes.tools_common import legalize_graph
 
 
 # Overloaded argument type for BMM to support permutation
@@ -185,7 +187,11 @@ class FusedOpBase:
                         device="cuda"
                     )
                 else:
-                    visitor_args[output_node.name] = torch.zeros(
+                    if output_node.target == torch.ops.aten.clone:
+                        name = output_node.args[0].name
+                    else:
+                        name = output_node.name
+                    visitor_args[name] = torch.zeros(
                         size=output_node.meta['tensor_meta'].shape,
                         dtype=output_node.meta['tensor_meta'].dtype,
                         device="cuda"
@@ -205,7 +211,13 @@ class FusedOpBase:
                         arg.record_stream(self.stream)
             
             # get the results
-            return [visitor_args[output.name] for output in self.outputs]
+            results = []
+            for output in self.outputs:
+                if output.target == torch.ops.aten.clone:
+                    results.append(visitor_args[output.args[0].name])
+                else:
+                    results.append(visitor_args[output.name])
+            return results
     
     def get_src(self, node):
         if node.target in self.mainloop_fusion_targets:
@@ -471,7 +483,7 @@ class FusedSoftmax(FusedOpBase):
         reduction_dim = node.args[1]
         if reduction_dim < 0:
             reduction_dim = len(shape) + reduction_dim
-        self.problem_size = MatrixCoord(shape[0], shape[1])
+        self.problem_size = MatrixCoord(shape[0], shape[2])
 
         # Get alignment
         alignment = self.get_alignment(shape[-1])
@@ -505,19 +517,99 @@ class FusedSoftmax(FusedOpBase):
         self.operation.run(arguments, stream=stream.cuda_stream)
 
 
+class FusedLayerNorm(FusedOpBase):
+    """
+    The fused operator of LayerNorm epilogue_visitor(native_layer_norm, args)
+    """
+    __name__ = "cutlass_layernorm_with_visitor"
+    target = torch.ops.aten.native_layer_norm
+    mainloop_fusion_targets = []
+
+    def __init__(self, node: Node, epilogue_visitor) -> None:
+        super().__init__(node, epilogue_visitor)
+
+        # Get input
+        input = node.args[0]
+        self.args = [input]
+        shape = node.meta["tensor_meta"].shape
+        self.problem_size = MatrixCoord(shape[0], shape[2])
+
+        # get mean & var tensor
+        for user in node.users:
+            assert user.target == operator.getitem
+            if user.args[1] == 1:
+                self.mean_name = user.name
+            elif user.args[1] == 2:
+                self.invstd_name = user.name
+
+        # Get alignment
+        alignment = self.get_alignment(shape[-1])
+        element = torch_to_cutlass(node.meta["tensor_meta"].dtype)
+
+        # Get softmax operation
+        self.operation = LayerNormOperation(
+            input=TensorDescription(element, LayoutType.RowMajor, alignment),
+            rows_per_cta=-1, num_columns=self.problem_size.column, num_rows=self.problem_size.row, 
+            warp_count=-1, epilogue_visitor=epilogue_visitor, cache_input=False
+        )
+        # TODO: hardcode
+        MLCOMPILER_SRC_DIR = '/workspace/SEAL-PICASSO-ML-Compiler/src/cuda'
+        include_paths = [
+            MLCOMPILER_SRC_DIR
+        ] + compiler.default_include_paths
+
+        compile_options = CompilationOptions(
+            compiler.default_compile_options, 80, include_paths=include_paths
+        )
+        compiler.add_module([self.operation], compile_options)
+    
+    def call(self, visitor_args, stream, *args) -> Any:
+        # create the mean & std vectors
+        input = args[-1]
+
+        arguments = LayerNormArguments(
+            self.operation, self.problem_size,
+            input, visitor_args[self.mean_name], visitor_args[self.invstd_name],
+            self.operation.epilogue_type(visitor_args)
+        )
+
+        self.operation.run(arguments, stream=stream.cuda_stream)
+
 
 class EVTFuser(EVTFrontendBase):
     """
     The entry point of CUTLASS EVT Fuser 
     """
-    def trace(self, graph_module: GraphModule, partition: 'list[Node]'):
+    supported_targets = [
+        torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten._softmax, 
+        torch.ops.aten.native_layer_norm]
+
+    def get_node_with_name(self, name, graph_module):
+        for node in graph_module.graph.nodes:
+            if node.name == name:
+                return node
+        raise ValueError(f"{name} is not in the graph.")
+
+    def fusible(partition):
+        for node in partition:
+            if node.target in EVTFuser.supported_targets:
+                return True
+        return False
+            
+    def trace(self, graph_module: GraphModule, partition_: 'list[Node]'):
+        try:
+            graph_module.graph.lint()
+        except:
+            legalize_graph(graph_module)
+        partition = [self.get_node_with_name(n.name, graph_module) for n in partition_]
+
         # Step 1: get the epilogue partition
         # The epilogue partition excludes the mainloop and mainloop-fused ops
         epilogue_partition = []
         # We use the heavy operation (mm, bmm, softmax, etc) as the anchor
         anchor = None
         for node in partition:
-            if node.target in [torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten._softmax]:
+            if node.target in self.supported_targets:
                 anchor = node
         for node in partition:
             if anchor in node.users:
@@ -547,6 +639,17 @@ class EVTFuser(EVTFrontendBase):
                 input = node.all_input_nodes[0]
                 node.replace_all_uses_with(input)
                 subgraph.erase_node(node)
+            elif node.target == operator.getitem:
+                if anchor.target == torch.ops.aten.native_layer_norm:
+                    if node.args[1] == 0:
+                        input = node.all_input_nodes[0]
+                        node.replace_all_uses_with(input)
+                        subgraph.erase_node(node)
+                    else:
+                        list(node.users)[0].replace_input_with(node, None)
+                        subgraph.erase_node(node)
+
+
         
         # Step 3: register the input and output nodes in the original graph & subgraph
         # 3.1 Output nodes in subgraph
@@ -778,6 +881,8 @@ class EVTFuser(EVTFrontendBase):
             op = FusedBMM(node, self)
         elif node.target == torch.ops.aten._softmax:
             op = FusedSoftmax(node, self)
+        elif node.target == torch.ops.aten.native_layer_norm:
+            op = FusedLayerNorm(node, self)
         else:
             raise NotImplementedError()
         return op

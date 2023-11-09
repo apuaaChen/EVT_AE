@@ -41,14 +41,17 @@ using X = Underscore;
 template<
   class ThreadMap,
   class Element,
-  FloatRoundStyle RoundStyle,
-  class StrideMNL
+  class StrideMNL = Stride<_0,_1,_0>
 >
-struct VisitorAuxStore{
+struct VisitorRowStore{
+
+  using ShapeL = decltype(repeat_like(get<2>(StrideMNL{}), int32_t(0)));
 
   struct Arguments {
-    Element* ptr_aux = nullptr;
-    StrideMNL dAux = {};
+    Element* ptr_row = nullptr;
+    StrideMNL dRow = {};
+    ShapeL sRow = {};
+    ShapeL sMask = {};
   };
 
   using Params = Arguments;
@@ -66,10 +69,10 @@ struct VisitorAuxStore{
   static int constexpr VecLength = sizeof(VecType) / sizeof(Element);
 
   CUTLASS_HOST_DEVICE
-  VisitorAuxStore() { }
+  VisitorRowStore() { }
 
   CUTLASS_HOST_DEVICE
-  VisitorAuxStore(Params const& params, SharedStorage const& shared_storage)
+  VisitorRowStore(Params const& params, SharedStorage const& shared_storage)
     : params_ptr(&params) { }
 
   Params const* params_ptr;
@@ -78,18 +81,18 @@ struct VisitorAuxStore{
   struct Callbacks : EmptyCallbacks {
     CUTLASS_DEVICE
     Callbacks(
-      GTensor&& tC_gAux,
-      CTensor&& tC_cAux,
+      GTensor&& tC_gRow,
+      CTensor&& tC_cRow,
       ProblemShape problem_shape,
       Params const* params_ptr
     ):
-      tC_gAux(cute::forward<GTensor>(tC_gAux)),
-      tC_cAux(cute::forward<CTensor>(tC_cAux)),
+      tC_gRow(cute::forward<GTensor>(tC_gRow)),
+      tC_cRow(cute::forward<CTensor>(tC_cRow)),
       problem_shape(problem_shape),
       params_ptr(params_ptr) { }
 
-    GTensor tC_gAux;
-    CTensor tC_cAux;
+    GTensor tC_gRow;
+    CTensor tC_cRow;
     Params const* params_ptr;
     ProblemShape problem_shape;
 
@@ -98,12 +101,12 @@ struct VisitorAuxStore{
     visit(int row_idx, int column_idx,
           Array<ElementAccumulator, FragmentSize> const& frg_acc,
           Array<ElementInput, FragmentSize> const& frg_input) {
-      using ConvertInput = NumericArrayConverter<Element, ElementInput, FragmentSize, RoundStyle>;
+      using ConvertInput = NumericArrayConverter<Element, ElementInput, FragmentSize>;
       ConvertInput convert_input{};
       Array<Element, FragmentSize> frg_output = convert_input(frg_input);
       VecType const* value_ptr = reinterpret_cast<VecType const*>(&frg_output);
-      bool guard = elem_less(tC_cAux(column_idx, row_idx), problem_shape);
-      cutlass::arch::global_store<VecType, sizeof(VecType)>(*value_ptr, (void*)&tC_gAux(column_idx, row_idx), guard);
+      bool guard = elem_less(tC_cRow(column_idx, row_idx), problem_shape);
+      cutlass::arch::global_store<VecType, sizeof(VecType)>(*value_ptr, (void*)&tC_gRow(column_idx, row_idx), guard);
 
       return frg_input;
     }
@@ -115,25 +118,26 @@ struct VisitorAuxStore{
   get_callbacks(
     gemm::GemmCoord threadblock_tile_offset,
     int thread_idx,
-    ProblemShape problem_shape
+    ProblemShape problem_shape_
   ) {
-    Tensor mAux = make_tensor(
-      make_gmem_ptr(params_ptr->ptr_aux), 
+    auto problem_shape = make_shape(get<0>(problem_shape_), get<1>(problem_shape_), params_ptr->sRow);
+    Tensor mRow = make_tensor(
+      make_gmem_ptr(params_ptr->ptr_row), 
       problem_shape,
-      params_ptr->dAux);   // (M,N,L)
+      params_ptr->dRow);   // (M,N,L)
     // VECTOR, ITERATION_COLUMN, ITERATION_ROW
-    Tensor tC_gAux = recast<VecType>(
-      ThreadMap::partition(mAux, thread_idx, threadblock_tile_offset))(_0{},_,_);
+    Tensor tC_gRow = recast<VecType>(
+      ThreadMap::partition(mRow, thread_idx, threadblock_tile_offset))(_0{},_,_);
 
     // Generate the pred tensor
-    Tensor cAux = make_identity_tensor(mAux.shape());
-    Tensor tC_cAux = ThreadMap::partition(
-      cAux, thread_idx, threadblock_tile_offset)(_0{},_,_);
+    Tensor cRow = make_identity_tensor(mRow.shape());
+    Tensor tC_cRow = ThreadMap::partition(
+      cRow, thread_idx, threadblock_tile_offset)(_0{},_,_);
 
     return Callbacks<
-      decltype(tC_gAux), decltype(tC_cAux), ProblemShape>(
-      cute::move(tC_gAux),
-      cute::move(tC_cAux),
+      decltype(tC_gRow), decltype(tC_cRow), decltype(problem_shape)>(
+      cute::move(tC_gRow),
+      cute::move(tC_cRow),
       problem_shape,
       params_ptr
     );
@@ -480,12 +484,7 @@ struct VisitorRowReduction {
   template <class ProblemShape>
   static constexpr Params
   to_underlying_arguments(ProblemShape const& problem_shape, Arguments const& args, void* workspace) {
-    if constexpr (!is_tuple<ShapeL>::value) {
-      return {args.ptr_row, args.reduction_identity, args.dRow, get<2>(problem_shape)};
-    } else {
-      return args;
-    }
-    
+    return args;
   }
 
   struct SharedStorage {};

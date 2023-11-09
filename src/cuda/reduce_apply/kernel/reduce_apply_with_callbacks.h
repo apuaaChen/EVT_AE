@@ -37,7 +37,6 @@ struct ReduceApplyWithCallbacks {
   struct Arguments {
     typename RedCallbacks::Arguments red_args;
     MatrixCoord problem_size;
-    int batch_count;
     typename EpiCallbacks::Arguments epi_args;
   };
 
@@ -49,7 +48,7 @@ struct ReduceApplyWithCallbacks {
     /// Constructor
     Params(Arguments const& args):
       problem_shape(
-        {args.problem_size.row(), args.problem_size.column(), args.batch_count}),
+        {1, args.problem_size.column(), args.problem_size.row()}),
       red_params(
         RedCallbacks::to_underlying_arguments(
           problem_shape, args.red_args)),

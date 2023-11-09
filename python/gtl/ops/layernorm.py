@@ -23,18 +23,20 @@ import ctypes
 
 ################################################################################
 #
-# Data structure modeling a Softmax operation
+# Data structure modeling a LayerNorm operation
 #
 ################################################################################
 
-
-class SoftmaxArguments(ReduceApplyArguments):
+class LayerNormArguments(ReduceApplyArguments):
     def __init__(
         self, operation: ReduceApplyOperation, problem_size: 'list[int]', 
-        input: torch.Tensor, output_op, **kwargs) -> None:
+        input: torch.Tensor, mean: torch.Tensor, invstd: torch.Tensor, 
+        output_op, **kwargs) -> None:
         super().__init__(operation, problem_size, **kwargs)
 
         self.ptr_input = self.tensor2ptr(input)
+        self.ptr_mean = self.tensor2ptr(mean)
+        self.ptr_invstd = self.tensor2ptr(invstd)
         self.output_op = output_op
 
         self.initialize()
@@ -44,14 +46,16 @@ class SoftmaxArguments(ReduceApplyArguments):
         self.arguments = self.operation.argument_type(
             self.ptr_input,
             self.problem_size,
+            self.ptr_mean,
+            self.ptr_invstd,
             self.output_op
         )
 
 
-class SoftmaxRT(ReduceApplyRT):
+class LayerNormRT(ReduceApplyRT):
     def __init__(self, operation: 'ReduceApplyOperation'):
         super().__init__(operation)
-        self.emitter = EmitSoftmaxUniversalInstance('_type')
+        self.emitter = EmitLayerNormUniversalInstance('_type')
     
     @staticmethod
     def get_arguments(epilogue_functor):
@@ -60,23 +64,30 @@ class SoftmaxRT(ReduceApplyRT):
         stride_example = (0, 1, 10)
         stride_type = tuple_factory(stride_example, "int64_t")
 
-        class _SoftmaxArguments(ctypes.Structure):
+        class _LayerNormArguments(ctypes.Structure):
             _fields_ = [
                 # Mainloop Args
                 ("ptr_input", ctypes.c_void_p),
                 ("stride_input", stride_type),
+                ("eps", ctypes.c_float),
+                ("ptr_mean", ctypes.c_void_p),
+                ("ptr_invstd", ctypes.c_void_p),
                 ("problem_size", MatrixCoord_),
                 ("epilogue_args", _EpilogueOutputOpParams)
             ]
-            def __init__(self, ptr_input, problem_size, epilogue_args) -> None:
+            def __init__(self, ptr_input, problem_size, ptr_mean, ptr_invstd, epilogue_args) -> None:
                 self.ptr_input = int(ptr_input)
                 self.problem_size = MatrixCoord_(problem_size.row, problem_size.column)
+                self.eps = 1e-12
+                self.ptr_mean = int(ptr_mean)
+                self.ptr_invstd = int(ptr_invstd)
                 self.epilogue_args = epilogue_args
                 self.stride_input = stride_type((0, 1, problem_size.column))
-        return _SoftmaxArguments, _EpilogueOutputOpParams
+
+        return _LayerNormArguments, _EpilogueOutputOpParams
 
 
-class SoftmaxOperation(ReduceApplyOperation):
+class LayerNormOperation(ReduceApplyOperation):
     def __init__(
         self, input: TensorDescription, num_columns, num_rows,
         rows_per_cta, warp_count: int,
@@ -92,12 +103,12 @@ class SoftmaxOperation(ReduceApplyOperation):
 
         super().__init__(rows_per_cta, num_columns, warp_count, self.alignment, element_accumulator, epilogue_visitor)
 
-        self.rt_module = SoftmaxRT(self)
+        self.rt_module = LayerNormRT(self)
         self.argument_type = self.rt_module.argument_type
         self.epilogue_type = self.rt_module.epilogue_type
     
     def procedural_name(self):
-        return "softmax_kernel"
+        return "layernorm_kernel"
     
     def propose_warp_count(self, alignment, num_columns):
         maximum_columns_per_warp = 32 * alignment * 16
@@ -116,7 +127,7 @@ class SoftmaxOperation(ReduceApplyOperation):
 
     
 
-class EmitSoftmaxUniversalInstance:
+class EmitLayerNormUniversalInstance:
     def __init__(self, operation_suffix='') -> None:
         self.operation_suffix = operation_suffix
         self.includes = [
@@ -131,7 +142,7 @@ class EmitSoftmaxUniversalInstance:
             "epilogue/threadblock/visitor_load.hpp",
             "epilogue/threadblock/visitor_store.hpp",
             "epilogue/threadblock/visitor_compute.hpp",
-            "softmax/threadblock/softmax_reduction.h",
+            "layernorm/threadblock/layernorm_reduction.h",
             "reduce_apply/kernel/reduce_apply_with_callbacks.h",
             "reduce_apply/threadblock/reduction_base.h"
         ]
@@ -142,7 +153,7 @@ using OutputTileThreadMap = cutlass::reduce_apply::threadblock::OutputTileThread
     ${num_threads}, ${element}, ${alignment}, cutlass::MatrixShape<${cta_rows}, ${cta_columns}>>;
         
 using ${operation_name}_reduction = 
-    cutlass::softmax::threadblock::SoftmaxReduction<
+    cutlass::layernorm::threadblock::LayerNormReduction<
         ${element},
         ${alignment},
         ${element_accumulator},
@@ -152,7 +163,7 @@ using ${operation_name}_reduction =
 
 ${callback_decl}
 
-// Softmax operator ${operation_name}
+// LayerNorm operator ${operation_name}
 using ${operation_name}_base = 
     cutlass::reduce_apply::kernel::ReduceApplyWithCallbacks<
         ${operation_name}_reduction,

@@ -155,9 +155,9 @@ struct OutputTileThreadLayout1D {
 
   // The shape of CTA Tile
   using CtaShapeMNL = cute::Shape<
-    Int<kRowsPerBlock>, 
+    _1, 
     Int<kColumnsPerBlock>,
-    _1
+    Int<kRowsPerBlock>
   >;
 
   static const int kIterationColumn = kColumnsPerBlock / (kElementsPerAccess * kNumThreads);
@@ -165,29 +165,27 @@ struct OutputTileThreadLayout1D {
 
   // The shape of CTA Tile
   using ThreadMapShape = cute::Shape<
-    // Column
+    // N
     Int<kElementsPerAccess>,
     Int<kNumThreads>,
     Int<kIterationColumn>,
-    // Row
+    // L
     Int<kRowsPerBlock>
   >;
 
   template <class TensorInput>
   CUTLASS_DEVICE
   static auto partition(TensorInput &&xT, int thread_idx, gemm::GemmCoord threadblock_tile_offset) {
-    // (kRowsPerBlock, kColumnsPerBlock)
+    // (kColumnsPerBlock, kRowsPerBlock,)
     Tensor bCxT = local_tile(
-      xT, CtaShapeMNL{}, make_coord(_,_,_), Step<_1,_1,X>{}
-    )(_,_,threadblock_tile_offset.m(),threadblock_tile_offset.n(), threadblock_tile_offset.k());
+      xT, CtaShapeMNL{}, make_coord(_,_,_), Step<_1,_1,_1>{}
+    )(_0{},_,_,threadblock_tile_offset.m(),threadblock_tile_offset.n(), threadblock_tile_offset.k());
     
     // Transform to column-major
     // VECTOR, THREADS, ITERATION_COLUMN, ITERATION_ROW
-    Tensor bCxT_nm = make_tensor(
-      std::forward<decltype(bCxT)>(bCxT).data(), make_layout(get<1>(bCxT.layout()), get<0>(bCxT.layout()))
-    ).compose(make_layout(ThreadMapShape{}));
+    Tensor tCxT = bCxT.compose(make_layout(ThreadMapShape{}));
 
-    return bCxT_nm(_,thread_idx,_,_);
+    return tCxT(_,thread_idx,_,_);
   }
 };
 

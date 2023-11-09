@@ -1125,6 +1125,49 @@ class Partitioning(PassBase):
                         else:
                             user.meta["tensor_meta"] = user.meta["tensor_meta"]._replace(shape=[num_row, 1, 1])  
                     node.meta["tensor_meta"] = view_node_pre.meta["tensor_meta"]._replace()
+            elif node.target == torch.ops.aten.native_layer_norm_backward:
+                node.meta["tensor_meta"] = node.meta["tensor_meta"][0]
+                shape = node.meta["tensor_meta"].shape
+                if len(shape) != 3 or shape[1] != 1:
+                    # TODO: reshape all the inputs!
+                    grad, x, _, mean, invstd = node.args[:5]
+                    num_row = 1
+                    for dim in shape[:-1]:
+                        num_row *= dim
+                    new_shape = [num_row, 1, shape[-1]]
+                    # Insert pre-view nodes
+                    for input in [grad, x]:
+                        graph.inserting_before(node)
+                        view_node_pre = graph.call_function(torch.ops.aten.view,
+                                                            args=(input, new_shape))
+                        view_node_pre.meta = {}
+                        view_node_pre.meta["tensor_meta"] = node.meta["tensor_meta"]._replace(shape=new_shape)
+                        node.replace_input_with(input, view_node_pre)
+                    for input in [mean, invstd]:
+                        graph.inserting_before(node)
+                        view_node_pre = graph.call_function(torch.ops.aten.view,
+                                                            args=(input, new_shape[:-1]))
+                        view_node_pre.meta = {}
+                        view_node_pre.meta["tensor_meta"] = node.meta["tensor_meta"]._replace(shape=new_shape)
+                        node.replace_input_with(input, view_node_pre)
+                    # Insert output views
+                    users = list(node.users)
+                    assert len(users) == 1
+                    user = users[0]
+                    assert user.target == operator.getitem
+                    user_shape = user.meta["tensor_meta"].shape
+                    grand_users = list(user.users)
+                    graph.inserting_after(user)
+                    view_node_post = graph.call_function(
+                        torch.ops.aten.view, args=(user, user_shape)
+                    )
+                    view_node_post.meta = {}
+                    view_node_post.meta["tensor_meta"] = user.meta["tensor_meta"]._replace()
+                    for gu in grand_users:
+                        gu.replace_input_with(user, view_node_post)
+                    user.meta["tensor_meta"] = user.meta["tensor_meta"]._replace(shape=new_shape)
+                    node.meta["tensor_meta"] = view_node_pre.meta["tensor_meta"]._replace()
+
 
     def requires(self, graph_module: GraphModule) -> None:
         duplicate_pass = DuplicationBeforePartition()

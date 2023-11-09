@@ -31,3 +31,5 @@
 #################################################################################################
 
 from gtl.ops.softmax import SoftmaxOperation, SoftmaxArguments
+from gtl.ops.layernorm import LayerNormOperation, LayerNormArguments
+from gtl.ops.layernorm_backward import LayerNormBackwardOperation, LayerNormBackwardArguments

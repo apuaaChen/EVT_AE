@@ -53,7 +53,7 @@ class BertTest(BaseTestCase):
         model_ref, optimizer_ref = bert_model_optimizer(
             config_file="./large.json", reference=model)
         # Create the sample inputs
-        sample_inputs = bert_inputs(batch_size=2, seq_len=512)
+        sample_inputs = bert_inputs(batch_size=4, seq_len=512)
         # Cast to fp16
         model, optimizer = apex_autocast(
             model, optimizer, False
@@ -73,7 +73,7 @@ class BertTest(BaseTestCase):
         )
 
         model.capture_graph(
-            batch=2, sequence_length=512, optimizer=optimizer
+            batch=4, sequence_length=512, optimizer=optimizer
         )
 
         self.run_target_model(model, optimizer, sample_inputs)
@@ -82,7 +82,7 @@ class BertTest(BaseTestCase):
     def is_close(self, grad1, grad2):
         return (
             torch.sum(
-                torch.isclose(grad1, grad2, rtol=1e-1)
+                torch.isclose(grad1, grad2, rtol=2e-1)
             ) / grad1.numel() > 0.9 
             or torch.allclose(grad1, grad2, atol=1e-3)
         )

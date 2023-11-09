@@ -105,7 +105,7 @@ class ArtifactManager:
         sqlite_insert_partition_query = """ INSERT OR IGNORE INTO partitions (hash, p_idx, n_idx, node) VALUES (?, ?, ?, ?)"""
         for p_idx, partition in enumerate(partitions):
             for n_idx, node in enumerate(partition):
-                data_tuple = (hash, p_idx, n_idx, node.name)
+                data_tuple = (hash, p_idx, n_idx, node)
                 cursor.execute(sqlite_insert_partition_query, data_tuple)
         
         sqlite_insert_subgraph_query = """ INSERT OR IGNORE INTO subgraphs (hash, subgraph) VALUES (?, ?)"""
@@ -400,7 +400,8 @@ class ILPSolver:
                 partition.append(
                     self.graph.nodes[digm.mapping[node]]["meta"])
             if validate_partition(partition):
-                partitions.append(partition)
+                partition_str = [node.name for node in partition]
+                partitions.append(partition_str)
             else:
                 breakpoint()
                 raise RuntimeError(f"Invalid partition: {partition}")
@@ -642,7 +643,7 @@ class ILPSolver:
         """
         A = []
         for node in self.node_list:
-            if "view" not in node and "unsqueeze" not in node:#and "getitem" not in node:
+            if "view" not in node and "unsqueeze" not in node and "getitem" not in node:
                 continue
             in_edges = list(self.subgraph.in_edges(node))
             assert len(in_edges) <= 1
@@ -651,6 +652,8 @@ class ILPSolver:
                     continue
                 # Special case for sum
                 if "sum" in src:
+                    continue
+                if "getitem" in src:
                     continue
                 i = self.node_list.index(src)
                 j = self.node_list.index(node)
@@ -847,7 +850,12 @@ class ILPSolver:
             if len(partition) > 0:
                 # Verify the partition
                 if validate_partition(partition):
-                    partitions.append(partition)
+                    # The partition may contain multiple disjoint component
+                    partition_str = [node.name for node in partition]
+                    subsubgraph = self.subgraph.subgraph(partition_str)
+                    components = list(nx.weakly_connected_components(subsubgraph))
+                    for component in components:
+                        partitions.append(list(component))
                 else:
                     breakpoint()
                     raise RuntimeError(f"Invalid partition: {partition}")
@@ -1086,13 +1094,6 @@ class Partitioning(PassBase):
                     
                     node.meta["tensor_meta"] = node.meta["tensor_meta"]._replace(shape=new_shape)       
             elif node.target == torch.ops.aten.native_layer_norm:
-                if node.name not in [
-                    "native_layer_norm_5",
-                    "native_layer_norm_6",
-                    "native_layer_norm_7",
-                    "native_layer_norm_8"
-                ]:
-                    continue
                 shape = node.meta["tensor_meta"][0].shape
                 if len(shape) != 3 or shape[1] != 1:
                     input = node.args[0]
@@ -1113,14 +1114,16 @@ class Partitioning(PassBase):
                         user_shape = node.meta["tensor_meta"][user.args[1]].shape
                         grand_users = list(user.users)
                         graph.inserting_after(user)
+                        view_node_post = graph.call_function(
+                            torch.ops.aten.view, args=(user, user_shape))
+                        view_node_post.meta = {}
+                        view_node_post.meta["tensor_meta"] = user.meta["tensor_meta"]._replace()
+                        for gu in grand_users:
+                            gu.replace_input_with(user, view_node_post)
                         if user.args[1] == 0:
-                            view_node_post = graph.call_function(
-                                torch.ops.aten.view, args=(user, user_shape))
-                            view_node_post.meta = {}
-                            view_node_post.meta["tensor_meta"] = user.meta["tensor_meta"]._replace()
-                            for gu in grand_users:
-                                gu.replace_input_with(user, view_node_post)
-                            user.meta["tensor_meta"] = user.meta["tensor_meta"]._replace(shape=[num_row, user_shape[-1]])  
+                            user.meta["tensor_meta"] = user.meta["tensor_meta"]._replace(shape=[num_row, 1, user_shape[-1]])  
+                        else:
+                            user.meta["tensor_meta"] = user.meta["tensor_meta"]._replace(shape=[num_row, 1, 1])  
                     node.meta["tensor_meta"] = view_node_pre.meta["tensor_meta"]._replace()
 
     def requires(self, graph_module: GraphModule) -> None:
@@ -1131,21 +1134,25 @@ class Partitioning(PassBase):
     def call(self, graph_module: GraphModule) -> PassResult | None:
         compute_graph_ir = ComputeGraphIR(graph_module.graph)
         compute_graph_ir.shortest_length_matrix()
-        partitions = compute_graph_ir.initialize_same_partition_matrix()
+        partitions_ = compute_graph_ir.initialize_same_partition_matrix()
+        partitions = []
+        for partition in partitions_:
+            partitions += partition
 
-        for idx, partition in enumerate(partitions):
+        for idx, par in enumerate(partitions):
             print(f"==============={idx}==================")
-            print(partition)
-            if idx >= 37: continue
-            if idx in [2]: 
+            print(par)
+            if idx >= 67: 
+                print("todo")
+                continue
+            if idx in [2,53,64]: 
                 print("skipped")
                 continue
-            for par in partition:
-                if EVTFuser.fusible(par):
-                    fuser = EVTFuser()
-                    fuser.trace(graph_module, par)
-                else:
-                    print("need nvfuser")
+            if EVTFuser.fusible(par, graph_module):
+                fuser = EVTFuser()
+                fuser.trace(graph_module, par)
+            else:
+                print("need nvfuser")
 
         return super().call(graph_module)
 

@@ -109,6 +109,22 @@ class EVTFuserMM(UnitTestBase):
         primals_42 = torch.randn((2,), dtype=torch.float16, device="cuda")
 
         self.util_test_evt_fuser(MMPartition4, [tanh, primals_41, primals_42])
+    
+    def test_mm_partition5(self):
+        # Model
+        class MMPartition5(torch.nn.Module):
+            def forward(self, A, B, tanh):
+                mm = torch.ops.aten.mm(A, B)
+                out = torch.ops.aten.tanh_backward(mm, tanh)
+                sum = torch.ops.aten.sum(out, [0], True)
+                return out, sum
+        
+        # Inputs
+        A = torch.randn((4, 2), dtype=torch.float16, device="cuda")
+        B = torch.randn((2, 1024), dtype=torch.float16, device="cuda")
+        tanh = torch.ops.aten.tanh(torch.randn((4, 1024), dtype=torch.float16, device="cuda"))
+
+        self.util_test_evt_fuser(MMPartition5, [A, B, tanh])
 
 
 if __name__ == '__main__':

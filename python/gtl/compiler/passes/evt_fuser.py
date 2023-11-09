@@ -189,6 +189,8 @@ class FusedOpBase:
                 else:
                     if output_node.target == torch.ops.aten.clone:
                         name = output_node.args[0].name
+                    elif output_node.target == self.target:
+                        name = "accum"
                     else:
                         name = output_node.name
                     visitor_args[name] = torch.zeros(
@@ -215,6 +217,8 @@ class FusedOpBase:
             for output in self.outputs:
                 if output.target == torch.ops.aten.clone:
                     results.append(visitor_args[output.args[0].name])
+                elif output.target == self.target:
+                    results.append(visitor_args["accum"])
                 else:
                     results.append(visitor_args[output.name])
             return results
@@ -584,14 +588,15 @@ class EVTFuser(EVTFrontendBase):
         torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten._softmax, 
         torch.ops.aten.native_layer_norm]
 
-    def get_node_with_name(self, name, graph_module):
+    def get_node_with_name(name, graph_module):
         for node in graph_module.graph.nodes:
             if node.name == name:
                 return node
         raise ValueError(f"{name} is not in the graph.")
 
-    def fusible(partition):
-        for node in partition:
+    def fusible(partition, graph_module):
+        for node_name in partition:
+            node = EVTFuser.get_node_with_name(node_name, graph_module)
             if node.target in EVTFuser.supported_targets:
                 return True
         return False
@@ -601,7 +606,7 @@ class EVTFuser(EVTFrontendBase):
             graph_module.graph.lint()
         except:
             legalize_graph(graph_module)
-        partition = [self.get_node_with_name(n.name, graph_module) for n in partition_]
+        partition = [EVTFuser.get_node_with_name(n, graph_module) for n in partition_]
 
         # Step 1: get the epilogue partition
         # The epilogue partition excludes the mainloop and mainloop-fused ops
@@ -626,10 +631,18 @@ class EVTFuser(EVTFrontendBase):
                 if input in epilogue_partition:
                     continue
                 inputs.add(input)
+        
+        for node in epilogue_partition:
+            if node.target == torch.ops.aten.view and node.args[0] in inputs:
+                continue
             for user in node.users:
                 if user in epilogue_partition:
                     continue
                 outputs.add(node)
+        if len(epilogue_partition) == 0:
+            inputs = set([anchor,])
+            outputs = set([anchor,])
+
         subgraph: Graph = _extract_graph_with_inputs_outputs(graph_module.graph,
                                                             inputs, outputs)
         
@@ -723,6 +736,7 @@ class EVTFuser(EVTFrontendBase):
             if hasattr(self, f"visit_{node.target.__name__}"):
                 getattr(self, f"visit_{node.target.__name__}")(node)
             else:
+                breakpoint()
                 raise NotImplementedError(f"Doesn't support target {node.target}")
     
     def create_fake_tensor(self, node: Node):
@@ -750,7 +764,7 @@ class EVTFuser(EVTFrontendBase):
         if isinstance(node, Node):
             name = self._get_name(node)
             example = self.create_fake_tensor(node)
-            self.add_load_node(node.name, example)
+            self.add_load_node(name, example)
             if node in self.outputs_subgraph:
                 self.insert_store_node(node)
                 self.add_edge(name, node.name, weight=0)
@@ -827,6 +841,9 @@ class EVTFuser(EVTFrontendBase):
             self.insert_store_node(node)
             self.add_edge(name, node.name, weight=0)
         return node.name
+    
+    def visit_tanh_backward(self, node: Node):
+        return self._visit_compute(node, ActivationOp.TanhBackward)
     
     def visit_view(self, node: Node):
         name = self._get_name(node)

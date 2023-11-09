@@ -60,7 +60,7 @@ class LayerNormBackwardArguments(ReduceApplyArguments):
 class LayerNormBackwardRT(ReduceApplyRT):
     def __init__(self, operation: 'ReduceApplyOperation'):
         super().__init__(operation)
-        self.emitter = EmitLayerNormUniversalInstance('_type')
+        self.emitter = EmitLayerNormBackwardUniversalInstance('_type')
     
     @staticmethod
     def get_arguments(epilogue_functor):
@@ -133,7 +133,7 @@ class LayerNormBackwardOperation(ReduceApplyOperation):
 
     
 
-class EmitLayerNormUniversalInstance:
+class EmitLayerNormBackwardUniversalInstance:
     def __init__(self, operation_suffix='') -> None:
         self.operation_suffix = operation_suffix
         self.includes = [
@@ -141,6 +141,7 @@ class EmitLayerNormUniversalInstance:
             "cutlass/cutlass.h",
             "cutlass/matrix_shape.h",
             "cutlass/numeric_types.h",
+            "cutlass/epilogue/thread/activation.h",
             "cutlass/arch/arch.h",
             "cutlass/arch/mma.h",
             "cutlass/layout/matrix.h",

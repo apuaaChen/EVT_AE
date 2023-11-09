@@ -903,6 +903,9 @@ class EVTFuser(EVTFrontendBase):
     def visit_tanh_backward(self, node: Node):
         return self._visit_compute(node, ActivationOp.TanhBackward)
     
+    def visit_gelu_backward(self, node: Node):
+        return self._visit_compute(node, ActivationOp.DGelu)
+    
     def visit_view(self, node: Node):
         name = self._get_name(node)
         op = self.layout_fns["reshape"]

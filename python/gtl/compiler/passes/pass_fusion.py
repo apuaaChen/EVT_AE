@@ -40,7 +40,8 @@ from concurrent.futures import ThreadPoolExecutor
 from torch.fx.passes.infra.pass_base import PassBase, PassResult
 from torch.fx.passes.shape_prop import TensorMetadata
 from torch.fx.passes.tools_common import legalize_graph
-from gtl.compiler.passes.pass_constant_propagation import PermuteAbv
+from gtl.compiler.passes.pass_constant_propagation import PermuteAbv, ReshapeFolding
+from gtl.compiler.passes.pass_cse import LocalCSE
 import operator
 
 from gtl.compiler.passes.evt_fuser import EVTFuser
@@ -1170,9 +1171,16 @@ class Partitioning(PassBase):
 
 
     def requires(self, graph_module: GraphModule) -> None:
+        self.requires_rank_3_reduce_apply(graph_module)
+        # Reshape folding pass
+        reshape_folding = ReshapeFolding()
+        reshape_folding(graph_module)
+        # CSE
+        cse = LocalCSE()
+        cse(graph_module)
+
         duplicate_pass = DuplicationBeforePartition()
         duplicate_pass(graph_module)
-        self.requires_rank_3_reduce_apply(graph_module)
 
     def call(self, graph_module: GraphModule) -> PassResult | None:
         compute_graph_ir = ComputeGraphIR(graph_module.graph)
@@ -1185,10 +1193,10 @@ class Partitioning(PassBase):
         for idx, par in enumerate(partitions):
             print(f"==============={idx}==================")
             print(par)
-            if idx >= 67: 
+            if idx >= 90: 
                 print("todo")
                 continue
-            if idx in [2,53,64]: 
+            if idx in [2,74]: 
                 print("skipped")
                 continue
             if EVTFuser.fusible(par, graph_module):

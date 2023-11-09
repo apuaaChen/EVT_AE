@@ -40,6 +40,13 @@ class CleanUp(PassBase):
                 to_node = graph.call_function(torch.ops.aten.to, args=(node, node.meta["tensor_meta"].dtype))
                 for user in users:
                     user.replace_input_with(node, to_node)
+            # Case 2: add clone between permute and view
+            elif node.target == torch.ops.aten.view:
+                input = node.args[0]
+                if input.target == torch.ops.aten.permute:
+                    graph.inserting_before(node)
+                    clone = graph.call_function(torch.ops.aten.clone, args=(input,), kwargs={"memory_format": torch.contiguous_format})
+                    node.replace_input_with(input, clone)
 
 def pass_clean_up(module, graph):
     clean_up = CleanUp()

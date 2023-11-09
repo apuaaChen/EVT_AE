@@ -48,6 +48,64 @@ def get_shape(node: Union[Node, float, int]) -> list:
     else:
         return [1]
 
+
+################################################################################
+# Permutation Progataion Pass
+################################################################################
+
+class ReshapeAbv:
+    """
+    The abstract value of the nodes
+    Each node is represented as a tensor (fx.Node) and its permutation
+    """
+    def __init__(self, tensor: Node, shape: list=None):
+        self.tensor: Node = tensor
+        self.tensor_shape = get_shape(tensor)
+        if shape is None:
+            self.shape = get_shape(tensor)
+        else:
+            self.shape = shape
+    
+    def reshape(self, new_shape):
+        return ReshapeAbv(self.tensor, new_shape)
+    
+    def try_folding(self, node: Node, graph):
+        if self.shape == self.tensor_shape:
+            node.replace_all_uses_with(self.tensor)
+        else:
+            graph.inserting_before(node)
+            view_node = graph.call_function(torch.ops.aten.view,
+                                               args=(self.tensor, self.shape))
+            view_node.meta = {}
+            view_node.meta["tensor_meta"] = node.meta["tensor_meta"]._replace()
+            node.replace_all_uses_with(view_node)
+
+
+class ReshapeFolding(PassBase):
+    """
+    This pass eliminate a chain of view by finding constant in it
+    """
+    def call(self, graph_module: GraphModule) -> PassResult | None:
+        graph: Graph = graph_module.graph
+        self.workspace = {}
+        for node in graph.nodes:
+            if node.target == torch.ops.aten.view:
+                tensor_abv = self.workspace[node.args[0]]
+                try:
+                    self.workspace[node] = tensor_abv.reshape(node.args[1])
+                except:
+                    breakpoint()
+            else:
+                self.workspace[node] = ReshapeAbv(node)
+        
+        # Fold the permutations based on the abstract values
+        for node in graph.nodes:
+            if node.target == torch.ops.aten.view:
+                self.workspace[node].try_folding(node, graph)
+    
+    def ensures(self, graph_module: GraphModule) -> None:
+        graph_module.graph.eliminate_dead_code()
+
 ################################################################################
 # Permutation Progataion Pass
 ################################################################################

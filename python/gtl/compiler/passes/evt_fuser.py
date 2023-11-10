@@ -42,6 +42,9 @@ from gtl.ops.layernorm import LayerNormOperation, LayerNormArguments
 from gtl.ops.layernorm_backward import LayerNormBackwardOperation, LayerNormBackwardArguments
 from cutlass.backend.compiler import CompilationOptions
 from torch.fx.passes.tools_common import legalize_graph
+import os
+from torch.profiler import profile, ProfilerActivity, record_function
+from copy import deepcopy
 
 
 # Overloaded argument type for BMM to support permutation
@@ -166,7 +169,97 @@ class FusedOpBase:
 
         # Stream
         self.stream = None
-    
+
+        #
+        # Debug & Profile helpers
+        #
+        self.mode = os.environ.get('MODE', 'RUN')
+        # Flag to avoid running this partition multiple times
+        self.launched = False
+        self.partition_names = epilogue_visitor.partition_names
+        if self.mode == 'DEBUG':
+            self.reference_module: GraphModule = epilogue_visitor.reference_gm
+            self.reference_module.recompile()
+        self.rtol = 1e-2
+        self.atol = 1e-3
+
+        self.warmup_iters = 20
+        self.profile_iters = 20
+
+    def reference(self, args, visitor_args):
+        raise NotImplementedError()
+
+    def pass_rate(self, out, ref, criteria):
+        return torch.sum(
+            torch.isclose(out, ref, **criteria)
+        ) / out.numel()
+
+    def reference_base(self, mainloop_args: list, mainloop_target, visitor_args_, args):
+        visitor_args = deepcopy(visitor_args_)
+        # Step 1: get inputs
+        
+        inputs = {}
+        for node in self.reference_module.graph.nodes:
+            if node.op == "placeholder" and node.name != "accum":
+                inputs[node.name] = visitor_args[node.name]
+        
+        def tmp_call_reference(mainloop_args, inputs):
+            accum = mainloop_target(*mainloop_args)
+            return self.reference_module(accum=accum, **inputs)
+        
+        output_tensors = tmp_call_reference(mainloop_args, inputs)
+
+        # Step 2: get output orders
+        output_node = [node for node in self.reference_module.graph.nodes if node.op == "output"][0]
+        output_node_names = [arg.name for arg in output_node.args[0]]
+
+        
+        for name, ref in zip(output_node_names, output_tensors):
+            out = visitor_args[name].view(-1)
+            ref = ref.view(-1)
+            try:
+                assert torch.allclose(out, ref, rtol=self.rtol)
+            except:
+                # Print the two tensors
+                print(f"!!!!!!!!!!!!!!result mismatch: {name}!!!!!!!!!!!!!!")
+                print(out)
+                print(ref)
+                print("maximum abs error: ", torch.max(torch.abs(out-ref)))
+                print("maximum relative error: ", torch.max(torch.abs(out-ref)/torch.abs(ref)))
+                print("atol passed rate: ", self.pass_rate(out, ref, {"atol": self.atol}))
+                print("rtol passed rate: ", self.pass_rate(out, ref, {"rtol": self.rtol}))
+        
+        # Step 3: profiling
+        
+        ## Profile the baseline
+        print("############### Torch Compile ###############")
+        torch.cuda.synchronize()
+        with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
+            with record_function("torch"):
+                tmp_call_reference(mainloop_args, inputs)
+            
+        print(prof.key_averages().table(sort_by="cuda_time_total"))
+
+        ## Profile the basic torch compile
+        print("############### Torch ###############")
+        inductor_fn = torch.compile(tmp_call_reference)
+        torch.cuda.synchronize()
+        with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
+            with record_function("torch"):
+                inductor_fn(mainloop_args, inputs)
+            
+        print(prof.key_averages().table(sort_by="cuda_time_total"))
+        ## Profile the optimized kernel
+        print("############### EVT ###############")
+        torch.cuda.synchronize()
+        stream = torch.cuda.current_stream()
+        with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
+            with record_function("evt"):
+                self.call(visitor_args, stream, *args)
+        print(prof.key_averages().table(sort_by="cuda_time_total"))
+
+
+
     def call(self, visitor_args, stream, *args) -> Any:
         raise NotImplementedError("Should be Overwritten by child class")
     
@@ -223,6 +316,17 @@ class FusedOpBase:
                     results.append(visitor_args["accum"])
                 else:
                     results.append(visitor_args[output.name])
+            
+            if self.mode == "DEBUG" and not self.launched:
+                print(f"======================================================")
+                print(f"######################################################")
+                print("Debugging: ", self.partition_names)
+                print(f"######################################################")
+                print(f"======================================================")
+                
+                self.launched = True
+                # Step 1: Verify the result
+                self.reference(args, visitor_args)
             return results
     
     def get_src(self, node):
@@ -413,6 +517,22 @@ class FusedBMM(FusedOpBase):
             # tile_description=best_td,
             alignment_A=self.align_A, alignment_B=self.align_B, 
             alignment_C=self.align_C)
+    
+    def reference(self, args, visitor_args):
+        A = args[-2]
+        B = args[-1]
+        if self.tranposed:
+            A, B = B, A
+            permute_A = [self.permute_B[i] for i in [0, 2, 1]]
+            permute_B = [self.permute_A[i] for i in [0, 2, 1]]
+        else:
+            permute_A = self.permute_A
+            permute_B = self.permute_B
+        def target_fn(A, B):
+            A = torch.ops.aten.permute(A, permute_A)
+            B = torch.ops.aten.permute(B, permute_B)
+            return self.target(A, B)
+        super().reference_base([A,B], target_fn, visitor_args, args)
     
     def call(self, visitor_args, stream, *args) -> Any:
         A = args[-2]
@@ -693,6 +813,10 @@ class EVTFuser(EVTFrontendBase):
         torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten._softmax, 
         torch.ops.aten._softmax_backward_data,
         torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward]
+    
+    def __init__(self, element_compute=DataType.f32, **kwargs):
+        super().__init__(element_compute, **kwargs)
+        self.mode = os.environ.get('MODE', 'RUN')
 
     def get_node_with_name(name, graph_module):
         for node in graph_module.graph.nodes:
@@ -708,6 +832,7 @@ class EVTFuser(EVTFrontendBase):
         return False
             
     def trace(self, graph_module: GraphModule, partition_: 'list[Node]'):
+        self.partition_names = partition_
         try:
             graph_module.graph.lint()
         except:
@@ -752,6 +877,15 @@ class EVTFuser(EVTFrontendBase):
         subgraph: Graph = _extract_graph_with_inputs_outputs(graph_module.graph,
                                                             inputs, outputs)
         
+        if self.mode == "DEBUG":
+            # Deep copy otherwise it will be modified
+            self.reference_gm = deepcopy(GraphModule(graph_module, subgraph))
+            # Update the name of anchor
+            for node in self.reference_gm.graph.nodes:
+                if node.name == anchor.name:
+                    node.target = "accum"
+                    node.name = "accum"
+
         # Step 2.1 Remove the clone nodes if there are
         for node in subgraph.nodes:
             if node.target == torch.ops.aten.clone:

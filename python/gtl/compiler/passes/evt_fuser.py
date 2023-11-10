@@ -414,7 +414,7 @@ class FusedGEMM(FusedOpBase):
         self.operation = self.plan.compile(
             # tile_description=best_td,
             alignment_A=self.align_A, alignment_B=self.align_B, 
-            alignment_C=self.align_C, print_module=False)
+            alignment_C=self.align_C)
     
     def reference(self, args, visitor_args):
         A = args[-2]

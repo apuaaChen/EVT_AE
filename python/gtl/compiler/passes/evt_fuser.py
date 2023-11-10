@@ -163,6 +163,7 @@ class FusedOpBase:
 
         # Outputs and inputs in the original graph
         self.outputs = epilogue_visitor.outputs
+        self.output2store = epilogue_visitor.output2store
         self.inputs = [
             input for input in epilogue_visitor.inputs 
             if input.target != self.node.target]
@@ -259,7 +260,14 @@ class FusedOpBase:
                 self.call(visitor_args, stream, *args)
         print(prof.key_averages().table(sort_by="cuda_time_total"))
 
-
+    def get_output_name(self, output):
+        if output.target == torch.ops.aten.clone:
+            name = output.args[0].name
+        elif output.target == self.target:
+            name = "accum"
+        else:
+            name = output.name
+        return name
 
     def call(self, visitor_args, stream, *args) -> Any:
         raise NotImplementedError("Should be Overwritten by child class")
@@ -276,20 +284,19 @@ class FusedOpBase:
             # Create the output nodes
             visitor_args = {}
             for output_node in self.outputs:
+                output_name = self.get_output_name(output_node)
+                if output_name not in self.output2store:
+                    self.output2store[output_name] = output_name
+                if output_name in self.output2store and output_name != self.output2store[output_name]:
+                    continue
                 if output_node.target in [torch.ops.aten.sum]:
-                    visitor_args[output_node.name] = torch.zeros(
+                    visitor_args[output_name] = torch.zeros(
                         size=output_node.meta['tensor_meta'].shape,
                         dtype=output_node.meta['tensor_meta'].dtype,
                         device="cuda"
                     )
                 else:
-                    if output_node.target == torch.ops.aten.clone:
-                        name = output_node.args[0].name
-                    elif output_node.target == self.target:
-                        name = "accum"
-                    else:
-                        name = output_node.name
-                    visitor_args[name] = torch.zeros(
+                    visitor_args[output_name] = torch.zeros(
                         size=output_node.meta['tensor_meta'].shape,
                         dtype=output_node.meta['tensor_meta'].dtype,
                         device="cuda"
@@ -311,13 +318,8 @@ class FusedOpBase:
             # get the results
             results = []
             for output in self.outputs:
-                if output.target == torch.ops.aten.clone:
-                    name = output.args[0].name
-                elif output.target == self.target:
-                    name = "accum"
-                else:
-                    name = output.name
-                output_tensor = visitor_args[name]
+                name = self.get_output_name(output)
+                output_tensor = visitor_args[self.output2store[name]]
                 if name in self.post_reshape_permute:
                     shape, indices = self.post_reshape_permute[name]
                     output_tensor = output_tensor.view(shape)
@@ -412,7 +414,7 @@ class FusedGEMM(FusedOpBase):
         self.operation = self.plan.compile(
             # tile_description=best_td,
             alignment_A=self.align_A, alignment_B=self.align_B, 
-            alignment_C=self.align_C)
+            alignment_C=self.align_C, print_module=False)
     
     def reference(self, args, visitor_args):
         A = args[-2]
@@ -882,7 +884,7 @@ class EVTFuser(EVTFrontendBase):
                 inputs.add(input)
         
         for node in epilogue_partition:
-            if node.target == torch.ops.aten.view and node.args[0] in inputs:
+            if node.target == torch.ops.aten.view and node.args[0] in inputs and node.args[0] != anchor:
                 continue
             for user in node.users:
                 if user in epilogue_partition:
@@ -947,7 +949,6 @@ class EVTFuser(EVTFrontendBase):
                 if store_anchor:
                     self.outputs_subgraph.add(node)
                     outputs.add(anchor)
-        
         # 3.2 Input nodes in the original graph
         self.inputs = list(inputs)
 
@@ -964,6 +965,8 @@ class EVTFuser(EVTFrontendBase):
         self.return_names = [output.name for output in self.outputs]
         self.transposed = self.dag_ir.transposed
         self.post_reshape_permute = self.dag_ir.post_reshape_permute
+        self.output2store = self.dag_ir.output2store
+
 
         #
         # Step 4: compose the fused kernel

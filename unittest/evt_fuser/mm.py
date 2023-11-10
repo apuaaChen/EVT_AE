@@ -144,6 +144,25 @@ class EVTFuserMM(UnitTestBase):
         view_299 = torch.randn((512, 4, 1024), dtype=torch.float16, device="cuda")
 
         self.util_test_evt_fuser(MMPartition6, [view_295, primals_12, add_17, view_299])
+    
+    def test_mm_partition7(self):
+        # Model
+        class MMPartition7(torch.nn.Module):
+            def forward(self, view_295, primals_12, add_17, view_299):
+                mm_33 = torch.ops.aten.mm(view_295, primals_12)
+                view_298 = torch.ops.aten.view(mm_33, [512, 4, 1024])
+                add_18 = torch.ops.aten.add(view_298, add_17)
+                add_19 = torch.ops.aten.add(add_18, view_299)
+                view_183 = torch.ops.aten.view(add_19, [2048, 1024])
+                return view_298, add_18, add_19, view_183
+        
+        # Inputs
+        view_295 = torch.randn((2048, 1024), dtype=torch.float16, device="cuda")
+        primals_12 = torch.randn((1024, 1024), dtype=torch.float16, device="cuda")
+        add_17 = torch.randn((512, 4, 1024), dtype=torch.float16, device="cuda")
+        view_299 = torch.randn((512, 4, 1024), dtype=torch.float16, device="cuda")
+
+        self.util_test_evt_fuser(MMPartition7, [view_295, primals_12, add_17, view_299])
 
 
 if __name__ == '__main__':

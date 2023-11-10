@@ -18,29 +18,17 @@
 # from gtl.compiler.passes.suffix_elimination import pass_suffix_elimination
 from gtl.compiler.passes.pass_print_graph import pass_print_graph
 from gtl.compiler.passes.pass_fake_shape_infer import pass_fake_shape_infer
-# from gtl.compiler.passes.eliminate_transparent import pass_eliminate_transparent_node
 from gtl.compiler.passes.pass_eliminate_loss import pass_loss_elimination
 from gtl.compiler.passes.pass_decomposition import pass_decomposition
 from gtl.compiler.passes.pass_constant_propagation import pass_constant_propagation
-# from gtl.compiler.passes.substitution import pass_graph_substitution
-# from gtl.compiler.passes.shape_prop import pass_shape_prop
 from gtl.compiler.passes.pass_cse import pass_cse
-# from gtl.compiler.passes.extract_common_factor import pass_merge_common_factor
-# from gtl.compiler.passes.update_attr import pass_update_attributes
-# from gtl.compiler.passes.constant_folding import pass_constant_folding
 # from gtl.compiler.passes.strength_reduction import pass_stength_reduction
-# from gtl.compiler.passes.layer_norm_preprocessing import pass_layernorm_preprocessing
-# from gtl.compiler.passes.gemm_fusion import pass_gemm_fusion
-# from gtl.compiler.passes.softmax_fusion import pass_softmax_fusion
 # from gtl.compiler.passes.stream_manager import pass_assign_stream
-# from gtl.compiler.passes.trans_2_permute import pass_trans_2_permute
-# from gtl.compiler.passes.mark_epilogue_permute import pass_mark_epilogue_permutations
 # from gtl.compiler.passes.instruction_reorder import pass_instruction_reorder
 # from gtl.compiler.passes.weight_grad_tuner import pass_weight_gradient_tuner
 # from gtl.compiler.passes.conv_fusion import pass_conv_fusion
 # from gtl.compiler.passes.batch_norm_preprocessing import pass_batchnorm_preprocessing
 # from gtl.compiler.passes.layout_transform import pass_nchw_to_nhwc
-# from gtl.compiler.passes.fix_permute_issue import pass_permute_view_fix
 # from gtl.compiler.passes.tvm_preprocess import pass_tvm_preprocessing
 from gtl.compiler.passes.pass_fusion import pass_fusion
 from gtl.compiler.passes.pass_clean_up import pass_clean_up

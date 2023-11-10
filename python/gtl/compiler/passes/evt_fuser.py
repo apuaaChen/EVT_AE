@@ -407,9 +407,20 @@ class FusedGEMM(FusedOpBase):
             alignment_A=self.align_A, alignment_B=self.align_B, 
             alignment_C=self.align_C)
     
-    def call(self, visitor_args, stream, *args) -> Any:
+    def reference(self, args, visitor_args):
         A = args[-2]
         B = args[-1]
+        def target_fn(A, B):
+            if self.lhs_layout == cutlass.LayoutType.ColumnMajor:
+                A = torch.transpose(A, -1, -2)
+            if self.rhs_layout == cutlass.LayoutType.ColumnMajor:
+                B = torch.transpose(B, -1, -2)
+            return self.target(A, B)
+        super().reference_base([A,B], target_fn, visitor_args, args)
+    
+    def call(self, visitor_args, stream, *args) -> Any:
+        A = args[-2].contiguous()
+        B = args[-1].contiguous()
         if self.lhs_layout == cutlass.LayoutType.ColumnMajor:
             A = torch.transpose(A, -1, -2)
         if self.rhs_layout == cutlass.LayoutType.ColumnMajor:

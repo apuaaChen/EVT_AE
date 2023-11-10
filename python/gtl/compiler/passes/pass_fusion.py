@@ -1224,7 +1224,7 @@ class Partitioning(PassBase):
         for idx, par in enumerate(partitions):
             print(f"==============={idx}==================")
             print(par)
-            if idx in [2,74,106]: 
+            if idx in [106,]: 
                 print("skipped")
                 continue
             if EVTFuser.fusible(par, graph_module):

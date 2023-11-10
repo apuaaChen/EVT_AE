@@ -166,6 +166,7 @@ class FusedOpBase:
         self.inputs = [
             input for input in epilogue_visitor.inputs 
             if input.target != self.node.target]
+        self.post_reshape_permute = epilogue_visitor.post_reshape_permute
 
         # Stream
         self.stream = None
@@ -311,11 +312,17 @@ class FusedOpBase:
             results = []
             for output in self.outputs:
                 if output.target == torch.ops.aten.clone:
-                    results.append(visitor_args[output.args[0].name])
+                    name = output.args[0].name
                 elif output.target == self.target:
-                    results.append(visitor_args["accum"])
+                    name = "accum"
                 else:
-                    results.append(visitor_args[output.name])
+                    name = output.name
+                output_tensor = visitor_args[name]
+                if name in self.post_reshape_permute:
+                    shape, indices = self.post_reshape_permute[name]
+                    output_tensor = output_tensor.view(shape)
+                    output_tensor = torch.ops.aten.permute(output_tensor, indices)
+                results.append(output_tensor)
             
             if self.mode == "DEBUG" and not self.launched:
                 print(f"======================================================")
@@ -956,6 +963,7 @@ class EVTFuser(EVTFrontendBase):
         self.reduction_names = self.dag_ir.reduction_names
         self.return_names = [output.name for output in self.outputs]
         self.transposed = self.dag_ir.transposed
+        self.post_reshape_permute = self.dag_ir.post_reshape_permute
 
         #
         # Step 4: compose the fused kernel

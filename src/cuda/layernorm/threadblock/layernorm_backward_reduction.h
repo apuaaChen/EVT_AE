@@ -200,7 +200,7 @@ struct LayerNormBackwardReduction :
       Params const* params_ptr
     ):
       Base(
-        cute::move(tC_gGrad), cute::move(tC_rGrad), 
+        cute::move(tC_gGrad), cute::move(tC_gX), 
         cute::move(tC_cTensor), problem_shape, params_ptr),
       tC_rGrad(cute::forward<RTensorGrad>(tC_rGrad)),
       tC_rX(cute::forward<RTensorX>(tC_rX)) { }

@@ -296,7 +296,7 @@ class FusedOpBase:
                         device="cuda"
                     )
                 else:
-                    visitor_args[output_name] = torch.zeros(
+                    visitor_args[output_name] = torch.empty(
                         size=output_node.meta['tensor_meta'].shape,
                         dtype=output_node.meta['tensor_meta'].dtype,
                         device="cuda"
@@ -639,7 +639,7 @@ class FusedSoftmax(FusedOpBase):
         self.operation = SoftmaxOperation(
             input=TensorDescription(element, LayoutType.RowMajor, alignment),
             rows_per_cta=-1, num_columns=self.problem_size.column, num_rows=self.problem_size.row, 
-            warp_count=-1, epilogue_visitor=epilogue_visitor, cache_input=False
+            warp_count=-1, epilogue_visitor=epilogue_visitor, cache_input=True
         )
         # TODO: hardcode
         MLCOMPILER_SRC_DIR = '/workspace/SEAL-PICASSO-ML-Compiler/src/cuda'
@@ -690,7 +690,7 @@ class FusedSoftmaxBackward(FusedOpBase):
         self.operation = SoftmaxBackwardOperation(
             input=TensorDescription(element, LayoutType.RowMajor, alignment),
             rows_per_cta=-1, num_columns=self.problem_size.column, num_rows=self.problem_size.row, 
-            warp_count=-1, epilogue_visitor=epilogue_visitor, cache_input=False
+            warp_count=-1, epilogue_visitor=epilogue_visitor, cache_input=True
         )
         # TODO: hardcode
         MLCOMPILER_SRC_DIR = '/workspace/SEAL-PICASSO-ML-Compiler/src/cuda'
@@ -747,7 +747,7 @@ class FusedLayerNorm(FusedOpBase):
         self.operation = LayerNormOperation(
             input=TensorDescription(element, LayoutType.RowMajor, alignment),
             rows_per_cta=-1, num_columns=self.problem_size.column, num_rows=self.problem_size.row, 
-            warp_count=-1, epilogue_visitor=epilogue_visitor, cache_input=False
+            warp_count=-1, epilogue_visitor=epilogue_visitor, cache_input=True
         )
         # TODO: hardcode
         MLCOMPILER_SRC_DIR = '/workspace/SEAL-PICASSO-ML-Compiler/src/cuda'
@@ -799,7 +799,7 @@ class FusedLayerNormBackward(FusedOpBase):
         self.operation = LayerNormBackwardOperation(
             input=TensorDescription(element, LayoutType.RowMajor, alignment),
             rows_per_cta=-1, num_columns=self.problem_size.column, num_rows=self.problem_size.row, 
-            warp_count=-1, epilogue_visitor=epilogue_visitor, cache_input=False
+            warp_count=1, epilogue_visitor=epilogue_visitor, cache_input=True
         )
         # TODO: hardcode
         MLCOMPILER_SRC_DIR = '/workspace/SEAL-PICASSO-ML-Compiler/src/cuda'
@@ -867,6 +867,12 @@ class EVTFuser(EVTFrontendBase):
         for node in partition:
             if node.target in self.supported_targets:
                 anchor = node
+        
+        # Heuristic: sum node is excluded from reduce_apply op
+        if anchor.target in [torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data,
+                             torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward]:
+            partition = [node for node in partition if node.target != torch.ops.aten.sum]
+
         for node in partition:
             if anchor in node.users:
                 continue

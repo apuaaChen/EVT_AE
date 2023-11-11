@@ -164,6 +164,27 @@ class EVTFuserMM(UnitTestBase):
 
         self.util_test_evt_fuser(MMPartition7, [view_295, primals_12, add_17, view_299])
 
+    def test_mm_partition9(self):
+        # Model
+        class MMPartition9(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+            
+            def forward(self, select, primals_5, primals_6):
+                permute_32 = torch.ops.aten.permute(primals_5, [1, 0])
+                mm_45 = torch.ops.aten.mm(select, permute_32)
+                add_29 = torch.ops.aten.add(mm_45, primals_6)
+                tanh = torch.ops.aten.tanh(add_29)
+                add_30 = torch.ops.aten.add(tanh, primals_6)
+                return add_30
+        
+        # Inputs
+        primals_5 = torch.randn((1024, 1024), dtype=torch.float16, device="cuda") * 0.018
+        select = torch.randn((4, 1024), dtype=torch.float16, device="cuda")
+        primals_6 = torch.randn((1024,), dtype=torch.float16, device="cuda") * 0.018
+
+        self.util_test_evt_fuser(MMPartition9, [select, primals_5, primals_6])
+
 
 if __name__ == '__main__':
     # with VizTracer(output_file="./host.html") as tracer:

@@ -22,6 +22,8 @@ from torch.fx.passes.shape_prop import ShapeProp
 from gtl.compiler.passes import pass_print_graph
 import re
 import nvtx
+from torch.profiler import ProfilerActivity, record_function
+from torch.profiler import profile as torch_profile
 
 
 class BaseTestCase(unittest.TestCase):
@@ -73,7 +75,7 @@ class UnitTestBase(unittest.TestCase):
         self.profiling_iters = 20
     
     # Helper function for launching test
-    def util_test(self, cls, inputs, passes, criteria={"rtol": 5e-2}, profile=False):
+    def util_test(self, cls, inputs, passes, criteria={"rtol": 5e-2}, verify=True, profile=False):
         ## model instances
         model = cls()
         model_reference = cls()
@@ -98,28 +100,27 @@ class UnitTestBase(unittest.TestCase):
         
         out = symbolic_traced(*inputs)
         ref = model_reference(*inputs)
-        torch.cuda.synchronize()
-        if isinstance(out, tuple):
-            for o, r in zip(out, ref):
-                self.assertTrue(torch.allclose(o, r, **criteria))  
-        else:
-            self.assertTrue(torch.allclose(out, ref, **criteria))
-        
+        if verify:
+            torch.cuda.synchronize()
+            if isinstance(out, tuple):
+                for o, r in zip(out, ref):
+                    self.assertTrue(torch.allclose(o, r, **criteria))  
+            else:
+                self.assertTrue(torch.allclose(out, ref, **criteria))
+            
         if not profile:
             return
         
         # Profiling
-        for _ in range(self.warmup_iters):
-            out = symbolic_traced(*inputs)
         
-        with nvtx.annotate("gtl"):
-            for _ in range(self.profiling_iters):
+        with torch_profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
+            with record_function("gtl"):
                 out = symbolic_traced(*inputs)
         
-        for _ in range(self.warmup_iters):
-            ref = model_reference(*inputs)
+        print(prof.key_averages().table(sort_by="cuda_time_total"))
 
-        with nvtx.annotate("torch"):
-            for _ in range(self.profiling_iters):
+        with torch_profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
+            with record_function("torch"):
                 ref = model_reference(*inputs)
-
+        
+        print(prof.key_averages().table(sort_by="cuda_time_total"))

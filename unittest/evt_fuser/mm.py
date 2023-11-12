@@ -185,6 +185,22 @@ class EVTFuserMM(UnitTestBase):
 
         self.util_test_evt_fuser(MMPartition9, [select, primals_5, primals_6])
 
+    def test_mm_partition10(self):
+        # Model
+        class MMPartition10(torch.nn.Module):
+            def forward(self, view_237, primals_34):
+                mm_12 = torch.ops.aten.mm(view_237, primals_34)
+                sum_6 = torch.ops.aten.sum(mm_12, [0], True)
+                return mm_12, sum_6
+        
+        # Input
+        view_237 = torch.randn((16384,1024), dtype=torch.float16, device="cuda")
+        primals_34 = torch.randn((1024, 4096), dtype=torch.float16, device="cuda")
+
+        self.util_test_evt_fuser(MMPartition10, [view_237, primals_34])
+
+
+
 
 if __name__ == '__main__':
     # with VizTracer(output_file="./host.html") as tracer:

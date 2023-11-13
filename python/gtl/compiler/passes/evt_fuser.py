@@ -146,7 +146,7 @@ class FusedOpBase:
                 print("maximum relative error: ", torch.max(torch.abs(out-ref)/torch.abs(ref)))
                 print("atol passed rate: ", self.pass_rate(out, ref, {"atol": self.atol}))
                 print("rtol passed rate: ", self.pass_rate(out, ref, {"rtol": self.rtol}))
-                breakpoint()
+                # breakpoint()
         
         # Step 3: profiling
         
@@ -178,6 +178,10 @@ class FusedOpBase:
         print(prof.key_averages().table(sort_by="cuda_time_total"))
 
     def get_output_name(self, output):
+        if output.target == operator.getitem and output.args[0] == self.node and output.args[1] == 0:
+            return "accum"
+        elif output.target == operator.getitem and output.args[0].target == "accum" and output.args[1] == 0:
+            return "accum"
         if output.target == torch.ops.aten.clone:
             name = output.args[0].name
         elif output.target == self.target:
@@ -715,11 +719,6 @@ class FusedLayerNorm(FusedOpBase):
             compiler.default_compile_options, 80, include_paths=include_paths
         )
         compiler.add_module([self.operation], compile_options)
-    
-    def get_output_name(self, output):
-        if output.target == operator.getitem and output.args[0] == self.node and output.args[1] == 0:
-            return "accum"
-        return super().get_output_name(output)
     
     def reference(self, args, visitor_args):
         input = args[-1]

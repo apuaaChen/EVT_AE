@@ -48,57 +48,16 @@ from copy import deepcopy
 from cutlass.utils.datatypes import torch_type
 from cutlass import DataTypeTag, LayoutTag, TileDescription
 from cutlass import epilogue
-from cutlass.backend.evt.ir.dag_ir import DAGIR
-from cutlass import SwizzlingFunctor
-import sqlite3
+from gtl.ops.bmm import BmmArguments2x
+
 from torch.utils._python_dispatch import _pop_mode_temporarily, _len_torch_dispatch_stack
 from contextlib import nullcontext
+from gtl.compiler.autotuner.gemm_tuner import MMTuner
+from gtl.compiler.autotuner.bmm_tuner import BMMTuner
+from gtl.compiler.autotuner.reduce_apply_tuner import SoftmaxTuner, SoftmaxBackwardTuner, LayerNormTuner, LayerNormBackwardTuner
 
 
-# Overloaded argument type for BMM to support permutation
-class BmmArguments2x(GemmArguments2x):
-    def __init__(self, operation, problem_size, A, B, output_op, **kwargs):
-        self.operation = operation
-        self.layout_A = operation.A.layout
-        self.layout_B = operation.B.layout
-        self.layout_C = operation.C.layout
 
-        self.element_A = operation.A.element
-        self.element_B = operation.B.element
-        self.element_C = operation.C.element
-
-        ArgumentBase.__init__(self, A, B, None, None)
-
-        fake_A = Tensor(tensor=A)
-        fake_B = Tensor(tensor=B)
-
-        if "permute_A" in kwargs:
-            fake_A.permute(kwargs["permute_A"])
-        
-        if "permute_B" in kwargs:
-            fake_B.permute(kwargs["permute_B"])
-        
-        self.problem_size = problem_size
-        self.lda = self.get_leading_dim(fake_A, self.layout_A)
-        self.ldb = self.get_leading_dim(fake_B, self.layout_B)
-        self.ldc = fake_A.shape[1]
-        self.ldd = self.ldc
-        self.output_op = output_op
-        self.gemm_mode = GemmUniversalMode.Batched
-        self.batch_count = fake_A.shape[0]
-        self.batched_stride_A = fake_A.stride[0]
-        self.batched_stride_B = fake_B.stride[0]
-        self.batched_stride_C = fake_A.shape[1] * fake_B.shape[2]
-        self.batched_stride_D = self.batched_stride_C
-
-        if isinstance(self.operation, GemmOperationUniversal):
-            self.initialize()
-    
-    def get_leading_dim(self, fake_tensor, layout):
-        if layout == LayoutType.RowMajor:
-            return fake_tensor.stride[1]
-        else:
-            return fake_tensor.stride[2]
 
 
 ################################################################################
@@ -106,355 +65,8 @@ class BmmArguments2x(GemmArguments2x):
 ################################################################################
 # TODO: probably move the autotuner to other files
 
-from cutlass.backend.evt.ir import AuxLoadImpl, RowBroadcastImpl, ColumnBroadcastImpl, AuxStoreImpl, RowReductionImpl, ColumnReductionImpl, RowStoreImpl
 
-class AutoTunerBase:
-    """
-    We abstract each problem to be tuned as a ticket. Each type of operator (e.g.
-    mm, bmm, softmax ...) has its unique derived ticket type to capture its diversed
-    behaviors when constructing and launching kernel.
-    """
-    TUNER_CACHE_FILE = "tuner_cache.db"
-    def __init__(self, epilogue_visitor, target) -> None:
-        self.epilogue_visitor = epilogue_visitor
-        self.target = target
-        self.warmup_iterations=100
-        self.profile_iterations=100
 
-        self.inputs = [
-            input for input in epilogue_visitor.inputs 
-            if input.target != self.target]
-        self.outputs = epilogue_visitor.outputs
-        self.output2store = epilogue_visitor.output2store
-        self.num_best_tds = 5
-    
-    @property
-    def epilogue_key(self):
-        dag_ir: DAGIR = self.epilogue_visitor.dag_ir
-        self.stat = {
-            "aux_load": 0,
-            "row_broadcast": 0,
-            "column_broadcast": 0,
-            "aux_store": 0,
-            "row_reduction": 0,
-            "column_reduction": 0,
-            "row_store": 0
-        }
-        self.get_epilogue_statistics(dag_ir, self.stat)
-        values = [str(value) for value in self.stat.values()]
-        return "_".join(values)
-    
-    def get_epilogue_statistics(self, dag_ir: DAGIR, statistics: dict):
-        for node_meta in dag_ir.nodes_meta:
-            impl = node_meta.underlying_impl
-            if isinstance(impl, AuxLoadImpl):
-                statistics["aux_load"] += 1
-            elif isinstance(impl, RowBroadcastImpl):
-                statistics["row_broadcast"] += 1
-            elif isinstance(impl, ColumnBroadcastImpl):
-                statistics["column_broadcast"] += 1
-            elif isinstance(impl, AuxStoreImpl):
-                statistics["aux_store"] += 1
-            elif isinstance(impl, RowReductionImpl):
-                statistics["row_reduction"] += 1
-            elif isinstance(impl, ColumnReductionImpl):
-                statistics["column_reduction"] += 1
-            elif isinstance(impl, RowStoreImpl):
-                statistics["row_store"] +=1
-    
-    def get_output_name(self, output):
-        if output.target == torch.ops.aten.clone:
-            name = output.args[0].name
-        elif output.target == self.target:
-            name = "accum"
-        else:
-            name = output.name
-        return name
-    
-    def get_visitor_args(self):
-        visitor_args = {}
-        for input in self.inputs:
-            visitor_args[input.name] = torch.empty(
-                size = input.meta["tensor_meta"].shape,
-                dtype = input.meta["tensor_meta"].dtype,
-                device = "cuda"
-            )
-        for output in self.outputs:
-            output_name = self.get_output_name(output)
-            if output_name not in self.output2store:
-                self.output2store[output_name] = output_name
-            if output_name in self.output2store and output_name != self.output2store[output_name]:
-                continue
-            visitor_args[output_name] = torch.empty(
-                size=output.meta['tensor_meta'].shape,
-                dtype=output.meta['tensor_meta'].dtype,
-                device="cuda"
-            )
-        return visitor_args
-
-    @property
-    def key_no_epilogue(self):
-        """
-        Return the key without epilogue
-        """
-        raise NotImplementedError
-    
-    @property
-    def key_with_epilogue(self):
-        """
-        Return the key with epilogue
-        """
-        return f"{self.key_no_epilogue}_{self.epilogue_key}"
-
-    def get_arguments_no_epilogue(self):
-        """
-        Create the arguments to be run without epilogue
-        """
-        raise NotImplementedError
-
-    def get_arguments_with_epilogue(self):
-        """
-        Create the arguments to be run with epilogue
-        """
-        raise NotImplementedError
-
-    def run(self, *args, **kwargs) -> float:
-        """
-        Profile the kernel and return the result
-        """
-        raise NotImplementedError
-    
-
-class MMTuner(AutoTunerBase):
-    VALID_SWIZZLES = ["Identity1", "Identity2", "Identity4", "Identity8", "StreamK"]
-    VALID_EPILOGUE_STAGE = [1, 2]
-    def __init__(self, plan, problem_size: GemmCoord, epilogue_visitor) -> None:
-        super().__init__(epilogue_visitor, torch.ops.aten.mm)
-        self.plan = plan
-
-        self.ps = problem_size
-
-        self.dtype_A = torch_type(self.plan._element_a)
-        self.layout_A = self.plan._layout_a
-        self.shape_A = (self.ps.m, self.ps.k) if self.layout_A == LayoutType.RowMajor else (self.ps.k, self.ps.m)
-        
-        self.dtype_B = torch_type(self.plan._element_b)
-        self.layout_B = self.plan._layout_b
-        self.shape_B = (self.ps.k, self.ps.n) if self.layout_B == LayoutType.RowMajor else (self.ps.n, self.ps.k)
-
-        self.dtype_C = torch_type(self.plan._element_c)
-        self.shape_C = (self.ps.m, self.ps.n)
-
-        self.valid_tds = []
-        for td in self.plan.tile_descriptions():
-            if td not in self.valid_tds:
-                self.valid_tds.append(td)
-
-        # Create table if not exist
-        connection = sqlite3.connect(self.TUNER_CACHE_FILE)
-        cursor = connection.cursor()
-        sqlite_create_best_config_table_query = """
-        CREATE TABLE IF NOT EXISTS best_config_mm(key TEXT NOT NULL,
-                                                  rank INTEGER NOT NULL,
-                                                  tb_m INTEGER,
-                                                  tb_n INTEGER,
-                                                  tb_k INTEGER,
-                                                  stages INTEGER,
-                                                  wcnt_m INTEGER,
-                                                  wcnt_n INTEGER,
-                                                  wcnt_k INTEGER,
-                                                  mi_m INTEGER,
-                                                  mi_n INTEGER,
-                                                  mi_k INTEGER,
-                                                  swizzle TEXT,
-                                                  epi_stages INTEGER,
-                                                  PRIMARY KEY (key, rank))
-        """
-        cursor.execute(sqlite_create_best_config_table_query)
-        connection.commit()
-        cursor.close()
-
-    
-    def get_arguments_no_epilogue(self):
-        tensor_A = torch.empty(size=self.shape_A, dtype=self.dtype_A, device="cuda")
-        if self.layout_A == LayoutType.ColumnMajor:
-            tensor_A = torch.transpose(tensor_A, -1, -2)
-        tensor_B = torch.empty(size=self.shape_B, dtype=self.dtype_A, device="cuda")
-        if self.layout_B == LayoutType.ColumnMajor:
-            tensor_B = torch.transpose(tensor_B, -1, -2)
-        tensor_C = torch.empty(size=self.shape_C, dtype=self.dtype_C, device="cuda")
-        tensor_D = torch.empty_like(tensor_C)
-        return [tensor_A, tensor_B, tensor_C, tensor_D]
-
-    def get_arguments_with_epilogue(self):
-        args = self.get_arguments_no_epilogue()
-        kwargs = {"visitor_args": self.get_visitor_args()}
-        return args, kwargs
-    
-    def profile_best_config_without_epilogue(self):
-        # get the arguments
-        args = self.get_arguments_no_epilogue()
-        # Set the epilogue to identity
-        self.plan.activation = epilogue.identity
-        self.plan.swizzling_functor = SwizzlingFunctor.Identity1
-        durations = []
-        tds = []
-        swizzles = []
-        for td in tqdm(self.valid_tds):
-            self.plan.tile_description = td
-            arguments = self.plan.run(*args)
-            operation = self.plan.operation
-            with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
-                operation.run(arguments)
-            duration = 0
-            for item in prof.key_averages():
-                duration += item.self_cuda_time_total
-            durations.append(duration)
-            tds.append(td)
-            swizzles.append("Identity1")
-        # Sort
-        combined = list(zip(durations, tds))
-        sorted_combined = sorted(combined, key=lambda x: x[0])
-        _, sorted_td = zip(*sorted_combined)
-        best_tds = sorted_td[:self.num_best_tds]
-
-        key = self.key_no_epilogue
-        for idx, td in enumerate(best_tds):
-            self.insert_cached_best_config(key, idx, td, "Identity1", 1)
-        return sorted_td[:self.num_best_tds]
-
-    def profile_best_config_with_epilogue(self, configs):
-        # get the arguments
-        args, kwargs = self.get_arguments_with_epilogue()
-        # Set the epilogue to identity
-        self.epilogue_visitor.epilogue_stages = 1
-        self.plan.epilogue_visitor = self.epilogue_visitor
-        durations = []
-        tds = []
-        for td in tqdm(configs):
-            self.plan.tile_description = td
-            self.plan.swizzling_functor = SwizzlingFunctor.Identity1
-            arguments = self.plan.run(*args, **kwargs)
-            operation = self.plan.operation
-            with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
-                operation.run(arguments)
-            duration = 0
-            for item in prof.key_averages():
-                duration += item.self_cuda_time_total
-            durations.append(duration)
-            tds.append(td)
-        # Sort
-        combined = list(zip(durations, tds))
-        sorted_combined = sorted(combined, key=lambda x: x[0])
-        _, sorted_td = zip(*sorted_combined)
-        best_td = sorted_td[0]
-        self.plan.tile_description = best_td
-        # Get the best swizzling functor under this td
-        durations = []
-        swizzles = []
-        epi_stages = []
-        for swizzle in self.VALID_SWIZZLES:
-            for epi_stage in self.VALID_EPILOGUE_STAGE:
-                self.epilogue_visitor.epilogue_stages = epi_stage
-                self.plan.epilogue_visitor = self.epilogue_visitor
-                self.plan.swizzling_functor = SwizzlingFunctor[swizzle]
-                arguments = self.plan.run(*args, **kwargs)
-                operation = self.plan.operation
-                with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
-                    operation.run(arguments)
-                duration = 0
-                for item in prof.key_averages():
-                    duration += item.self_cuda_time_total
-                durations.append(duration)
-                swizzles.append(swizzle)
-                epi_stages.append(epi_stage)
-        # Sort
-        combined = list(zip(durations, swizzles, epi_stages))
-        sorted_combined = sorted(combined, key=lambda x: x[0])
-        _, sorted_swizzles, sorted_epi_stages = zip(*sorted_combined)
-        best_swizzle = sorted_swizzles[0]
-        best_epi_stages = sorted_epi_stages[0]
-        key = self.key_with_epilogue
-        self.insert_cached_best_config(key, 0, best_td, best_swizzle, best_epi_stages)
-        return best_td, SwizzlingFunctor[best_swizzle], best_epi_stages
-
-    @property
-    def key_no_epilogue(self):
-        """
-        The key is {m}_{n}_{k}_{elem_a}_{elem_b}_{layout_a}_{layout_b}
-        """
-        return f"{self.ps.m}_{self.ps.n}_{self.ps.k}_{DataTypeTag[self.plan._element_a]}_{DataTypeTag[self.plan._element_b]}_{LayoutTag[self.layout_A]}_{LayoutTag[self.layout_B]}"
-    
-    def fetch_cached_best_config_with_epilogue(self):
-        connection = sqlite3.connect(self.TUNER_CACHE_FILE)
-        cursor = connection.cursor()
-        sqlite_fetch_config_query = """SELECT * from best_config_mm where key = ?"""
-        key = self.key_with_epilogue
-        cursor.execute(sqlite_fetch_config_query, (key,))
-        record = cursor.fetchall()
-        assert len(record) <= 1
-        if len(record) == 0:
-            return None
-        
-        _, _, tb_m, tb_n, tb_k, stages, wcnt_m, wcnt_n, wcnt_k, mi_m, mi_n, mi_k, swizzle, epi_stages = record[0]
-        td = {
-            "threadblock_shape": [tb_m,tb_n,tb_k],
-            "warp_count": [wcnt_m, wcnt_n, wcnt_k],
-            "stages": stages,
-            "instruction_shape": [mi_m, mi_n, mi_k]
-        }
-        swizzling_functor = SwizzlingFunctor[swizzle]
-        return td, swizzling_functor, epi_stages
-
-    def insert_cached_best_config(self, key, rank, td: TileDescription, swizzle: str, epi_stages: int):
-        connection = sqlite3.connect(self.TUNER_CACHE_FILE)
-        cursor = connection.cursor()
-        sqlite_insert_config = """ INSERT OR IGNORE INTO best_config_mm (key, rank, tb_m, tb_n, tb_k, stages, wcnt_m, wcnt_n, wcnt_k, mi_m, mi_n, mi_k, swizzle, epi_stages) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
-        tb = td.threadblock_shape
-        stages = td.stages
-        wcnt = td.warp_count
-        mi = td.math_instruction.instruction_shape
-        data_tuple = (key, rank, tb[0], tb[1], tb[2], stages, wcnt[0], wcnt[1], wcnt[2], mi[0], mi[1], mi[2], swizzle, epi_stages)
-        cursor.execute(sqlite_insert_config, data_tuple)
-        connection.commit()
-        cursor.close()
-
-    def fetch_cached_best_configs_without_epilogue(self):
-        connection = sqlite3.connect(self.TUNER_CACHE_FILE)
-        cursor = connection.cursor()
-        sqlite_fetch_config_query = """SELECT * from best_config_mm where key = ?"""
-        key = self.key_with_epilogue
-        cursor.execute(sqlite_fetch_config_query, (key,))
-        record = cursor.fetchall()
-        if len(record) == 0:
-            return None
-        configs = []
-        for row in record:
-            _, _, tb_m, tb_n, tb_k, stages, wcnt_m, wcnt_n, wcnt_k, mi_m, mi_n, mi_k, _, _ = row
-            td = TileDescription(
-                threadblock_shape=[tb_m,tb_n,tb_k],
-                stages=stages,
-                warp_count=[wcnt_m, wcnt_n, wcnt_k],
-                math_instruction=[mi_m, mi_n, mi_k],
-                min_compute=80, max_compute=80
-            )
-            configs.append(td)
-        return configs
-
-    def get_best_config_no_epilogue(self):
-        configs = self.fetch_cached_best_configs_without_epilogue()
-        if configs is not None:
-            return configs
-        return self.profile_best_config_without_epilogue()
-
-    def get_best_config(self):
-        # Check if the same epilogue & problem is profiled
-        config = self.fetch_cached_best_config_with_epilogue()
-        if config is not None:
-            return config
-        # Need to profile the best configs without epilogue
-        configs = self.get_best_config_no_epilogue()
-        return self.profile_best_config_with_epilogue(configs)
 
 
 
@@ -803,6 +415,7 @@ class FusedBMM(FusedOpBase):
 
         M, K = lhs_shape[-2:]
         N = rhs_shape[-1]
+        batch_count = lhs_shape[0]
 
         self.problem_size = GemmCoord(M, N, K)
 
@@ -814,14 +427,15 @@ class FusedBMM(FusedOpBase):
             element_accumulator=torch.float32
         )
 
-        # Use streamk
-        # plan.swizzling_functor = ThreadblockSwizzleStreamK
-
-        # Get candidate tds
-        # autotuner = Autotuner(plan, self.A, self.B, self.node)
-        # self.best_tds = autotuner.best_tds
-
-        epilogue_visitor.epilogue_stages = 2
+        with (_pop_mode_temporarily() 
+            if _len_torch_dispatch_stack() > 0 else nullcontext()):
+            autotuner = BMMTuner(
+                plan, batch_count, self.problem_size,
+                self.permute_A, self.permute_B, epilogue_visitor)
+            td, swizzle, stages = autotuner.get_best_config()
+        plan.tile_description = td
+        plan.swizzling_functor = swizzle
+        epilogue_visitor.epilogue_stages = stages
         # Register epilogue
         plan.epilogue_visitor = epilogue_visitor
 
@@ -894,7 +508,7 @@ class FusedBMM(FusedOpBase):
         
         arguments = BmmArguments2x(
             operation=self.operation, problem_size=self.problem_size,
-            A=A, B=B, permute_A=permute_A, permute_B=permute_B,
+            A=A, B=B, C=None, D=None, permute_A=permute_A, permute_B=permute_B,
             output_op = self.operation.epilogue_type(visitor_args)
         )
 
@@ -942,11 +556,18 @@ class FusedSoftmax(FusedOpBase):
         alignment = self.get_alignment(shape[-1])
         element = torch_to_cutlass(node.meta["tensor_meta"].dtype)
 
+        with (_pop_mode_temporarily() 
+            if _len_torch_dispatch_stack() > 0 else nullcontext()):
+            autotuner = SoftmaxTuner(
+                epilogue_visitor, self.problem_size, dtype=node.meta["tensor_meta"].dtype
+            )
+            rows_per_cta, warp_count, cache_input = autotuner.get_best_config()
+
         # Get softmax operation
         self.operation = SoftmaxOperation(
             input=TensorDescription(element, LayoutType.RowMajor, alignment),
-            rows_per_cta=-1, num_columns=self.problem_size.column, num_rows=self.problem_size.row, 
-            warp_count=-1, epilogue_visitor=epilogue_visitor, cache_input=True
+            rows_per_cta=rows_per_cta, num_columns=self.problem_size.column, num_rows=self.problem_size.row, 
+            warp_count=warp_count, epilogue_visitor=epilogue_visitor, cache_input=cache_input
         )
         # TODO: hardcode
         MLCOMPILER_SRC_DIR = '/workspace/SEAL-PICASSO-ML-Compiler/src/cuda'
@@ -999,11 +620,18 @@ class FusedSoftmaxBackward(FusedOpBase):
         alignment = self.get_alignment(shape[-1])
         element = torch_to_cutlass(node.meta["tensor_meta"].dtype)
 
+        with (_pop_mode_temporarily() 
+            if _len_torch_dispatch_stack() > 0 else nullcontext()):
+            autotuner = SoftmaxBackwardTuner(
+                epilogue_visitor, self.problem_size, dtype=node.meta["tensor_meta"].dtype
+            )
+            rows_per_cta, warp_count, cache_input = autotuner.get_best_config()
+
         # Get softmax operation
         self.operation = SoftmaxBackwardOperation(
             input=TensorDescription(element, LayoutType.RowMajor, alignment),
-            rows_per_cta=-1, num_columns=self.problem_size.column, num_rows=self.problem_size.row, 
-            warp_count=-1, epilogue_visitor=epilogue_visitor, cache_input=True
+            rows_per_cta=rows_per_cta, num_columns=self.problem_size.column, num_rows=self.problem_size.row, 
+            warp_count=warp_count, epilogue_visitor=epilogue_visitor, cache_input=cache_input
         )
         # TODO: hardcode
         MLCOMPILER_SRC_DIR = '/workspace/SEAL-PICASSO-ML-Compiler/src/cuda'
@@ -1063,12 +691,20 @@ class FusedLayerNorm(FusedOpBase):
         alignment = self.get_alignment(shape[-1])
         element = torch_to_cutlass(node.meta["tensor_meta"].dtype)
 
+        with (_pop_mode_temporarily() 
+            if _len_torch_dispatch_stack() > 0 else nullcontext()):
+            autotuner = LayerNormTuner(
+                epilogue_visitor, self.problem_size, dtype=node.meta["tensor_meta"].dtype
+            )
+            rows_per_cta, warp_count, cache_input = autotuner.get_best_config()
+
         # Get softmax operation
         self.operation = LayerNormOperation(
             input=TensorDescription(element, LayoutType.RowMajor, alignment),
-            rows_per_cta=-1, num_columns=self.problem_size.column, num_rows=self.problem_size.row, 
-            warp_count=-1, epilogue_visitor=epilogue_visitor, cache_input=True
+            rows_per_cta=rows_per_cta, num_columns=self.problem_size.column, num_rows=self.problem_size.row, 
+            warp_count=warp_count, epilogue_visitor=epilogue_visitor, cache_input=cache_input
         )
+
         # TODO: hardcode
         MLCOMPILER_SRC_DIR = '/workspace/SEAL-PICASSO-ML-Compiler/src/cuda'
         include_paths = [
@@ -1128,12 +764,20 @@ class FusedLayerNormBackward(FusedOpBase):
         alignment = self.get_alignment(shape[-1])
         element = torch_to_cutlass(node.meta["tensor_meta"].dtype)
 
+        with (_pop_mode_temporarily() 
+            if _len_torch_dispatch_stack() > 0 else nullcontext()):
+            autotuner = LayerNormBackwardTuner(
+                epilogue_visitor, self.problem_size, dtype=node.meta["tensor_meta"].dtype
+            )
+            rows_per_cta, warp_count, cache_input = autotuner.get_best_config()
+
         # Get softmax operation
         self.operation = LayerNormBackwardOperation(
             input=TensorDescription(element, LayoutType.RowMajor, alignment),
-            rows_per_cta=-1, num_columns=self.problem_size.column, num_rows=self.problem_size.row, 
-            warp_count=1, epilogue_visitor=epilogue_visitor, cache_input=True
+            rows_per_cta=rows_per_cta, num_columns=self.problem_size.column, num_rows=self.problem_size.row, 
+            warp_count=warp_count, epilogue_visitor=epilogue_visitor, cache_input=cache_input
         )
+
         # TODO: hardcode
         MLCOMPILER_SRC_DIR = '/workspace/SEAL-PICASSO-ML-Compiler/src/cuda'
         include_paths = [

@@ -109,10 +109,10 @@ ${operation_name}(${operation_name}${operation_suffix}::Params params) {
     
     #
     def plan(self, argument):
-        grid_z = int((argument.problem_size.row + self.rows_per_cta - 1)/self.rows_per_cta)
+        grid_x = int((argument.problem_size.row + self.rows_per_cta - 1)/self.rows_per_cta)
 
         return LaunchConfiguration(
-            [1, 1, grid_z],
+            [grid_x, 1, 1],
             [self.num_threads, 1, 1],
             self.shared_memory_capacity
         )

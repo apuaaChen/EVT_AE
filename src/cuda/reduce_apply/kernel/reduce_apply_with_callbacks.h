@@ -75,7 +75,7 @@ struct ReduceApplyWithCallbacks {
     // It is assumed that each row has a single threadblock
     // So that the blockIdx.x is assigned to rows
     gemm::GemmCoord threadblock_tile_offset{
-      int(blockIdx.x), int(blockIdx.y), int(blockIdx.z)
+      int(blockIdx.z), int(blockIdx.y), int(blockIdx.x)
     };
 
     // Instantiate callbacks

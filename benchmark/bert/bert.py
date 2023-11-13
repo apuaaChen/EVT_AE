@@ -25,10 +25,6 @@ from gtl.compiler.passes import (
     pass_fusion,
     pass_clean_up,
     pass_print_graph)
-import torch
-import logging
-import unittest
-import nvtx
 from torch.profiler import profile, ProfilerActivity, record_function
 import argparse
 
@@ -77,11 +73,13 @@ class BertProfile(BaseTestCase):
             batch=batch_size, sequence_length=512, optimizer=optimizer
         )
 
-        self.run_target_model(model, optimizer, sample_inputs)
+        for _ in range(10):
+            self.run_target_model(model, optimizer, sample_inputs)
         
         with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
             with record_function(self.method):
-                self.run_target_model(model, optimizer, sample_inputs)
+                for _ in range(10):
+                    self.run_target_model(model, optimizer, sample_inputs)
 
         print(prof.key_averages().table(sort_by="cuda_time_total"))
     

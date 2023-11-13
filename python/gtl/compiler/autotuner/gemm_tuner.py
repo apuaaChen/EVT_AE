@@ -25,7 +25,7 @@ from cutlass.backend.library import TileDescription
 
 
 class MMTuner(AutoTunerBase):
-    VALID_SWIZZLES = ["Identity1", "Identity2", "Identity4", "Identity8", "StreamK"]
+    VALID_SWIZZLES = ["Identity1", "Identity2", "Identity4", "Identity8"]
     VALID_EPILOGUE_STAGE = [1, 2]
     table_name = "best_config_mm"
     config_columns = {
@@ -129,13 +129,22 @@ class MMTuner(AutoTunerBase):
         key = self.key_no_epilogue
         for rank, config in enumerate(best_configs):
             self.insert_record(key, rank, config)
-        return best_configs
+        streamk_configs = [(td, SwizzlingFunctor.StreamK, 1) for td in self.valid_tds]
+        best_streamk_configs = self.profile_top_k_config(streamk_configs, self.num_best_tds, False)
+        key = self.key_no_epilogue
+        for rank, config in enumerate(best_streamk_configs):
+            self.insert_record(key, rank+self.num_best_tds, config)
+        return best_configs + best_streamk_configs
 
     def profile_best_config_with_epilogue(self, configs):
         best_config = self.profile_top_k_config(configs, 1, True)[0]
-        best_td = best_config[0]
+        best_td, best_swizzle, _ = best_config
+        if best_swizzle == SwizzlingFunctor.StreamK:
+            valid_swizzles = ["StreamK"]
+        else:
+            valid_swizzles = self.VALID_SWIZZLES
         swizzle_epi_configs = []
-        for swizzle in self.VALID_SWIZZLES:
+        for swizzle in valid_swizzles:
             for epi_stages in self.VALID_EPILOGUE_STAGE:
                 swizzle_epi_configs.append((best_td, SwizzlingFunctor[swizzle], epi_stages))
         best_config = self.profile_top_k_config(swizzle_epi_configs, 1, True)[0]

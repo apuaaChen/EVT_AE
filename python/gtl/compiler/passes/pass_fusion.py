@@ -1066,7 +1066,7 @@ class Partitioning(PassBase):
         for node in graph.nodes:
             if node.target == torch.ops.aten._softmax:
                 shape = list(node.meta["tensor_meta"].shape)
-                if len(shape) != 3 and shape[1] != 1:
+                if len(shape) != 3 or shape[1] != 1:
                     input, reduction_dim = node.args[:2]
                     users = list(node.users)
                     if reduction_dim < 0:
@@ -1096,7 +1096,7 @@ class Partitioning(PassBase):
                     node.meta["tensor_meta"] = node.meta["tensor_meta"]._replace(shape=new_shape)
             elif node.target == torch.ops.aten._softmax_backward_data:
                 shape = list(node.meta["tensor_meta"].shape) 
-                if len(shape) != 3 and shape[1] != 1:
+                if len(shape) != 3 or shape[1] != 1:
                     grad, input, reduction_dim = node.args[:3]
                     users = list(node.users)
                     if reduction_dim < 0:

@@ -23,6 +23,7 @@ from cutlass import DataTypeTag, LayoutTag, LayoutType
 import numpy as np
 from gtl.ops.bmm import BmmArguments2x
 from cutlass import epilogue
+from cutlass import SwizzlingFunctor
 
 
 class BMMTuner(MMTuner):
@@ -111,3 +112,12 @@ class BMMTuner(MMTuner):
         tensor_C = torch.empty(size=self.shape_C, dtype=self.dtype_C, device="cuda")
         tensor_D = torch.empty_like(tensor_C)
         return [tensor_A, tensor_B, tensor_C, tensor_D], {}
+
+    def profile_best_config_without_epilogue(self):
+        configs = [(td, SwizzlingFunctor.Identity1, 1) for td in self.valid_tds]
+        best_configs = self.profile_top_k_config(configs, self.num_best_tds, False)
+        key = self.key_no_epilogue
+        for rank, config in enumerate(best_configs):
+            self.insert_record(key, rank, config)
+        return best_configs
+        

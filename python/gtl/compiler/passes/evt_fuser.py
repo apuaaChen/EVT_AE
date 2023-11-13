@@ -176,6 +176,7 @@ class FusedOpBase:
             with record_function("evt"):
                 self.call(visitor_args, stream, *args)
         print(prof.key_averages().table(sort_by="cuda_time_total"))
+        breakpoint()
 
     def get_output_name(self, output):
         if output.target == operator.getitem and output.args[0] == self.node and output.args[1] == 0:
@@ -492,23 +493,6 @@ class FusedBMM(FusedOpBase):
             permute_B = [0, 1, 2]
         else:
             permute_B = self.permute_B
-
-        # if self.operation is None:
-        #     best_td = None
-        #     min_duration = 1e+6
-        #     C = A @ B
-        #     for td in tqdm(self.best_tds):
-        #         self.plan.tile_description = td
-        #         duration = CUDAEventProfiler(
-        #             self.plan, 100, 100, A, B, C, C, 
-        #             visitor_args=visitor_args
-        #         )()
-        #         if duration < min_duration:
-        #             best_td = td
-        #     self.operation = self.plan.compile(
-        #         tile_description=best_td,
-        #         alignment_A=self.align_A, alignment_B=self.align_B, 
-        #         alignment_C=self.align_C)
         
         arguments = BmmArguments2x(
             operation=self.operation, problem_size=self.problem_size,

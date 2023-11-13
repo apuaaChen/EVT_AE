@@ -18,19 +18,25 @@ import sqlite3
 import argparse
 
 parser = argparse.ArgumentParser()
+parser.add_argument("-db", "--database", type=str, help="the database to operate on")
 parser.add_argument("-k", "--keyword", type=str, help="the keys containing the keyward will be deleted.")
+parser.add_argument("-t", "--target", type=str, choices=["table", "row"], help="choose the target to drop")
 args = parser.parse_args()
 
-connection = sqlite3.connect("./compiled_cache.db")
+connection = sqlite3.connect(args.database)
 cursor = connection.cursor()
-cursor.execute("SELECT op_key FROM compiled_operations")
-op_keys = cursor.fetchall()
+if args.target == "row":
+    cursor.execute("SELECT op_key FROM compiled_operations")
+    op_keys = cursor.fetchall()
 
-op_keys_target = [op_key[0] for op_key in op_keys if args.keyword in op_key[0]]
+    op_keys_target = [op_key[0] for op_key in op_keys if args.keyword in op_key[0]]
 
-for key in op_keys_target:
-    cursor.execute(f"DELETE FROM compiled_operations WHERE op_key = ?", (key,))
+    for key in op_keys_target:
+        cursor.execute(f"DELETE FROM compiled_operations WHERE op_key = ?", (key,))
 
-print(f"Deleted {len(op_keys_target)} rows from db")
+    print(f"Deleted {len(op_keys_target)} rows from db")
+elif args.target == "table":
+    cursor.execute(f"DROP TABLE IF EXISTS {args.keyword}")
+    print(f"Dropped table {args.keyword}")
 connection.commit()
 connection.close()

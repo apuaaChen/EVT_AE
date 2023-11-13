@@ -1,8 +1,0 @@
-{
-    "pytorch": 681.52,
-    "pytorch+nvfusor": 770.26,
-    "slapo": 849.32,
-    "ours \\w fusion": 851.13,
-    "ours \\w fusion+uturn": 853.77,
-    "ours \\w fusion+uturn+stream": 858.91
-}

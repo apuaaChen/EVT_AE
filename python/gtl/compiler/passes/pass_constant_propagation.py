@@ -227,6 +227,12 @@ class ConstantPropagation(PassBase):
         if abv1 is None:
             if abv2 in [SL.UNDEF, SL.NAC]:
                 return abv2
+            elif isinstance(abv2, list):
+                # For special case when the input is a list
+                abv = None
+                for arg in abv2:
+                    abv = self.binary_transfer(abv, self.get_abv(arg))
+                return abv
             else:
                 return [abv2, ]
         if abv1 == SL.UNDEF:
@@ -266,7 +272,13 @@ class ConstantPropagation(PassBase):
             elif isinstance(stmt_abv, list):
                 with (_pop_mode_temporarily() 
                 if _len_torch_dispatch_stack() > 0 else nullcontext()):
-                    self.workspace[stmt] = stmt.target(*stmt_abv, **stmt.kwargs)
+                    try:
+                        self.workspace[stmt] = stmt.target(*stmt_abv, **stmt.kwargs)
+                    except:
+                        breakpoint()
+                        stmt_abv = None
+                        for arg in stmt.args:
+                            stmt_abv = self.binary_transfer(stmt_abv, self.get_abv(arg))
             else:
                 # A function without args
                 with (_pop_mode_temporarily() 

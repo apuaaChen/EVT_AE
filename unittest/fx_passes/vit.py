@@ -36,13 +36,13 @@ def joint_optimization(joint_module):
     frontend = GTLFrontend()
     joint_module, _ = frontend(joint_module)
 
-    # pass_loss_elimination(joint_module, joint_module.graph)
-    # pass_decomposition(joint_module, joint_module.graph)
-    # pass_cse(joint_module, joint_module.graph)
-    # pass_constant_propagation(joint_module, joint_module.graph)
-    # pass_fusion(joint_module, joint_module.graph)
-    pass_print_graph(joint_module, "./vit_optimized.svg")
-    # pass_clean_up(joint_module, joint_module.graph)
+    pass_loss_elimination(joint_module, joint_module.graph)
+    pass_decomposition(joint_module, joint_module.graph)
+    pass_cse(joint_module, joint_module.graph)
+    pass_constant_propagation(joint_module, joint_module.graph)
+    pass_fusion(joint_module, joint_module.graph)
+    # pass_print_graph(joint_module, "./vit_optimized.svg")
+    pass_clean_up(joint_module, joint_module.graph)
     joint_module.recompile()
     
     return joint_module
@@ -53,7 +53,7 @@ class ViTTest(BaseTestCase):
         # Create the sample input
         sample_inputs = vit_inputs(batch_size=batch_size)
         # Create the model
-        model_ref, optimizer_ref = vit_model_optimizer()
+        model_ref, optimizer_ref = vit_model_optimizer(depth=2)
 
         # Cast to fp16
         model_ref, optimizer_ref = apex_autocast(

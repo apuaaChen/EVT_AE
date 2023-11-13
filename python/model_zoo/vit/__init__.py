@@ -13,18 +13,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 ################################################################################
-from torch.fx.passes import graph_drawer
-
-
-################################################################################
-# Graph-level pass to print fx graph to disk as svg file
-################################################################################
-def pass_print_graph(module, file):
-    """
-    Print the graph in {file}
-    """
-    g = graph_drawer.FxGraphDrawer(module, "dynamic_classifier")
-    with open(file, "wb") as f:
-        graph = g.get_dot_graph()
-        graph.set("nslimit", 25)
-        f.write(graph.create_svg())
+from model_zoo.vit.vit import prepare_model_and_optimizer, example_inputs

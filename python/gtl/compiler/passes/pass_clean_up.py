@@ -41,12 +41,18 @@ class CleanUp(PassBase):
                 for user in users:
                     user.replace_input_with(node, to_node)
             # Case 2: add clone between permute and view
-            elif node.target == torch.ops.aten.view:
-                input = node.args[0]
-                if input.target == torch.ops.aten.permute:
-                    graph.inserting_before(node)
-                    clone = graph.call_function(torch.ops.aten.clone, args=(input,), kwargs={"memory_format": torch.contiguous_format})
-                    node.replace_input_with(input, clone)
+            elif node.target == torch.ops.aten.permute:
+                users = list(node.users)
+                graph.inserting_after(node)
+                clone = graph.call_function(torch.ops.aten.clone, args=(node,), kwargs={"memory_format": torch.contiguous_format})
+                for user in users:
+                    user.replace_input_with(node, clone)
+            # elif node.target == torch.ops.aten.view:
+            #     input = node.args[0]
+            #     if input.target == torch.ops.aten.permute:
+            #         graph.inserting_before(node)
+            #         clone = graph.call_function(torch.ops.aten.clone, args=(input,), kwargs={"memory_format": torch.contiguous_format})
+            #         node.replace_input_with(input, clone)
 
 def pass_clean_up(module, graph):
     clean_up = CleanUp()

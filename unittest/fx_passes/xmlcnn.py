@@ -13,10 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 ################################################################################
-# Unit test for end-to-end vit
+# Unit test for end-to-end xml-cnn
 from gtl.helper import compiler_fn, partition_func, BaseTestCase, apex_autocast
-from model_zoo.vit import prepare_model_and_optimizer as vit_model_optimizer
-from model_zoo.vit import example_inputs as vit_inputs
+from model_zoo.xmlcnn import prepare_model_and_optimizer as xmlcnn_model_optimizer
+from model_zoo.xmlcnn import example_inputs as xmlcnn_input
+from model_zoo.xmlcnn import Params
 from functools import partial
 from gtl.compiler.passes import (
     GTLFrontend, pass_loss_elimination,
@@ -30,7 +31,18 @@ import logging
 import unittest
 from torch.profiler import profile, ProfilerActivity, record_function
 
-batch_size = 128
+################################################################################
+# Model Configuration
+params = Params(
+    embedding_dim=304,  # alignment of 8
+    filter_sizes=[2, 4, 8],
+    sequence_length=512,
+    batch_size=1024,
+    num_filters=32,
+    y_dim=670208,
+    hidden_dims=512,
+    pooling_units=32
+)
 
 def joint_optimization(joint_module):
     frontend = GTLFrontend()
@@ -41,28 +53,28 @@ def joint_optimization(joint_module):
     pass_cse(joint_module, joint_module.graph)
     pass_constant_propagation(joint_module, joint_module.graph)
     pass_fusion(joint_module, joint_module.graph)
-    # pass_print_graph(joint_module, "./vit_optimized.svg")
-    pass_clean_up(joint_module, joint_module.graph)
-    joint_module.recompile()
+    pass_print_graph(joint_module, "./xmlcnn_optimized.svg")
+    # pass_clean_up(joint_module, joint_module.graph)
+    # joint_module.recompile()
     
     return joint_module
 
 
-class ViTTest(BaseTestCase):
-    def test_vit(self):
+class XMLCNNTest(BaseTestCase):
+    def test_xmlcnn(self):
         # Create the sample input
-        sample_inputs = vit_inputs(batch_size=batch_size)
+        sample_inputs = xmlcnn_input(params)
         # Create the model
-        model_ref, optimizer_ref = vit_model_optimizer(depth=2)
+        model_ref, optimizer_ref = xmlcnn_model_optimizer(params)
 
         # Cast to fp16
         model_ref, optimizer_ref = apex_autocast(
             model_ref, optimizer_ref, False
         )
 
-        self.run_reference_model(model_ref, optimizer_ref, sample_inputs, 100.)
+        self.run_reference_model(model_ref, optimizer_ref, sample_inputs, 1)
 
-        model, optimizer = vit_model_optimizer(depth=2, reference=model_ref)
+        model, optimizer = xmlcnn_model_optimizer(params, reference=model_ref)
         model, optimizer = apex_autocast(
             model, optimizer, False
         )
@@ -76,7 +88,8 @@ class ViTTest(BaseTestCase):
         )
 
         model.capture_graph(
-            (batch_size, 3, 224, 224), optimizer=optimizer
+            params.batch_size, params.sequence_length, params.embedding_dim,
+            params.y_dim, optimizer=optimizer
         )
 
         self.run_target_model(model, optimizer, sample_inputs)
@@ -94,12 +107,8 @@ class ViTTest(BaseTestCase):
         print(prof.key_averages().table(sort_by="cuda_time_total"))
 
     def is_close(self, grad1, grad2):
-        return (
-            torch.sum(
-                torch.isclose(grad1, grad2, rtol=2e-1)
-            ) / grad1.numel() > 0.7 
-            or torch.allclose(grad1, grad2, atol=1e-3)
-        )
+        return torch.sum(
+                torch.isclose(grad1, grad2, rtol=1e-1)) / grad1.numel() > 0.9
 
 if __name__ == '__main__':
     logging.basicConfig(level=getattr(logging, "DEBUG"))

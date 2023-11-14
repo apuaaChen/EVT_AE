@@ -13,13 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 ################################################################################
-from cutlass import DataType, GemmUniversalMode, SwizzlingFunctor
+from cutlass import DataType
 import cutlass
 from cutlass.shape import GemmCoord, MatrixCoord
-from tqdm import tqdm
 from torch.fx import Graph, Node
 import torch
-from torch.fx.passes.utils.fuser_utils import topo_sort, validate_partition
 from cutlass.backend.evt.frontend.frontend_base import EVTFrontendBase
 from cutlass.backend.evt.ir.tensor import Tensor as fakeTensor
 from cutlass import LayoutType, TensorDescription
@@ -28,12 +26,8 @@ from typing import Any, Union
 import pdb
 from torch.fx.graph_module import GraphModule
 from torch._functorch.partitioners import _extract_graph_with_inputs_outputs
-from cutlass.backend.gemm_operation import GemmArguments, GemmArguments2x, ArgumentBase, GemmOperationUniversal
-from cutlass.backend.evt.ir.tensor import Tensor
+from cutlass.backend.gemm_operation import GemmArguments
 import operator
-from cutlass.swizzle import ThreadblockSwizzleStreamK
-from cutlass.profiler import CUDAEventProfiler
-from concurrent.futures import ThreadPoolExecutor
 from cutlass.backend import compiler
 from cutlass.backend.utils.datatypes import torch_to_cutlass
 from gtl.ops.softmax import SoftmaxOperation, SoftmaxArguments
@@ -45,9 +39,6 @@ from torch.fx.passes.tools_common import legalize_graph
 import os
 from torch.profiler import profile, ProfilerActivity, record_function
 from copy import deepcopy
-from cutlass.utils.datatypes import torch_type
-from cutlass import DataTypeTag, LayoutTag, TileDescription
-from cutlass import epilogue
 from gtl.ops.bmm import BmmArguments2x
 
 from torch.utils._python_dispatch import _pop_mode_temporarily, _len_torch_dispatch_stack
@@ -55,19 +46,6 @@ from contextlib import nullcontext
 from gtl.compiler.autotuner.gemm_tuner import MMTuner
 from gtl.compiler.autotuner.bmm_tuner import BMMTuner
 from gtl.compiler.autotuner.reduce_apply_tuner import SoftmaxTuner, SoftmaxBackwardTuner, LayerNormTuner, LayerNormBackwardTuner
-
-
-
-
-
-################################################################################
-# Autotuner
-################################################################################
-# TODO: probably move the autotuner to other files
-
-
-
-
 
 
 class FusedOpBase:
@@ -194,7 +172,9 @@ class FusedOpBase:
     def call(self, visitor_args, stream, *args) -> Any:
         raise NotImplementedError("Should be Overwritten by child class")
     
-    def __call__(self, *args):
+    def __call__(self, *args_):
+        args = [arg.contiguous() if isinstance(arg, torch.Tensor) else arg for arg in args_]
+
         default_stream = torch.cuda.current_stream()
         if self.stream is not None:
             self.stream.wait_stream(default_stream)
@@ -1087,6 +1067,12 @@ class EVTFuser(EVTFrontendBase):
     
     def visit_gelu_backward(self, node: Node):
         return self._visit_compute(node, ActivationOp.DGelu)
+    
+    def visit_relu(self, node: Node):
+        return self._visit_compute(node, ActivationOp.ReLU)
+
+    def visit_sigmoid(self, node: Node):
+        return self._visit_compute(node, ActivationOp.Sigmoid)
     
     def visit_view(self, node: Node):
         name = self._get_name(node)

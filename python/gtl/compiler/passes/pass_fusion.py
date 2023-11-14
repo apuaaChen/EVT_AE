@@ -45,6 +45,7 @@ from gtl.compiler.passes.pass_cse import LocalCSE
 import operator
 
 from gtl.compiler.passes.evt_fuser import EVTFuser
+from gtl.compiler.passes.nv_fuser import NVFuser
 
 
 # The operators fusible
@@ -70,7 +71,9 @@ FUSIBLE_TGT = [
     torch.ops.aten.ne,
     torch.ops.aten.one_hot,
     torch.rand_like,
-    torch.ops.aten.ge
+    torch.ops.aten.ge,
+    torch.ops.aten.relu,
+    torch.ops.aten.sigmoid
 ]
 
 ################################################################################
@@ -831,7 +834,7 @@ class ILPSolver:
         
         res = scipy.optimize.milp(
             c=c, constraints=constraints, bounds=bounds, 
-            integrality=integrality, options={"disp":True, "time_limit": 500})
+            integrality=integrality, options={"disp":True, "time_limit": 500, 'mip_rel_gap': 0})
         if res.x is None:
             drawer = SubGraphDrawer(self.subgraph, "error", self.node_list)
             graph = drawer._dot_graphs["error"]
@@ -1228,49 +1231,14 @@ class Partitioning(PassBase):
                 fuser = EVTFuser()
                 fuser.trace(graph_module, par)
             else:
-                print("need nvfuser")
+                if len(par) == 1:
+                    continue
+                fuser = NVFuser()
+                fuser.trace(graph_module, par)
 
         return super().call(graph_module)
 
-    def enforce_contiguous_format(self, graph: Graph):
-        """
-        Insert "clone" nodes to incomming edges of fused nodes if they are not
-        contiguous.
-
-        Intuition: The fused kernels assume that all the incoming tensors are
-        under contiguous layout. This function enforces this assumption.
-        """
-        self.workspace = {}
-        for node in graph.nodes:
-            if node.target == torch.ops.aten.permute:
-                tensor_abv = self.workspace[node.args[0]]
-                try:
-                    self.workspace[node] = tensor_abv.permute(node.args[1])
-                except:
-                    breakpoint()
-            else:
-                self.workspace[node] = PermuteAbv(node)
-        
-        # Insert the clone nodes
-        for node in graph.nodes:
-            if "evt" in node.meta:
-                for input in node.all_input_nodes:
-                    abv = self.workspace[input]
-                    if not abv.is_contiguous():
-                        # Insert the clone node
-                        graph.inserting_after(input)
-                        clone_node = graph.call_function(
-                            torch.ops.aten.clone, args=(input,), 
-                            kwargs={"memory_format": torch.contiguous_format})
-                        
-                        clone_node.meta = {}
-                        clone_node.meta["tensor_meta"] = input.meta["tensor_meta"]._replace()
-                        node.replace_input_with(input, clone_node)
-
     def ensures(self, graph_module: GraphModule) -> None:
-        # Inject clone nodes
-        self.enforce_contiguous_format(graph_module.graph)
-
         # Cleanup
         legalize_graph(graph_module)
         graph_module.graph.eliminate_dead_code()

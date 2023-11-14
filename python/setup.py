@@ -12,6 +12,6 @@ setup(
         "gtl.compiler.passes", "gtl.compiler.autotuner",
         "gtl.compiler.passes.utils",
         "model_zoo", "model_zoo.bert",
-        "model_zoo.vit"]
+        "model_zoo.vit", "model_zoo.xmlcnn"]
     # install_requires=['torch']
 )

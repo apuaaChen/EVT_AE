@@ -42,7 +42,9 @@ def get_shape(node: Union[Node, float, int]) -> list:
             if isinstance(meta, TensorMetadata):
                 return list(node.meta["tensor_meta"].shape)
             else:
-                return list(node.meta["tensor_meta"][0].shape)
+                for m in meta:
+                    if isinstance(m, TensorMetadata):
+                        return list(m.shape)
         else:
             return [1]  # return a fake tensor shape
     else:

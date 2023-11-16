@@ -93,7 +93,7 @@ class FusedOpBase:
             torch.isclose(out, ref, **criteria)
         ) / out.numel()
 
-    def reference_base(self, mainloop_args: list, mainloop_target, visitor_args_, args):
+    def reference_base(self, mainloop_args: list, mainloop_target, visitor_args_, args, inductor_profile=True):
         visitor_args = deepcopy(visitor_args_)
         # Step 1: get inputs
         
@@ -141,15 +141,16 @@ class FusedOpBase:
             
         print(prof.key_averages().table(sort_by="cuda_time_total"))
 
-        ## Profile the basic torch compile
-        print("############### Torch ###############")
-        inductor_fn = torch.compile(tmp_call_reference)
-        torch.cuda.synchronize()
-        with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
-            with record_function("torch"):
-                inductor_fn(mainloop_args, inputs)
+        if inductor_profile:
+            ## Profile the basic torch compile
+            print("############### Torch ###############")
+            inductor_fn = torch.compile(tmp_call_reference)
+            torch.cuda.synchronize()
+            with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
+                with record_function("torch"):
+                    inductor_fn(mainloop_args, inputs)
             
-        print(prof.key_averages().table(sort_by="cuda_time_total"))
+            print(prof.key_averages().table(sort_by="cuda_time_total"))
         ## Profile the optimized kernel
         print("############### EVT ###############")
         torch.cuda.synchronize()
@@ -834,7 +835,7 @@ class FusedSpmm(FusedOpBase):
             return torch.ops.aten.mm(
                 adj_matrix, embedding
             )
-        super().reference_base([adj_matrix, embedding], target_fn, visitor_args, args)
+        super().reference_base([adj_matrix, embedding], target_fn, visitor_args, args, inductor_profile=False)
     
     def call(self, visitor_args, stream, *args) -> Any:
         # create the mean & std vectors

@@ -130,11 +130,11 @@ class GraphConv(nn.Module):
     def forward(self, h):
         if self.out_dim > self.in_dim:
             # h = torch.matmul(self.graph, h) + h
-            h = Aggregate.apply(self.csr, self.csc, h)
+            h = Aggregate.apply(self.csr, self.csc, h) + h
             h = self.linear(h)
         else:
             h = self.linear(h)
-            h = Aggregate.apply(self.csr, self.csc, h)
+            h = Aggregate.apply(self.csr, self.csc, h) + h
         # h = F.u_mul_e_sum(self.graph, h, e) + h
         if self.activation is not None:
             h = self.activation(h)
@@ -222,7 +222,7 @@ class GCN(nn.Module):
         with torch.cuda.stream(s):
             for _ in range(warmup_iteration):
                 optimizer.zero_grad()
-                loss = self.model(self.static_features, self.static_labels) * 1e-5
+                loss = self.model(self.static_features, self.static_labels) * 1e-3
                 loss.backward()
         torch.cuda.current_stream().wait_stream(s)
 
@@ -237,7 +237,7 @@ class GCN(nn.Module):
         s.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(s):
             with torch.cuda.graph(self.encoder_graph):
-                loss = self.model(self.static_features, self.static_labels) * 1e-5
+                loss = self.model(self.static_features, self.static_labels) * 1e-3
                 loss.backward()
         
         torch.cuda.current_stream().wait_stream(s)

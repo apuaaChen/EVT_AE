@@ -34,6 +34,7 @@ from gtl.ops.softmax import SoftmaxOperation, SoftmaxArguments
 from gtl.ops.softmax_backward import SoftmaxBackwardOperation, SoftmaxBackwardArguments
 from gtl.ops.layernorm import LayerNormOperation, LayerNormArguments
 from gtl.ops.layernorm_backward import LayerNormBackwardOperation, LayerNormBackwardArguments
+from gtl.ops.spmm import SpmmOperation, SpmmArguments
 from cutlass.backend.compiler import CompilationOptions
 from torch.fx.passes.tools_common import legalize_graph
 import os
@@ -46,6 +47,7 @@ from contextlib import nullcontext
 from gtl.compiler.autotuner.gemm_tuner import MMTuner
 from gtl.compiler.autotuner.bmm_tuner import BMMTuner
 from gtl.compiler.autotuner.reduce_apply_tuner import SoftmaxTuner, SoftmaxBackwardTuner, LayerNormTuner, LayerNormBackwardTuner
+from gtl.compiler.passes.pass_decomposition import spmm
 
 
 class FusedOpBase:
@@ -53,7 +55,7 @@ class FusedOpBase:
     The base implementation of all the fused operators
     """
     def __init__(self, node: Node, epilogue_visitor) -> None:
-        assert node.target == self.target
+        # assert node.target == self.target
         self.node = node
 
         # Outputs and inputs in the original graph
@@ -120,6 +122,8 @@ class FusedOpBase:
                 print(f"!!!!!!!!!!!!!!result mismatch: {name}!!!!!!!!!!!!!!")
                 print(out)
                 print(ref)
+                if out.dtype == torch.bool:
+                    continue
                 print("maximum abs error: ", torch.max(torch.abs(out-ref)))
                 print("maximum relative error: ", torch.max(torch.abs(out-ref)/torch.abs(ref)))
                 print("atol passed rate: ", self.pass_rate(out, ref, {"atol": self.atol}))
@@ -173,7 +177,15 @@ class FusedOpBase:
         raise NotImplementedError("Should be Overwritten by child class")
     
     def __call__(self, *args_):
-        args = [arg.contiguous() if isinstance(arg, torch.Tensor) else arg for arg in args_]
+        args = []
+        for arg in args_:
+            if isinstance(arg, torch.Tensor):
+                try:
+                    args.append(arg.contiguous())
+                except:
+                    args.append(arg)
+            else:
+                args.append(arg)
 
         default_stream = torch.cuda.current_stream()
         if self.stream is not None:
@@ -773,6 +785,71 @@ class FusedLayerNormBackward(FusedOpBase):
         self.operation.run(arguments, stream=stream.cuda_stream)
 
 
+class FusedSpmm(FusedOpBase):
+    """
+    The fused operator of LayerNorm epilogue_visitor(spmm, args)
+    """
+    __name__ = "cutlass_spmm_with_visitor"
+    target = spmm
+    mainloop_fusion_targets = []
+
+    def __init__(self, node: Node, epilogue_visitor) -> None:
+        super().__init__(node, epilogue_visitor)
+
+        # Get input
+        adj_matrix, embedding = node.args
+        self.args = [adj_matrix, embedding]
+        shape = node.meta["tensor_meta"].shape
+        num_nodes = embedding.meta["tensor_meta"].shape[0]
+        self.problem_size = GemmCoord(shape[0], shape[2], num_nodes)
+
+        # Get alignment
+        alignment = self.get_alignment(shape[-1])
+        element = torch_to_cutlass(node.meta["tensor_meta"].dtype)
+        element_index = torch_to_cutlass(torch.int64)
+
+        # Get softmax operation
+        self.operation = SpmmOperation(
+            input=TensorDescription(element, LayoutType.RowMajor, alignment),
+            element_index=element_index,
+            num_columns=self.problem_size.n, num_rows=self.problem_size.m, 
+            epilogue_visitor=epilogue_visitor
+        )
+
+        # TODO: hardcode
+        MLCOMPILER_SRC_DIR = '/workspace/SEAL-PICASSO-ML-Compiler/src/cuda'
+        include_paths = [
+            MLCOMPILER_SRC_DIR
+        ] + compiler.default_include_paths
+
+        compile_options = CompilationOptions(
+            compiler.default_compile_options, 80, include_paths=include_paths
+        )
+        compiler.add_module([self.operation], compile_options)
+    
+    def reference(self, args, visitor_args):
+        adj_matrix = args[-2]
+        embedding = args[-1]
+        def target_fn(adj_matrix, embedding):
+            return torch.ops.aten.mm(
+                adj_matrix, embedding
+            )
+        super().reference_base([adj_matrix, embedding], target_fn, visitor_args, args)
+    
+    def call(self, visitor_args, stream, *args) -> Any:
+        # create the mean & std vectors
+        adj_matrix = args[-2]
+        embedding = args[-1]
+
+        arguments = SpmmArguments(
+            self.operation, self.problem_size,
+            adj_matrix, embedding,
+            self.operation.epilogue_type(visitor_args)
+        )
+
+        self.operation.run(arguments, stream=stream.cuda_stream)
+
+
 class EVTFuser(EVTFrontendBase):
     """
     The entry point of CUTLASS EVT Fuser 
@@ -780,7 +857,8 @@ class EVTFuser(EVTFrontendBase):
     supported_targets = [
         torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten._softmax, 
         torch.ops.aten._softmax_backward_data,
-        torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward]
+        torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward,
+        spmm]
     
     def __init__(self, element_compute=DataType.f32, **kwargs):
         super().__init__(element_compute, **kwargs)
@@ -818,7 +896,8 @@ class EVTFuser(EVTFrontendBase):
         
         # Heuristic: sum node is excluded from reduce_apply op
         if anchor.target in [torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data,
-                             torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward]:
+                             torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward,
+                             spmm]:
             partition = [node for node in partition if node.target != torch.ops.aten.sum]
 
         for node in partition:
@@ -1133,6 +1212,8 @@ class EVTFuser(EVTFrontendBase):
             op = FusedLayerNorm(node, self)
         elif node.target == torch.ops.aten.native_layer_norm_backward:
             op = FusedLayerNormBackward(node, self)
+        elif node.target == spmm:
+            op = FusedSpmm(node, self)
         else:
             raise NotImplementedError()
         return op

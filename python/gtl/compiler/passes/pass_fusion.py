@@ -46,6 +46,7 @@ import operator
 
 from gtl.compiler.passes.evt_fuser import EVTFuser
 from gtl.compiler.passes.nv_fuser import NVFuser
+from gtl.compiler.passes.pass_decomposition import spmm
 
 
 # The operators fusible
@@ -73,7 +74,9 @@ FUSIBLE_TGT = [
     torch.rand_like,
     torch.ops.aten.ge,
     torch.ops.aten.relu,
-    torch.ops.aten.sigmoid
+    torch.ops.aten.sigmoid,
+    torch.ops.aten.to,
+    torch.ops.aten.rsqrt
 ]
 
 ################################################################################
@@ -890,6 +893,9 @@ class ComputeGraphIR:
                     if input.op == "call_function":
                         self.add_edge(input, node, self._graph)
                         if node_fusible:
+                            # # Special case for sum
+                            # if input.target == torch.ops.aten.sum:
+                            #     continue
                             # We cut the path -> unfusible nodes
                             self.add_edge(input, node, self.partition_graph)
                         else:
@@ -996,6 +1002,10 @@ class ComputeGraphIR:
                         continue
                     unfusible_nodes = unfusible_nodes.union(
                         self.length_dict_directed[node2].keys())
+                # elif self.get_node_meta(node2).target == torch.ops.aten.sum:
+                #     reachable_from_sum = set(self.length_dict_directed[node2].keys())
+                #     reachable_from_sum.remove(node2)
+                #     unfusible_nodes = unfusible_nodes.union(reachable_from_sum)
             
             # Remove the edges
             node1_neighbors = nx.all_neighbors(self.partition_graph, node1)
@@ -1202,6 +1212,22 @@ class Partitioning(PassBase):
                         gu.replace_input_with(user, view_node_post)
                     user.meta["tensor_meta"] = user.meta["tensor_meta"]._replace(shape=new_shape)
                     node.meta["tensor_meta"] = view_node_pre.meta["tensor_meta"]._replace()
+                
+            elif node.target == spmm:
+                # Directly update node's metadata
+                shape = node.meta["tensor_meta"].shape
+                assert len(shape) == 2
+                new_shape = [shape[0], 1, shape[1]]
+                graph.inserting_after(node)
+                # Insert output views
+                users = list(node.users)
+                view_node_post = graph.call_function(
+                    torch.ops.aten.view, args=(node, shape)
+                )
+                view_node_post.meta["tensor_meta"] = node.meta["tensor_meta"]._replace()
+                for user in users:
+                    user.replace_input_with(node, view_node_post)
+                node.meta["tensor_meta"] = node.meta["tensor_meta"]._replace(shape=new_shape)
 
 
     def requires(self, graph_module: GraphModule) -> None:
@@ -1231,10 +1257,11 @@ class Partitioning(PassBase):
                 fuser = EVTFuser()
                 fuser.trace(graph_module, par)
             else:
-                if len(par) == 1:
-                    continue
-                fuser = NVFuser()
-                fuser.trace(graph_module, par)
+                print("TODO")
+                # if len(par) == 1:
+                #     continue
+                # fuser = NVFuser()
+                # fuser.trace(graph_module, par)
 
         return super().call(graph_module)
 

@@ -172,6 +172,23 @@ class Decomposition(UnitTestBase):
         beta = torch.randn_like(gamma)
 
         self.util_test_decomposition(NativeLayerNorm, [input, gamma, beta, interm])
+    
+    def test_native_batch_norm_legit(self):
+        # Model
+        class NativeBatchNorm(torch.nn.Module):
+            def forward(self, input, gamma, beta):
+                out, mean, stdinv = torch.ops.aten._native_batch_norm_legit.no_stats(
+                    input, gamma, beta, True, 0.1, 1e-5
+                )
+                return out, mean, stdinv
+
+        # Inputs
+        input = torch.randn((128, 64, 112, 112), dtype=torch.float16, device="cuda") * 2 + 1
+        input = input.to(memory_format=torch.channels_last)
+        gamma = torch.randn((64,), dtype=torch.float16, device="cuda")
+        beta = torch.randn((64,), dtype=torch.float16, device="cuda")
+
+        self.util_test_decomposition(NativeBatchNorm, [input, gamma, beta])
 
 
 if __name__ == '__main__':

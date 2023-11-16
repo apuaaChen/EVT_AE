@@ -57,4 +57,4 @@ RUN sed -i 's/approximate=True/approximate="tanh"/g' /workspace/bert/modeling.py
 # for GCN dataset
 RUN pip install ogb
 # fix the issue that sparse tensors in torch do not have fake mode
-COPY ./python/torch_src/meta_utils.py /usr/local/lib/python3.8/dist-packages/torch/_subclasses/meta_utils.py
+COPY ./python/torch_src/meta_utils.py /usr/local/lib/python3.10/dist-packages/torch/_subclasses/meta_utils.py

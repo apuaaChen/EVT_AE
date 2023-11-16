@@ -58,6 +58,80 @@ class nhwcWgradOnly:
                 input.record_stream(self.stream)
         return weight_grad
 
+@torch.fx.wrap
+def spmm(adj_matrix, feature):
+    # return feature
+    return torch.ops.aten.mm(adj_matrix, feature)
+
+@torch.fx.wrap
+def convolution_forward_channel_last(input_channel_last, weight_channel_last, stride, padding, dilation, transposed, output_padding, groups):
+    # K, C, R, S = weight_channel_last.size()
+    # weight_channel_last = torch.ops.aten.view(weight_channel_last.contiguous(), [K, R, S, C])
+
+    input = torch.ops.aten.permute(input_channel_last.contiguous(), [0, 3, 1, 2]).contiguous()
+    weight = torch.ops.aten.permute(weight_channel_last.contiguous(), [0, 3, 1, 2]).contiguous()
+    output = torch.ops.aten.convolution(input, weight, None, stride, padding, dilation, transposed, output_padding, groups)
+    output_channel_last = torch.ops.aten.permute(output, [0, 2, 3, 1]).contiguous()
+    return output_channel_last
+
+@torch.fx.wrap
+def convolution_backward_data_channel_last(grad_output_channel_last, input_channel_last, weight_channel_last, stride, padding, dilation, transpose, output_padding, groups):
+    # K, C, R, S = weight_channel_last.size()
+    # weight_channel_last = torch.ops.aten.view(weight_channel_last.contiguous(), [K, R, S, C])
+
+    grad_output = torch.ops.aten.permute(grad_output_channel_last.contiguous(), [0, 3, 1, 2]).contiguous()
+    input = torch.ops.aten.permute(input_channel_last.contiguous(), [0, 3, 1, 2]).contiguous()
+    weight = torch.ops.aten.permute(weight_channel_last.contiguous(), [0, 3, 1, 2]).contiguous()
+    grad_inputs = torch.ops.aten.convolution_backward(
+        grad_output, input, weight, [0], stride, padding, dilation, transpose, output_padding, groups, [True, False, False]
+    )
+    grad_input = operator.getitem(grad_inputs, 0)#.contiguous()
+    grad_input_channel_last = torch.ops.aten.permute(grad_input, [0, 2, 3, 1]).contiguous()
+    return grad_input_channel_last
+
+@torch.fx.wrap
+def convolution_backward_weight_channel_last(grad_output_channel_last, input_channel_last, weight_channel_last, stride, padding, dilation, transpose, output_padding, groups):
+    # K, C, R, S = weight_channel_last.size()
+    # weight_channel_last = torch.ops.aten.view(weight_channel_last.contiguous(), [K, R, S, C])
+
+    grad_output = torch.ops.aten.permute(grad_output_channel_last.contiguous(), [0, 3, 1, 2]).contiguous()
+    input = torch.ops.aten.permute(input_channel_last.contiguous(), [0, 3, 1, 2]).contiguous()
+    weight = torch.ops.aten.permute(weight_channel_last.contiguous(), [0, 3, 1, 2]).contiguous()
+    grad_weights = torch.ops.aten.convolution_backward(
+        grad_output, input, weight, [0], stride, padding, dilation, transpose, output_padding, groups, [False, True, False]
+    )
+    grad_weight = operator.getitem(grad_weights, 1)
+    grad_weight_channel_last = torch.ops.aten.permute(grad_weight, [0, 2, 3, 1]).contiguous()#.view(K, C, R, S)#.contiguous().view(K, C, R, S)
+    return grad_weight_channel_last
+
+@torch.fx.wrap
+def batch_norm_stat(input, eps, reduction_factor):
+    input_acc = torch.ops.aten.to(input, dtype=torch.float32)
+    div = torch.ops.aten.div(input_acc, reduction_factor)
+    mean_vec_ = torch.ops.aten.sum(div, [0, 2, 3], dtype=torch.float32)
+    mean_vec = torch.ops.aten.div(mean_vec_, reduction_factor)
+    mul = torch.ops.aten.mul(div, input_acc)
+    mean_x2_vec_ = torch.ops.aten.sum(mul, [0, 2, 3], dtype=torch.float32)
+    mean_x2_vec = torch.ops.aten.div(mean_x2_vec_, reduction_factor)
+    var = torch.ops.aten.sub(mean_x2_vec, mean_vec)
+    rstd_vec = torch.ops.aten.rsqrt(var)
+
+    saved_mean = torch.ops.aten.squeeze(mean_vec)
+    saved_rstd = torch.ops.aten.squeeze(rstd_vec)
+    
+    # saved_mean_ref, saved_rstd_ref = torch.ops.aten.batch_norm_stats(input, eps)
+    # breakpoint()
+    return saved_mean, saved_rstd
+
+@torch.fx.wrap
+def batch_norm_output(input, weight, bias, saved_mean, saved_rstd, eps):
+    # output, _, _ = torch.ops.aten._native_batch_norm_legit.no_stats(
+    #     input.contiguous(), weight, bias, True, 0.1, eps)
+    output = torch.ops.aten.batch_norm_elemt(input, weight, bias, saved_mean, saved_rstd, eps)
+    # if torch.max(torch.abs(output_ref - output)).item() > 0.002:
+    #     breakpoint()
+    
+    return output.contiguous()
 
 class Decomposition(PassBase):
     """
@@ -462,6 +536,204 @@ class Decomposition(PassBase):
             axis_ = input_ndim_ - len(normalized_shape_)
             return axis_ == axis
         
+        self.pattern_replacement[key] = (pattern, replacement, [filter,])
+    
+    def requires_mm(self, node: torch.fx.Node):
+        # Check if the mm is actually an spmm
+        arg0 = node.args[0]
+        if "tensor_meta" not in arg0.meta or arg0.meta["tensor_meta"].stride != (0, 0):
+            return
+        # Special pattern that apply spmm
+        key = f"aten.mm_{node.name}"
+        if key in self.pattern_replacement:
+            return
+        
+        def pattern(adj_matrix, feature):
+            return torch.ops.aten.mm(adj_matrix, feature)
+        
+        def replacement(adj_matrix, feature):
+            return spmm(adj_matrix, feature)
+        
+        def filter(match, original_graph, pattern_graph):
+            mm_node = None
+            for n in match.nodes_map.keys():
+                if n.target == torch.ops.aten.mm:
+                    mm_node = match.nodes_map[n]
+                    break
+            return mm_node.name == node.name
+            
+        self.pattern_replacement[key] = (pattern, replacement, [filter,])
+
+    def requires_convolution(self, node: torch.fx.Node):
+        
+        key = f"aten.convolution"
+        if key in self.pattern_replacement:
+            return
+    
+        def pattern(input, weight, stride, padding, dilation, transposed, output_padding, groups):
+            return torch.ops.aten.convolution(input, weight, None, stride, padding, dilation, transposed, output_padding, groups)
+        
+        def replacement(input, weight, stride, padding, dilation, transposed, output_padding, groups):
+            input_channel_last = torch.ops.aten.permute(input, [0, 2, 3, 1])
+            weight = torch.ops.aten.permute(weight, [0, 2, 3, 1])
+            output_channel_last = convolution_forward_channel_last(input_channel_last, weight, stride, padding, dilation, transposed, output_padding, groups)
+            output = torch.ops.aten.permute(output_channel_last, [0, 3, 1, 2])
+            return output
+        
+        self.pattern_replacement[key] = (pattern, replacement, None)
+    
+    def requires_convolution_backward(self, node: torch.fx.Node):
+        
+        output_mask = node.args[10]
+        if output_mask == [True, True, False]:
+            key = f"aten.convolution_backward"
+        elif output_mask == [False, True, False]:
+            key = f"aten.convolution_backward_weight_only"
+        if key in self.pattern_replacement:
+            return
+
+        if key == f"aten.convolution_backward":
+            def pattern(grad_output, input, weight, stride, padding, dilation, transpose, output_padding, groups):
+                convolution_backward = torch.ops.aten.convolution_backward(
+                    grad_output, input, weight, [0], stride, padding, dilation, transpose, output_padding, groups, [True, True, False]
+                )
+                grad_input = operator.getitem(convolution_backward, 0)
+                grad_weight = operator.getitem(convolution_backward, 1)
+                return grad_input, grad_weight
+
+            def replacement(grad_output, input, weight, stride, padding, dilation, transpose, output_padding, groups):
+                grad_output_channel_last = torch.ops.aten.permute(grad_output, [0, 2, 3, 1])
+                input_channel_last = torch.ops.aten.permute(input, [0, 2, 3, 1])
+                weight = torch.ops.aten.permute(weight, [0, 2, 3, 1])
+            
+                grad_input_channel_last = convolution_backward_data_channel_last(
+                    grad_output_channel_last, input_channel_last, weight, 
+                    stride, padding, dilation, transpose, output_padding, groups
+                )
+                grad_weight = convolution_backward_weight_channel_last(
+                    grad_output_channel_last, input_channel_last, weight,
+                    stride, padding, dilation, transpose, output_padding, groups
+                )
+                grad_input = torch.ops.aten.permute(grad_input_channel_last, [0, 3, 1, 2])
+                grad_weight = torch.ops.aten.permute(grad_weight, [0, 3, 1, 2])
+                return grad_input, grad_weight
+        elif key == f"aten.convolution_backward_weight_only":
+            def pattern(grad_output, input, weight, stride, padding, dilation, transpose, output_padding, groups):
+                convolution_backward = torch.ops.aten.convolution_backward(
+                    grad_output, input, weight, [0], stride, padding, dilation, transpose, output_padding, groups, [False, True, False]
+                )
+                grad_weight = operator.getitem(convolution_backward, 1)
+                return grad_weight
+
+            def replacement(grad_output, input, weight, stride, padding, dilation, transpose, output_padding, groups):
+                grad_output_channel_last = torch.ops.aten.permute(grad_output, [0, 2, 3, 1])
+                input_channel_last = torch.ops.aten.permute(input, [0, 2, 3, 1])
+                weight = torch.ops.aten.permute(weight, [0, 2, 3, 1])
+
+                grad_weight = convolution_backward_weight_channel_last(
+                    grad_output_channel_last, input_channel_last, weight,
+                    stride, padding, dilation, transpose, output_padding, groups
+                )
+                grad_weight = torch.ops.aten.permute(grad_weight, [0, 3, 1, 2])
+                return grad_weight
+
+
+        self.pattern_replacement[key] = (pattern, replacement, None)
+
+    def requires_no_stats(self, node: torch.fx.Node):
+        input = node.args[0]
+        momentum = node.args[4]
+        N, K, P, Q = list(input.meta["tensor_meta"].shape)
+        reduction_length = N * P * Q
+        reduction_factor = reduction_length
+        key = f"aten._native_batch_norm_legit.no_stats_{node.name}"
+
+        if key in self.pattern_replacement:
+            return
+
+        def pattern(input, weight, bias, eps):
+            output, mean, invstd = torch.ops.aten._native_batch_norm_legit.no_stats(
+                input, weight, bias, True, momentum, eps)
+            return output, mean, invstd
+        
+        def replacement(input, weight, bias, eps):
+            gamma = torch.ops.aten.view(weight, [1, K, 1, 1])
+            beta = torch.ops.aten.view(bias, [1, K, 1, 1])
+            input_acc = torch.ops.aten.to(input, dtype=torch.float32)
+            div = torch.ops.aten.div(input_acc, reduction_factor)
+            mean_vec = torch.ops.aten.sum(div, [0, 2, 3], dtype=torch.float32, keepdim=True)
+            mul = torch.ops.aten.mul(div, input_acc)
+            mean_x2_vec = torch.ops.aten.sum(mul, [0, 2, 3], dtype=torch.float32, keepdim=True)
+            var = torch.ops.aten.sub(mean_x2_vec, mean_vec)
+            rstd_vec = torch.ops.aten.rsqrt(var)
+
+            # saved_mean = torch.ops.aten.squeeze(mean_vec)
+            # saved_rstd = torch.ops.aten.squeeze(rstd_vec)
+
+            sub_mean = torch.ops.aten.sub(input, mean_vec)
+            mul_gamma = torch.ops.aten.mul(gamma, sub_mean)
+            mul_rstd = torch.ops.aten.mul(mul_gamma, rstd_vec)
+            add_bias = torch.ops.aten.add(mul_rstd, beta)
+            output = torch.ops.aten.to(add_bias, torch.float16)
+            return output, mean_vec, rstd_vec
+        
+        def filter(match, original_graph, pattern_graph):
+            bn_node = None
+            for n in match.nodes_map.keys():
+                if n.target == torch.ops.aten._native_batch_norm_legit.no_stats:
+                    bn_node = match.nodes_map[n]
+                    break
+            return bn_node.name == node.name
+            
+        self.pattern_replacement[key] = (pattern, replacement, [filter,])
+    
+    def requires_native_batch_norm_backward(self, node: torch.fx.Node):
+        input = node.args[1]
+        N, K, P, Q = list(input.meta["tensor_meta"].shape)
+        reduction_length = N * P * Q
+        key = f"torch.ops.aten.native_batch_norm_backward_{node.name}"
+
+        if key in self.pattern_replacement:
+            return
+        
+        def pattern(y_grad, input, gamma, saved_mean, saved_rstd, epilon):
+            grad_input, grad_gamma, grad_beta = torch.ops.aten.native_batch_norm_backward(
+                y_grad, input, gamma, None, None, saved_mean, saved_rstd, True, epilon, [True, True, True]
+            )
+            return grad_input, grad_gamma, grad_beta
+        
+        def replacement(y_grad, input, gamma, saved_mean, saved_rstd, epsilon):
+            gamma = torch.ops.aten.view(gamma, [1, K, 1, 1])
+            # saved_mean = torch.ops.aten.view(saved_mean, [1, K, 1, 1])
+            # saved_rstd = torch.ops.aten.view(saved_rstd, [1, K, 1, 1])
+
+            sum_grad_y = torch.ops.aten.sum(y_grad, [0, 2, 3], dtype=torch.float32, keepdim=True)
+
+            sub_saved_mean = torch.ops.aten.sub(input, saved_mean)
+            x_hat = torch.ops.aten.mul(sub_saved_mean, saved_rstd)
+
+            cast_node = torch.ops.aten.to(x_hat, torch.float16)
+            mul_x_hat = torch.ops.aten.mul(y_grad, cast_node)
+            sum_grad_y_xhat = torch.ops.aten.mean(mul_x_hat, [0, 2, 3], dtype=torch.float32, keepdim=True)
+            mean_grad_y_xhat = torch.ops.aten.div(sum_grad_y_xhat, reduction_length)
+            mean_grad_y = torch.ops.aten.div(sum_grad_y, reduction_length)
+            
+
+            var_grad_mean = -mean_grad_y_xhat * x_hat * saved_rstd * gamma
+            x_grad = (y_grad - mean_grad_y) * gamma * saved_rstd + var_grad_mean
+            x_grad = torch.ops.aten.to(x_grad, torch.float16)
+            gamma_grad = torch.ops.aten.to(torch.ops.aten.squeeze(sum_grad_y_xhat), torch.float16)
+            beta_grad = torch.ops.aten.to(torch.ops.aten.squeeze(sum_grad_y), torch.float16)
+            return x_grad, gamma_grad, beta_grad
+        
+        def filter(match, original_graph, pattern_graph):
+            bn_node = None
+            for n in match.nodes_map.keys():
+                if n.target == torch.ops.aten.native_batch_norm_backward:
+                    bn_node = match.nodes_map[n]
+                    break
+            return bn_node.name == node.name
+            
         self.pattern_replacement[key] = (pattern, replacement, [filter,])
 
 

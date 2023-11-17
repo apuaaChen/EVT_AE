@@ -106,47 +106,45 @@ def convolution_backward_weight_channel_last(grad_output_channel_last, input_cha
 
 @torch.fx.wrap
 def batch_norm_stat(input, reduction_factor):
-    mean_vec = torch.ops.aten.mean(input, [0, 2, 3], dtype=torch.float32, keepdim=True)
+    input = input.contiguous()
+    mean_vec = torch.ops.aten.mean(input, [0, 1, 2], dtype=torch.float32, keepdim=False)
     input_square = torch.ops.aten.square(input)
-    mean_x2_vec = torch.ops.aten.mean(input_square, [0, 2, 3], dtype=torch.float32, keepdim=True)
+    mean_x2_vec = torch.ops.aten.mean(input_square, [0, 1, 2], dtype=torch.float32, keepdim=False)
     return mean_vec, mean_x2_vec
 
 @torch.fx.wrap
 def batch_norm_elemt(input, weight, bias, mean_vec, mean_x2_vec, eps, K):
+    input = input.contiguous()
     var = mean_x2_vec - mean_vec * mean_vec
     rstd = torch.ops.aten.rsqrt(var + eps)
     saved_mean = torch.ops.aten.squeeze(mean_vec)
     saved_rstd = torch.ops.aten.squeeze(rstd)
 
-    gamma = torch.ops.aten.view(weight, [1, K, 1, 1])
-    beta = torch.ops.aten.view(bias, [1, K, 1, 1])
     sub_mean = torch.ops.aten.sub(input, mean_vec)
-    mul_gamma = torch.ops.aten.mul(gamma, sub_mean)
+    mul_gamma = torch.ops.aten.mul(weight, sub_mean)
     mul_rstd = torch.ops.aten.mul(mul_gamma, rstd)
-    add_bias = torch.ops.aten.add(mul_rstd, beta)
+    add_bias = torch.ops.aten.add(mul_rstd, bias)
     output = torch.ops.aten.to(add_bias, torch.float16)
     
     return output.contiguous(), saved_mean, saved_rstd
 
 @torch.fx.wrap
 def batch_norm_backward_stat(y_grad, input, saved_mean, saved_rstd, K):
-    saved_mean = torch.ops.aten.view(saved_mean, [1, K, 1, 1])
-    saved_rstd = torch.ops.aten.view(saved_rstd, [1, K, 1, 1])
-
-    sum_grad_y = torch.ops.aten.sum(y_grad, [0, 2, 3], dtype=torch.float32, keepdim=True)
+    y_grad = y_grad.contiguous()
+    input = input.contiguous()
+    sum_grad_y = torch.ops.aten.sum(y_grad, [0, 1, 2], dtype=torch.float32, keepdim=False)
     sub_saved_mean = torch.ops.aten.sub(input, saved_mean)
     x_hat = torch.ops.aten.mul(sub_saved_mean, saved_rstd)
     mul_x_hat = torch.ops.aten.mul(y_grad, x_hat)
-    sum_grad_y_xhat = torch.ops.aten.sum(mul_x_hat, [0, 2, 3], dtype=torch.float32, keepdim=True)
+    sum_grad_y_xhat = torch.ops.aten.sum(mul_x_hat, [0, 1, 2], dtype=torch.float32, keepdim=False)
     return sum_grad_y, sum_grad_y_xhat
 
 @torch.fx.wrap
 def batch_norm_backward_elemt(y_grad, input, saved_mean, saved_rstd, K, sum_grad_y, sum_grad_y_xhat, reduction_factor, gamma):
-    saved_mean = torch.ops.aten.view(saved_mean, [1, K, 1, 1])
-    saved_rstd = torch.ops.aten.view(saved_rstd, [1, K, 1, 1])
+    y_grad = y_grad.contiguous()
+    input = input.contiguous()
     sub_saved_mean = torch.ops.aten.sub(input, saved_mean)
     x_hat = torch.ops.aten.mul(sub_saved_mean, saved_rstd)
-    gamma = torch.ops.aten.view(gamma, [1, K, 1, 1])
 
     mean_grad_y_xhat = torch.ops.aten.mul(sum_grad_y_xhat, reduction_factor)
     mean_grad_y = torch.ops.aten.mul(sum_grad_y, reduction_factor)
@@ -683,8 +681,10 @@ class Decomposition(PassBase):
             return output, mean, invstd
         
         def replacement(input, weight, bias, eps):
-            mean_vec, mean_x2_vec = batch_norm_stat(input, reduction_factor)
-            output, saved_mean, saved_rstd = batch_norm_elemt(input, weight, bias, mean_vec, mean_x2_vec, eps, K)
+            input_channel_last = torch.ops.aten.permute(input, [0, 2, 3, 1])
+            mean_vec, mean_x2_vec = batch_norm_stat(input_channel_last, reduction_factor)
+            output_channel_last, saved_mean, saved_rstd = batch_norm_elemt(input_channel_last, weight, bias, mean_vec, mean_x2_vec, eps, K)
+            output = torch.ops.aten.permute(output_channel_last, [0, 3, 1, 2])
             return output, saved_mean, saved_rstd
         
         def filter(match, original_graph, pattern_graph):
@@ -714,8 +714,12 @@ class Decomposition(PassBase):
             return grad_input, grad_gamma, grad_beta
         
         def replacement(y_grad, input, gamma, saved_mean, saved_rstd, epsilon):
-            sum_grad_y, sum_grad_y_xhat = batch_norm_backward_stat(y_grad, input, saved_mean, saved_rstd, K)
-            x_grad, gamma_grad, beta_grad = batch_norm_backward_elemt(y_grad, input, saved_mean, saved_rstd, K, sum_grad_y, sum_grad_y_xhat, reduction_factor, gamma)
+            y_grad_channel_last = torch.ops.aten.permute(y_grad, [0, 2, 3, 1])
+            input_channel_last = torch.ops.aten.permute(input, [0, 2, 3, 1])
+
+            sum_grad_y, sum_grad_y_xhat = batch_norm_backward_stat(y_grad_channel_last, input_channel_last, saved_mean, saved_rstd, K)
+            x_grad_channel_last, gamma_grad, beta_grad = batch_norm_backward_elemt(y_grad_channel_last, input_channel_last, saved_mean, saved_rstd, K, sum_grad_y, sum_grad_y_xhat, reduction_factor, gamma)
+            x_grad = torch.ops.aten.permute(x_grad_channel_last, [0, 3, 1, 2])
             return x_grad, gamma_grad, beta_grad
         
         def filter(match, original_graph, pattern_graph):

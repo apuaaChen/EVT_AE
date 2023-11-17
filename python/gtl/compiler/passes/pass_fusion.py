@@ -46,7 +46,7 @@ import operator
 
 from gtl.compiler.passes.evt_fuser import EVTFuser
 from gtl.compiler.passes.nv_fuser import NVFuser
-from gtl.compiler.passes.pass_decomposition import spmm
+from gtl.compiler.passes.pass_decomposition import spmm, batch_norm_stat, batch_norm_backward_stat
 
 
 # The operators fusible
@@ -67,6 +67,8 @@ FUSIBLE_TGT = [
     torch.ops.aten.tanh,
     torch.ops.aten.tanh_backward,
     torch.ops.aten.sum,
+    batch_norm_stat,
+    batch_norm_backward_stat,
     torch.ops.aten.gelu_backward,
     torch.ops.aten.native_dropout_backward,
     torch.ops.aten.ne,
@@ -337,8 +339,12 @@ class ILPSolver:
         # Step 2: Label node and edges
         for node in self.subgraph.nodes:
             if node in node_set:
-                self.subgraph.nodes[node]["label"] = str(
-                    self.subgraph.nodes[node]["meta"].target)
+                if "<" in str(
+                    self.subgraph.nodes[node]["meta"].target):
+                    label = self.subgraph.nodes[node]["meta"].target.__qualname__
+                else:
+                    label = str(self.subgraph.nodes[node]["meta"].target)
+                self.subgraph.nodes[node]["label"] = label
             else:
                 self.subgraph.nodes[node]["label"] = "neighbor"
         edge_weights = set()
@@ -780,6 +786,34 @@ class ILPSolver:
                                 At[s][self.x(i, s)] = 1
                                 At[s][self.x(j, s)] = 1
                             A.append(At)
+        if len(A) > 0:
+            A = np.concatenate(A, axis=0)
+            b = np.ones(shape=A.shape[0])
+
+            return scipy.optimize.LinearConstraint(A, ub=b)
+        return None
+    
+    def constraint_bn_state_is_leaf(self):
+        """
+        The outputs of bn fp/bp stat cannot be fused with others
+        """
+        A = []
+        for node in self.node_list:
+            meta = self.get_node_meta(node)
+            if meta.target.__qualname__ in ["batch_norm_stat", "batch_norm_backward_stat"]:
+                for user_meta in meta.users:
+                    src = user_meta.name
+                    out_edges = list(self.subgraph.out_edges(src))
+                    for _, output in out_edges:
+                        if output not in self.node_list:
+                            continue
+                        i = self.node_list.index(src)
+                        j = self.node_list.index(output)
+                        At = np.zeros(shape=(self.nc, self.num_all))
+                        for s in range(self.nc):
+                            At[s][self.x(i, s)] = 1
+                            At[s][self.x(j, s)] = 1
+                        A.append(At)
         if len(A) > 0:
             A = np.concatenate(A, axis=0)
             b = np.ones(shape=A.shape[0])
@@ -1253,6 +1287,8 @@ class Partitioning(PassBase):
         for idx, par in enumerate(partitions):
             print(f"==============={idx}==================")
             print(par)
+            if idx > 28:
+                continue
             if EVTFuser.fusible(par, graph_module):
                 fuser = EVTFuser()
                 fuser.trace(graph_module, par)

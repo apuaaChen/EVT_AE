@@ -24,6 +24,7 @@ from gtl.compiler.passes import (
     pass_constant_propagation,
     pass_fusion,
     pass_clean_up,
+    pass_permute_propagation,
     pass_print_graph)
 import torch
 import logging
@@ -41,6 +42,7 @@ def joint_optimization(joint_module):
 
     pass_loss_elimination(joint_module, joint_module.graph)
     pass_decomposition(joint_module, joint_module.graph)
+    pass_permute_propagation(joint_module, joint_module.graph)
     pass_cse(joint_module, joint_module.graph)
     pass_constant_propagation(joint_module, joint_module.graph)
     pass_fusion(joint_module, joint_module.graph)
@@ -114,6 +116,6 @@ class ResNetTest(BaseTestCase):
         )
 
 if __name__ == '__main__':
-    logging.basicConfig(level=getattr(logging, "DEBUG"))
-    logging.basicConfig(format='%(message)s')
+    # logging.basicConfig(level=getattr(logging, "DEBUG"))
+    # logging.basicConfig(format='%(message)s')
     unittest.main()

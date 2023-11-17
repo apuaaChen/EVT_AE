@@ -47,9 +47,12 @@ from contextlib import nullcontext
 from gtl.compiler.autotuner.gemm_tuner import MMTuner
 from gtl.compiler.autotuner.bmm_tuner import BMMTuner
 from gtl.compiler.autotuner.reduce_apply_tuner import SoftmaxTuner, SoftmaxBackwardTuner, LayerNormTuner, LayerNormBackwardTuner
-from gtl.compiler.passes.pass_decomposition import spmm, batch_norm_stat, convolution_forward_channel_last
+from gtl.compiler.passes.pass_decomposition import spmm, batch_norm_stat, convolution_forward_channel_last, batch_norm_backward_stat
 from torch.fx.subgraph_rewriter import replace_pattern_with_filters
 from gtl.compiler.passes.pass_fake_shape_infer import FakeTensorInfer
+from cutlass.shape import Conv2DProblemSize
+from cutlass.backend.conv2d_operation import Conv2dArguments
+from cutlass import SplitKMode
 
 
 torch.fx.wrap('batch_norm_stat')
@@ -208,7 +211,10 @@ class FusedOpBase:
                     self.output2store[output_name] = output_name
                 if output_name in self.output2store and output_name != self.output2store[output_name]:
                     continue
-                if output_node.target in [torch.ops.aten.sum]:
+                if (output_node.target in [torch.ops.aten.sum] or
+                    (output_node.target == operator.getitem 
+                     and output_node.args[0].target in [batch_norm_stat, batch_norm_backward_stat]
+                    )):
                     visitor_args[output_name] = torch.zeros(
                         size=output_node.meta['tensor_meta'].shape,
                         dtype=output_node.meta['tensor_meta'].dtype,
@@ -268,6 +274,81 @@ class FusedOpBase:
         elif dim % 4 == 0: return 4
         elif dim % 2 == 0: return 2
         else: return 1
+
+
+class FusedConvFprop(FusedOpBase):
+    """
+    The fused operation of Conv2d Fprop epilogue_visitor(ConvFprop, args)
+    """
+    __name__ = "cutlass_conv2d_fprop_with_visitor"
+    target = convolution_forward_channel_last
+    mainloop_fusion_targets = []
+    def __init__(self, node: Node, epilogue_visitor) -> None:
+        super().__init__(node, epilogue_visitor)
+
+        input, weight, self.stride, self.padding, self.dilation, _, _, self.groups = node.args
+        N, H, W, C = list(input.meta["tensor_meta"].shape)
+        K, R, S, C_ = list(weight.meta["tensor_meta"].shape)
+        assert C == C_
+
+        self.args = [input, weight]
+
+        element = input.meta["tensor_meta"].dtype
+
+        # TODO: get conv plan
+        plan = cutlass.Conv2dFprop(element=element, element_accumulator=torch.float32)
+
+        # TODO: Get candidate configs
+
+        plan.epilogue_visitor = epilogue_visitor
+
+        self.plan = plan
+
+        self.align_A = self.get_alignment(C)
+        self.align_B = self.get_alignment(C)
+        self.align_C = self.get_alignment(K)
+
+        self.problem_size = Conv2DProblemSize(
+            N, H, W, C,
+            K, R, S, C,
+            self.padding[0], self.padding[1],
+            self.stride[0], self.stride[1],
+            self.dilation[0], self.dilation[1]
+        )
+
+        iterator_algorithm = self.plan._propose_iterator_algorithm(
+            self.problem_size, self.align_A, self.align_B)
+        stride_support = self.plan._propose_stride_support(self.stride)
+        swizzling_functor = self.plan._propose_swizzling_functor(self.stride)
+
+        self.operation = self.plan.compile(
+            alignment_A=self.align_A, alignment_B=self.align_B,
+            alignment_C=self.align_C, iterator_algorithm=iterator_algorithm,
+            stride_support=stride_support, swizzling_functor=swizzling_functor
+        )
+    
+    def reference(self, args, visitor_args):
+        input = args[-2]
+        weight = args[-1]
+        def target_fn(input, weight):
+            return convolution_forward_channel_last(
+                input, weight, self.stride, self.padding, 
+                self.dilation, False, [0,0], self.groups)
+        super().reference_base([input, weight], target_fn, visitor_args, args)
+    
+    def call(self, visitor_args, stream, *args) -> Any:
+        input = args[-2].contiguous()
+        weight = args[-1].contiguous()
+
+        arguments = Conv2dArguments(
+            operation=self.operation, problem_size=self.problem_size,
+            A=input, B=weight, C=None, D=None,
+            output_op = self.operation.epilogue_type(visitor_args),
+            split_k_mode = SplitKMode.Serial,
+            split_k_slices=1
+        )
+
+        self.operation.run(arguments, stream=stream.cuda_stream)
 
 
 class FusedGEMM(FusedOpBase):
@@ -907,6 +988,7 @@ class EVTFuser(EVTFrontendBase):
             graph_module.graph.inserting_after(anchor)
             users = list(anchor.users)
             view_node = graph_module.graph.call_function(torch.ops.aten.view, args=(anchor, (N, H, W, C)))
+            view_node.meta["tensor_meta"] = anchor.meta["tensor_meta"]._replace(shape=(N, H, W, C))
             for user in users:
                 user.replace_input_with(anchor, view_node)
             
@@ -1056,23 +1138,34 @@ class EVTFuser(EVTFrontendBase):
     #
 
     def decomposition(self, gm: GraphModule):
-        # Get the decomposition patterns
+        # Step 1: get the output node names
+        output_nodes = [node for node in gm.graph.nodes if node.op == "output"]
+        assert len(output_nodes) == 1
+        original_output_node_names = [node.name for node in output_nodes[0].args[0]]
+
+        # Step 2: Get the decomposition patterns
         modified = False
         graph = gm.graph
         for node in graph.nodes:
             if hasattr(node.target, "__qualname__"):
                 visitor_name = "requires_" + node.target.__qualname__
-                print(visitor_name)
                 if hasattr(self, visitor_name):
                     pattern, replacement, filter = getattr(self, visitor_name)(node)
-                    replace_pattern_with_filters(
+                    matches = replace_pattern_with_filters(
                         gm, pattern, replacement, filter
                     )
-                    modified = True
+                    if len(matches) >= 1:
+                        modified = True
+
+        # Step 3: update the output node names
+        output_nodes = [node for node in gm.graph.nodes if node.op == "output"]
+        assert len(output_nodes) == 1
+        for name, node in zip(original_output_node_names, output_nodes[0].args[0]):
+            node.name = name
+        
         # Filling node meta
         if modified:
             FakeTensorInfer(gm).infer()
-
 
     
     def requires_batch_norm_stat(self, node: torch.fx.Node):
@@ -1278,6 +1371,8 @@ class EVTFuser(EVTFrontendBase):
             op = FusedLayerNormBackward(node, self)
         elif node.target == spmm:
             op = FusedSpmm(node, self)
+        elif node.target == convolution_forward_channel_last:
+            op = FusedConvFprop(node, self)
         else:
             raise NotImplementedError()
         return op

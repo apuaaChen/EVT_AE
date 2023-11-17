@@ -47,8 +47,12 @@ from contextlib import nullcontext
 from gtl.compiler.autotuner.gemm_tuner import MMTuner
 from gtl.compiler.autotuner.bmm_tuner import BMMTuner
 from gtl.compiler.autotuner.reduce_apply_tuner import SoftmaxTuner, SoftmaxBackwardTuner, LayerNormTuner, LayerNormBackwardTuner
-from gtl.compiler.passes.pass_decomposition import spmm
+from gtl.compiler.passes.pass_decomposition import spmm, batch_norm_stat, convolution_forward_channel_last
+from torch.fx.subgraph_rewriter import replace_pattern_with_filters
+from gtl.compiler.passes.pass_fake_shape_infer import FakeTensorInfer
 
+
+torch.fx.wrap('batch_norm_stat')
 
 class FusedOpBase:
     """
@@ -859,7 +863,7 @@ class EVTFuser(EVTFrontendBase):
         torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten._softmax, 
         torch.ops.aten._softmax_backward_data,
         torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward,
-        spmm]
+        spmm, convolution_forward_channel_last]
     
     def __init__(self, element_compute=DataType.f32, **kwargs):
         super().__init__(element_compute, **kwargs)
@@ -894,6 +898,19 @@ class EVTFuser(EVTFrontendBase):
         for node in partition:
             if node.target in self.supported_targets:
                 anchor = node
+
+        # Update anchor's shape if it is conv
+        if anchor.target == convolution_forward_channel_last:
+            N, H, W, C = anchor.meta["tensor_meta"].shape
+            anchor.meta["tensor_meta"] = anchor.meta["tensor_meta"]._replace(shape=(N*H*W,C))
+            # Insert reshape
+            graph_module.graph.inserting_after(anchor)
+            users = list(anchor.users)
+            view_node = graph_module.graph.call_function(torch.ops.aten.view, args=(anchor, (N, H, W, C)))
+            for user in users:
+                user.replace_input_with(anchor, view_node)
+            
+            partition.append(view_node)
         
         # Heuristic: sum node is excluded from reduce_apply op
         if anchor.target in [torch.ops.aten._softmax, torch.ops.aten._softmax_backward_data,
@@ -939,6 +956,15 @@ class EVTFuser(EVTFrontendBase):
                 if node.name == anchor.name:
                     node.target = "accum"
                     node.name = "accum"
+        
+        #
+        # Additional Step for convolution:
+        #
+        self.decomposition(GraphModule(graph_module, subgraph))
+        
+        #
+        # Additional Step for convolution end
+        #
 
         # Step 2.1 Remove the clone nodes if there are
         for node in subgraph.nodes:
@@ -1025,7 +1051,44 @@ class EVTFuser(EVTFrontendBase):
             output_node.replace_all_uses_with(view_node)
             graph_module.graph.inserting_after(view_node)
 
+    #
+    # Decomposition Helper
+    #
+
+    def decomposition(self, gm: GraphModule):
+        # Get the decomposition patterns
+        modified = False
+        graph = gm.graph
+        for node in graph.nodes:
+            if hasattr(node.target, "__qualname__"):
+                visitor_name = "requires_" + node.target.__qualname__
+                print(visitor_name)
+                if hasattr(self, visitor_name):
+                    pattern, replacement, filter = getattr(self, visitor_name)(node)
+                    replace_pattern_with_filters(
+                        gm, pattern, replacement, filter
+                    )
+                    modified = True
+        # Filling node meta
+        if modified:
+            FakeTensorInfer(gm).infer()
+
+
     
+    def requires_batch_norm_stat(self, node: torch.fx.Node):
+        def pattern(input, reduction_factor):
+            mean_vec, mean_x2_vec = batch_norm_stat(input, reduction_factor)
+            return mean_vec, mean_x2_vec
+        
+        def replacement(input, reduction_factor):
+            div = torch.ops.aten.mul(input, reduction_factor)
+            mean_vec = torch.ops.aten.sum(div, [0, 1, 2], dtype=torch.float32, keepdim=True)
+            mul = torch.ops.aten.mul(div, input)
+            mean_x2_vec = torch.ops.aten.sum(mul, [0, 1, 2], dtype=torch.float32, keepdim=True)
+            return mean_vec, mean_x2_vec
+        
+        return (pattern, replacement, None)
+        
     #
     # Epilogue constructor
     #

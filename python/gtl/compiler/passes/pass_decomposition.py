@@ -105,33 +105,59 @@ def convolution_backward_weight_channel_last(grad_output_channel_last, input_cha
     return grad_weight_channel_last
 
 @torch.fx.wrap
-def batch_norm_stat(input, eps, reduction_factor):
-    input_acc = torch.ops.aten.to(input, dtype=torch.float32)
-    div = torch.ops.aten.div(input_acc, reduction_factor)
-    mean_vec_ = torch.ops.aten.sum(div, [0, 2, 3], dtype=torch.float32)
-    mean_vec = torch.ops.aten.div(mean_vec_, reduction_factor)
-    mul = torch.ops.aten.mul(div, input_acc)
-    mean_x2_vec_ = torch.ops.aten.sum(mul, [0, 2, 3], dtype=torch.float32)
-    mean_x2_vec = torch.ops.aten.div(mean_x2_vec_, reduction_factor)
-    var = torch.ops.aten.sub(mean_x2_vec, mean_vec)
-    rstd_vec = torch.ops.aten.rsqrt(var)
-
-    saved_mean = torch.ops.aten.squeeze(mean_vec)
-    saved_rstd = torch.ops.aten.squeeze(rstd_vec)
-    
-    # saved_mean_ref, saved_rstd_ref = torch.ops.aten.batch_norm_stats(input, eps)
-    # breakpoint()
-    return saved_mean, saved_rstd
+def batch_norm_stat(input, reduction_factor):
+    mean_vec = torch.ops.aten.mean(input, [0, 2, 3], dtype=torch.float32, keepdim=True)
+    input_square = torch.ops.aten.square(input)
+    mean_x2_vec = torch.ops.aten.mean(input_square, [0, 2, 3], dtype=torch.float32, keepdim=True)
+    return mean_vec, mean_x2_vec
 
 @torch.fx.wrap
-def batch_norm_output(input, weight, bias, saved_mean, saved_rstd, eps):
-    # output, _, _ = torch.ops.aten._native_batch_norm_legit.no_stats(
-    #     input.contiguous(), weight, bias, True, 0.1, eps)
-    output = torch.ops.aten.batch_norm_elemt(input, weight, bias, saved_mean, saved_rstd, eps)
-    # if torch.max(torch.abs(output_ref - output)).item() > 0.002:
-    #     breakpoint()
+def batch_norm_elemt(input, weight, bias, mean_vec, mean_x2_vec, eps, K):
+    var = mean_x2_vec - mean_vec * mean_vec
+    rstd = torch.ops.aten.rsqrt(var + eps)
+    saved_mean = torch.ops.aten.squeeze(mean_vec)
+    saved_rstd = torch.ops.aten.squeeze(rstd)
+
+    gamma = torch.ops.aten.view(weight, [1, K, 1, 1])
+    beta = torch.ops.aten.view(bias, [1, K, 1, 1])
+    sub_mean = torch.ops.aten.sub(input, mean_vec)
+    mul_gamma = torch.ops.aten.mul(gamma, sub_mean)
+    mul_rstd = torch.ops.aten.mul(mul_gamma, rstd)
+    add_bias = torch.ops.aten.add(mul_rstd, beta)
+    output = torch.ops.aten.to(add_bias, torch.float16)
     
-    return output.contiguous()
+    return output.contiguous(), saved_mean, saved_rstd
+
+@torch.fx.wrap
+def batch_norm_backward_stat(y_grad, input, saved_mean, saved_rstd, K):
+    saved_mean = torch.ops.aten.view(saved_mean, [1, K, 1, 1])
+    saved_rstd = torch.ops.aten.view(saved_rstd, [1, K, 1, 1])
+
+    sum_grad_y = torch.ops.aten.sum(y_grad, [0, 2, 3], dtype=torch.float32, keepdim=True)
+    sub_saved_mean = torch.ops.aten.sub(input, saved_mean)
+    x_hat = torch.ops.aten.mul(sub_saved_mean, saved_rstd)
+    mul_x_hat = torch.ops.aten.mul(y_grad, x_hat)
+    sum_grad_y_xhat = torch.ops.aten.sum(mul_x_hat, [0, 2, 3], dtype=torch.float32, keepdim=True)
+    return sum_grad_y, sum_grad_y_xhat
+
+@torch.fx.wrap
+def batch_norm_backward_elemt(y_grad, input, saved_mean, saved_rstd, K, sum_grad_y, sum_grad_y_xhat, reduction_factor, gamma):
+    saved_mean = torch.ops.aten.view(saved_mean, [1, K, 1, 1])
+    saved_rstd = torch.ops.aten.view(saved_rstd, [1, K, 1, 1])
+    sub_saved_mean = torch.ops.aten.sub(input, saved_mean)
+    x_hat = torch.ops.aten.mul(sub_saved_mean, saved_rstd)
+    gamma = torch.ops.aten.view(gamma, [1, K, 1, 1])
+
+    mean_grad_y_xhat = torch.ops.aten.mul(sum_grad_y_xhat, reduction_factor)
+    mean_grad_y = torch.ops.aten.mul(sum_grad_y, reduction_factor)
+
+    var_grad_mean = -mean_grad_y_xhat * x_hat * saved_rstd * gamma
+    x_grad = (y_grad - mean_grad_y) * gamma * saved_rstd + var_grad_mean
+    x_grad = torch.ops.aten.to(x_grad, torch.float16)
+    gamma_grad = torch.ops.aten.to(torch.ops.aten.squeeze(sum_grad_y_xhat), torch.float16)
+    beta_grad = torch.ops.aten.to(torch.ops.aten.squeeze(sum_grad_y), torch.float16)
+    return x_grad, gamma_grad, beta_grad
+
 
 class Decomposition(PassBase):
     """
@@ -645,7 +671,7 @@ class Decomposition(PassBase):
         momentum = node.args[4]
         N, K, P, Q = list(input.meta["tensor_meta"].shape)
         reduction_length = N * P * Q
-        reduction_factor = reduction_length
+        reduction_factor = 1./reduction_length
         key = f"aten._native_batch_norm_legit.no_stats_{node.name}"
 
         if key in self.pattern_replacement:
@@ -657,25 +683,9 @@ class Decomposition(PassBase):
             return output, mean, invstd
         
         def replacement(input, weight, bias, eps):
-            gamma = torch.ops.aten.view(weight, [1, K, 1, 1])
-            beta = torch.ops.aten.view(bias, [1, K, 1, 1])
-            input_acc = torch.ops.aten.to(input, dtype=torch.float32)
-            div = torch.ops.aten.div(input_acc, reduction_factor)
-            mean_vec = torch.ops.aten.sum(div, [0, 2, 3], dtype=torch.float32, keepdim=True)
-            mul = torch.ops.aten.mul(div, input_acc)
-            mean_x2_vec = torch.ops.aten.sum(mul, [0, 2, 3], dtype=torch.float32, keepdim=True)
-            var = torch.ops.aten.sub(mean_x2_vec, mean_vec)
-            rstd_vec = torch.ops.aten.rsqrt(var)
-
-            # saved_mean = torch.ops.aten.squeeze(mean_vec)
-            # saved_rstd = torch.ops.aten.squeeze(rstd_vec)
-
-            sub_mean = torch.ops.aten.sub(input, mean_vec)
-            mul_gamma = torch.ops.aten.mul(gamma, sub_mean)
-            mul_rstd = torch.ops.aten.mul(mul_gamma, rstd_vec)
-            add_bias = torch.ops.aten.add(mul_rstd, beta)
-            output = torch.ops.aten.to(add_bias, torch.float16)
-            return output, mean_vec, rstd_vec
+            mean_vec, mean_x2_vec = batch_norm_stat(input, reduction_factor)
+            output, saved_mean, saved_rstd = batch_norm_elemt(input, weight, bias, mean_vec, mean_x2_vec, eps, K)
+            return output, saved_mean, saved_rstd
         
         def filter(match, original_graph, pattern_graph):
             bn_node = None
@@ -691,6 +701,7 @@ class Decomposition(PassBase):
         input = node.args[1]
         N, K, P, Q = list(input.meta["tensor_meta"].shape)
         reduction_length = N * P * Q
+        reduction_factor = 1./reduction_length
         key = f"torch.ops.aten.native_batch_norm_backward_{node.name}"
 
         if key in self.pattern_replacement:
@@ -703,27 +714,8 @@ class Decomposition(PassBase):
             return grad_input, grad_gamma, grad_beta
         
         def replacement(y_grad, input, gamma, saved_mean, saved_rstd, epsilon):
-            gamma = torch.ops.aten.view(gamma, [1, K, 1, 1])
-            # saved_mean = torch.ops.aten.view(saved_mean, [1, K, 1, 1])
-            # saved_rstd = torch.ops.aten.view(saved_rstd, [1, K, 1, 1])
-
-            sum_grad_y = torch.ops.aten.sum(y_grad, [0, 2, 3], dtype=torch.float32, keepdim=True)
-
-            sub_saved_mean = torch.ops.aten.sub(input, saved_mean)
-            x_hat = torch.ops.aten.mul(sub_saved_mean, saved_rstd)
-
-            cast_node = torch.ops.aten.to(x_hat, torch.float16)
-            mul_x_hat = torch.ops.aten.mul(y_grad, cast_node)
-            sum_grad_y_xhat = torch.ops.aten.mean(mul_x_hat, [0, 2, 3], dtype=torch.float32, keepdim=True)
-            mean_grad_y_xhat = torch.ops.aten.div(sum_grad_y_xhat, reduction_length)
-            mean_grad_y = torch.ops.aten.div(sum_grad_y, reduction_length)
-            
-
-            var_grad_mean = -mean_grad_y_xhat * x_hat * saved_rstd * gamma
-            x_grad = (y_grad - mean_grad_y) * gamma * saved_rstd + var_grad_mean
-            x_grad = torch.ops.aten.to(x_grad, torch.float16)
-            gamma_grad = torch.ops.aten.to(torch.ops.aten.squeeze(sum_grad_y_xhat), torch.float16)
-            beta_grad = torch.ops.aten.to(torch.ops.aten.squeeze(sum_grad_y), torch.float16)
+            sum_grad_y, sum_grad_y_xhat = batch_norm_backward_stat(y_grad, input, saved_mean, saved_rstd, K)
+            x_grad, gamma_grad, beta_grad = batch_norm_backward_elemt(y_grad, input, saved_mean, saved_rstd, K, sum_grad_y, sum_grad_y_xhat, reduction_factor, gamma)
             return x_grad, gamma_grad, beta_grad
         
         def filter(match, original_graph, pattern_graph):

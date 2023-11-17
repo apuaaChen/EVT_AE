@@ -26,5 +26,5 @@ def pass_print_graph(module, file):
     g = graph_drawer.FxGraphDrawer(module, "dynamic_classifier")
     with open(file, "wb") as f:
         graph = g.get_dot_graph()
-        graph.set("nslimit", 25)
+        graph.set("nslimit", 2)
         f.write(graph.create_svg())

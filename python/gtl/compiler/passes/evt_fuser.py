@@ -47,7 +47,7 @@ from contextlib import nullcontext
 from gtl.compiler.autotuner.gemm_tuner import MMTuner
 from gtl.compiler.autotuner.bmm_tuner import BMMTuner
 from gtl.compiler.autotuner.reduce_apply_tuner import SoftmaxTuner, SoftmaxBackwardTuner, LayerNormTuner, LayerNormBackwardTuner
-from gtl.compiler.passes.pass_decomposition import spmm, batch_norm_stat, convolution_forward_channel_last, batch_norm_backward_stat
+from gtl.compiler.passes.pass_decomposition import spmm, batch_norm_stat, convolution_forward_channel_last, batch_norm_backward_stat, convolution_backward_data_channel_last
 from torch.fx.subgraph_rewriter import replace_pattern_with_filters
 from gtl.compiler.passes.pass_fake_shape_infer import FakeTensorInfer
 from cutlass.shape import Conv2DProblemSize
@@ -56,6 +56,7 @@ from cutlass import SplitKMode
 
 
 torch.fx.wrap('batch_norm_stat')
+torch.fx.wrap('batch_norm_backward_stat')
 
 class FusedOpBase:
     """
@@ -71,6 +72,7 @@ class FusedOpBase:
         self.inputs = [
             input for input in epilogue_visitor.inputs 
             if input.target != self.node.target]
+        self.input_names = epilogue_visitor.input_names
         self.post_reshape_permute = epilogue_visitor.post_reshape_permute
 
         # Stream
@@ -227,8 +229,8 @@ class FusedOpBase:
                         device="cuda"
                     )
             # Register the inputs
-            for idx, input in enumerate(self.inputs):
-                visitor_args[input.name] = args[idx]
+            for idx, input_name in enumerate(self.input_names):
+                visitor_args[input_name] = args[idx]
 
             self.call(visitor_args, stream, *args)
 
@@ -343,6 +345,84 @@ class FusedConvFprop(FusedOpBase):
         arguments = Conv2dArguments(
             operation=self.operation, problem_size=self.problem_size,
             A=input, B=weight, C=None, D=None,
+            output_op = self.operation.epilogue_type(visitor_args),
+            split_k_mode = SplitKMode.Serial,
+            split_k_slices=1
+        )
+
+        self.operation.run(arguments, stream=stream.cuda_stream)
+
+
+class FusedConvDgrad(FusedOpBase):
+    """
+    The fused operation of Conv2d Dgrad epilogue_visitor(ConvDgrad, args)
+    """
+    __name__ = "cutlass_conv2d_dgrad_with_visitor"
+    target = convolution_backward_data_channel_last
+    mainloop_fusion_targets = []
+    def __init__(self, node: Node, epilogue_visitor) -> None:
+        super().__init__(node, epilogue_visitor)
+        grad_y, input, weight, self.stride, self.padding, self.dilation, _, _, self.groups = node.args
+        N, H, W, C = list(input.meta["tensor_meta"].shape)
+        K, R, S, C_ = list(weight.meta["tensor_meta"].shape)
+        assert C == C_
+
+        self.input = input
+
+        self.args = [grad_y, weight]
+        element = grad_y.meta["tensor_meta"].dtype
+
+        plan = cutlass.Conv2dDgrad(element=element, element_accumulator=torch.float32)
+
+        # TODO: Get candidate configs
+        plan.epilogue_visitor = epilogue_visitor
+        self.plan = plan
+
+        self.align_A = self.get_alignment(K)
+        self.align_B = self.get_alignment(C)
+        self.align_C = self.get_alignment(C)
+
+        self.problem_size = Conv2DProblemSize(
+            N, H, W, C,
+            K, R, S, C,
+            self.padding[0], self.padding[1],
+            self.stride[0], self.stride[1],
+            self.dilation[0], self.dilation[1]
+        )
+
+        iterator_algorithm = self.plan._propose_iterator_algorithm(
+            self.problem_size, self.align_A, self.align_B)
+        stride_support = self.plan._propose_stride_support(self.stride)
+        swizzling_functor = self.plan._propose_swizzling_functor(self.stride)
+
+        self.operation = self.plan.compile(
+            alignment_A=self.align_A, alignment_B=self.align_B,
+            alignment_C=self.align_C, iterator_algorithm=iterator_algorithm,
+            stride_support=stride_support, swizzling_functor=swizzling_functor
+        )
+    
+    def reference(self, args, visitor_args):
+        grad_y = args[-2].contiguous()
+        weight = args[-1].contiguous()
+        input = torch.empty(
+            self.input.meta["tensor_meta"].shape,
+            dtype=self.input.meta["tensor_meta"].dtype,
+            device="cuda"
+        )
+        def target_fn(grad_y, weight, input):
+            return convolution_backward_data_channel_last(
+                grad_y, input, weight, self.stride, self.padding,
+                self.dilation, False, [0,0], self.groups
+            )
+        super().reference_base([grad_y, weight, input], target_fn, visitor_args, args)
+    
+    def call(self, visitor_args, stream, *args) -> Any:
+        grad_y = args[-2].contiguous()
+        weight = args[-1].contiguous()
+
+        arguments = Conv2dArguments(
+            operation=self.operation, problem_size=self.problem_size,
+            A = grad_y, B=weight, C=None, D=None,
             output_op = self.operation.epilogue_type(visitor_args),
             split_k_mode = SplitKMode.Serial,
             split_k_slices=1
@@ -944,7 +1024,7 @@ class EVTFuser(EVTFrontendBase):
         torch.ops.aten.mm, torch.ops.aten.bmm, torch.ops.aten._softmax, 
         torch.ops.aten._softmax_backward_data,
         torch.ops.aten.native_layer_norm, torch.ops.aten.native_layer_norm_backward,
-        spmm, convolution_forward_channel_last]
+        spmm, convolution_forward_channel_last, convolution_backward_data_channel_last]
     
     def __init__(self, element_compute=DataType.f32, **kwargs):
         super().__init__(element_compute, **kwargs)
@@ -981,7 +1061,7 @@ class EVTFuser(EVTFrontendBase):
                 anchor = node
 
         # Update anchor's shape if it is conv
-        if anchor.target == convolution_forward_channel_last:
+        if anchor.target in [convolution_forward_channel_last, convolution_backward_data_channel_last]:
             N, H, W, C = anchor.meta["tensor_meta"].shape
             anchor.meta["tensor_meta"] = anchor.meta["tensor_meta"]._replace(shape=(N*H*W,C))
             # Insert reshape
@@ -1115,6 +1195,7 @@ class EVTFuser(EVTFrontendBase):
         #
         
         # Get mainloop args
+        self.input_names = [input.name for input in self.inputs if input!= anchor]
         fused_kernel = self.get_fused_node(anchor)
         args = [input for input in self.inputs if input!= anchor] + fused_kernel.args
         graph_module.graph.inserting_after(anchor)
@@ -1179,6 +1260,24 @@ class EVTFuser(EVTFrontendBase):
             mul = torch.ops.aten.mul(div, input)
             mean_x2_vec = torch.ops.aten.sum(mul, [0, 1, 2], dtype=torch.float32, keepdim=True)
             return mean_vec, mean_x2_vec
+        
+        return (pattern, replacement, None)
+    
+    def requires_batch_norm_backward_stat(self, node: torch.fx.Node):
+        def pattern(y_grad, input, saved_mean, saved_rstd, K):
+            sum_grad_y, sum_grad_y_xhat = batch_norm_backward_stat(
+                y_grad, input, saved_mean, saved_rstd, K
+            )
+            return sum_grad_y, sum_grad_y_xhat
+        
+        def replacement(y_grad, input, saved_mean, saved_rstd, K):
+            sum_grad_y = torch.ops.aten.sum(y_grad, [0, 1, 2], dtype=torch.float32, keepdim=False)
+            neg_saved_mean = torch.ops.aten.mul(saved_mean, -1.0)
+            sub_saved_mean = torch.ops.aten.add(input, neg_saved_mean)
+            x_hat = torch.ops.aten.mul(sub_saved_mean, saved_rstd)
+            mul_x_hat = torch.ops.aten.mul(y_grad, x_hat)
+            sum_grad_y_xhat = torch.ops.aten.sum(mul_x_hat, [0, 1, 2], dtype=torch.float32, keepdim=False)
+            return sum_grad_y, sum_grad_y_xhat
         
         return (pattern, replacement, None)
         
@@ -1336,6 +1435,20 @@ class EVTFuser(EVTFrontendBase):
             self.insert_store_node(node)
             self.add_edge(name, node.name, weight=0)
         return node.name
+    
+    def visit_squeeze(self, node: Node):
+        name = self._get_name(node)
+        op = self.layout_fns["reshape"]
+        input = node.args[0]
+        new_shape = node.meta["tensor_meta"].shape
+        kwargs = {"new_shape": new_shape}
+        self.add_layout_node(op, kwargs, name)
+        # Add edge
+        self.add_edge(input.name, name, weight=0)
+        if node in self.outputs_subgraph:
+            self.insert_store_node(node)
+            self.add_edge(name, node.name, weight=0)
+        return node.name
 
     
     def visit_permute(self, node: Node):
@@ -1373,6 +1486,8 @@ class EVTFuser(EVTFrontendBase):
             op = FusedSpmm(node, self)
         elif node.target == convolution_forward_channel_last:
             op = FusedConvFprop(node, self)
+        elif node.target == convolution_backward_data_channel_last:
+            op = FusedConvDgrad(node, self)
         else:
             raise NotImplementedError()
         return op

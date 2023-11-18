@@ -176,19 +176,24 @@ class Decomposition(UnitTestBase):
     def test_native_batch_norm_legit(self):
         # Model
         class NativeBatchNorm(torch.nn.Module):
-            def forward(self, input, gamma, beta):
+            def forward(self, input, gamma, beta, y_grad):
                 out, mean, stdinv = torch.ops.aten._native_batch_norm_legit.no_stats(
                     input, gamma, beta, True, 0.1, 1e-5
                 )
-                return out, mean, stdinv
+
+                grad_input, grad_gamma, grad_beta = torch.ops.aten.native_batch_norm_backward(
+                    y_grad, input, gamma, None, None, mean, stdinv,True, 1e-5, [True, True, True]
+                )
+                return out, grad_input, grad_gamma, grad_beta
 
         # Inputs
         input = torch.randn((128, 64, 112, 112), dtype=torch.float16, device="cuda") * 2 + 1
         input = input.to(memory_format=torch.channels_last)
         gamma = torch.randn((64,), dtype=torch.float16, device="cuda")
         beta = torch.randn((64,), dtype=torch.float16, device="cuda")
+        y_grad = torch.randn_like(input)
 
-        self.util_test_decomposition(NativeBatchNorm, [input, gamma, beta])
+        self.util_test_decomposition(NativeBatchNorm, [input, gamma, beta, y_grad])
 
 
 if __name__ == '__main__':

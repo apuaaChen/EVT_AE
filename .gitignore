@@ -37,3 +37,5 @@ python/build/*
 .hypothesis/unicode_data/13.0.0/charmap.json.gz
 python/gtl.egg-info/PKG-INFO
 **/torchinductor*/
+unittest/fx_passes/dataset/*
+unittest/evt_fuser/dataset/*

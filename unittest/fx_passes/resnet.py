@@ -46,7 +46,7 @@ def joint_optimization(joint_module):
     pass_cse(joint_module, joint_module.graph)
     pass_constant_propagation(joint_module, joint_module.graph)
     pass_fusion(joint_module, joint_module.graph)
-    # pass_print_graph(joint_module, "./resnet_optimized.svg")
+    pass_print_graph(joint_module, "./resnet_optimized.svg")
     # pass_clean_up(joint_module, joint_module.graph)
     # joint_module.recompile()
     

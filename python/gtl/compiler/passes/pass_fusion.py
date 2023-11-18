@@ -1287,7 +1287,8 @@ class Partitioning(PassBase):
         for idx, par in enumerate(partitions):
             print(f"==============={idx}==================")
             print(par)
-            if idx > 28:
+            if idx > 135:
+                print("TODO")
                 continue
             if EVTFuser.fusible(par, graph_module):
                 fuser = EVTFuser()

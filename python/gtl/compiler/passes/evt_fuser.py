@@ -142,7 +142,7 @@ class FusedOpBase:
         # Step 3: profiling
         
         ## Profile the baseline
-        print("############### Torch Compile ###############")
+        print("############### Torch ###############")
         torch.cuda.synchronize()
         with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
             with record_function("torch"):
@@ -152,11 +152,11 @@ class FusedOpBase:
 
         if inductor_profile:
             ## Profile the basic torch compile
-            print("############### Torch ###############")
+            print("############### Torch Compile ###############")
             inductor_fn = torch.compile(tmp_call_reference)
             torch.cuda.synchronize()
             with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
-                with record_function("torch"):
+                with record_function("torch compile"):
                     inductor_fn(mainloop_args, inputs)
             
             print(prof.key_averages().table(sort_by="cuda_time_total"))

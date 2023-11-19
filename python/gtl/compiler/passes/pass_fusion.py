@@ -1287,18 +1287,14 @@ class Partitioning(PassBase):
         for idx, par in enumerate(partitions):
             print(f"==============={idx}==================")
             print(par)
-            if idx > 135:
-                print("TODO")
-                continue
             if EVTFuser.fusible(par, graph_module):
                 fuser = EVTFuser()
                 fuser.trace(graph_module, par)
             else:
-                print("TODO")
-                # if len(par) == 1:
-                #     continue
-                # fuser = NVFuser()
-                # fuser.trace(graph_module, par)
+                if len(par) == 1:
+                    continue
+                fuser = NVFuser()
+                fuser.trace(graph_module, par)
 
         return super().call(graph_module)
 

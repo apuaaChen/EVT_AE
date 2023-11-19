@@ -46,7 +46,7 @@ def joint_optimization(joint_module):
     pass_cse(joint_module, joint_module.graph)
     pass_constant_propagation(joint_module, joint_module.graph)
     pass_fusion(joint_module, joint_module.graph)
-    pass_print_graph(joint_module, "./resnet_optimized.svg")
+    # pass_print_graph(joint_module, "./resnet_optimized.svg")
     # pass_clean_up(joint_module, joint_module.graph)
     # joint_module.recompile()
     
@@ -62,7 +62,7 @@ class ResNetTest(BaseTestCase):
 
         # Cast to fp16
         model_ref, optimizer_ref = apex_autocast(
-            model_ref, optimizer_ref, False
+            model_ref, optimizer_ref, True
         )
 
         model, optimizer = resnet_model_optimizer(depth=18, reference=model_ref)
@@ -89,16 +89,17 @@ class ResNetTest(BaseTestCase):
         self.run_target_model(model, optimizer, sample_inputs)
         self.verify(model_ref, model, verbose=1, rtol=3e-1)
 
-        # with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
-        #     with record_function("evt"):
-        #         self.run_target_model(model, optimizer, sample_inputs)
+        with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
+            with record_function("evt"):
+                self.run_target_model(model, optimizer, sample_inputs)
 
-        # print(prof.key_averages().table(sort_by="cuda_time_total"))
+        print(prof.key_averages().table(sort_by="cuda_time_total"))
         
-        # with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
-        #     with record_function("torch"):
-        #         self.run_reference_model(model_ref, optimizer_ref, sample_inputs, 1.)
-        # print(prof.key_averages().table(sort_by="cuda_time_total"))
+        model_ref = model_ref.to(memory_format=torch.channels_last)
+        with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
+            with record_function("torch"):
+                self.run_reference_model(model_ref, optimizer_ref, sample_inputs, 1.)
+        print(prof.key_averages().table(sort_by="cuda_time_total"))
     
     # def grad_preprocess(self, grad):
     #     if len(grad.size()) == 4:

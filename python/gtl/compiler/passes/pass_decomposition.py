@@ -90,22 +90,50 @@ def convolution_backward_data_channel_last(grad_output_channel_last, input_chann
     return grad_input_channel_last
 
 @torch.fx.wrap
-def convolution_backward_weight_channel_last(grad_output_channel_last, input_channel_last, weight_channel_last, stride, padding, dilation, transpose, output_padding, groups):
+def convolution_backward_weight_channel_last(
+    grad_output_channel_last: torch.Tensor, input_channel_last: torch.Tensor, 
+    weight_channel_last: torch.Tensor, stride: 'list[int]', padding: 'list[int]', 
+    dilation: 'list[int]', transpose: bool, output_padding: 'list[int]', groups: int):
     # K, C, R, S = weight_channel_last.size()
     # weight_channel_last = torch.ops.aten.view(weight_channel_last.contiguous(), [K, R, S, C])
 
     grad_output = torch.ops.aten.permute(grad_output_channel_last.contiguous(), [0, 3, 1, 2]).contiguous()
     input = torch.ops.aten.permute(input_channel_last.contiguous(), [0, 3, 1, 2]).contiguous()
     weight = torch.ops.aten.permute(weight_channel_last.contiguous(), [0, 3, 1, 2]).contiguous()
-    grad_weights = torch.ops.aten.convolution_backward(
+    _, grad_weight, _ = torch.ops.aten.convolution_backward(
         grad_output, input, weight, [0], stride, padding, dilation, transpose, output_padding, groups, [False, True, False]
     )
-    grad_weight = operator.getitem(grad_weights, 1)
     grad_weight_channel_last = torch.ops.aten.permute(grad_weight, [0, 2, 3, 1]).contiguous()#.view(K, C, R, S)#.contiguous().view(K, C, R, S)
     return grad_weight_channel_last
 
 @torch.fx.wrap
-def batch_norm_stat(input, reduction_factor):
+def max_pool2d_with_indices_channel_last(
+    inputs_cl: torch.Tensor, kernel_size: 'list[int]', stride: 'list[int]', padding: 'list[int]'):
+
+    input = torch.ops.aten.permute(inputs_cl, [0, 3, 1, 2])
+    output, indices = torch.ops.aten.max_pool2d_with_indices(input, kernel_size, stride, padding)
+    output_cl = torch.ops.aten.permute(output, [0, 2, 3, 1])
+    indices_cl = torch.ops.aten.permute(indices, [0, 2, 3, 1])
+    return output_cl, indices_cl
+
+@torch.fx.wrap
+def max_pool2d_with_indices_backward_channel_last(
+    grad_output_cl: torch.Tensor, x_cl: torch.Tensor, kernel_size: 'list[int]', 
+    stride: 'list[int]', padding: 'list[int]', dilation: 'list[int]', ceil_mode: bool, 
+    indices_cl: torch.Tensor):
+
+    grad_output = torch.ops.aten.permute(grad_output_cl, [0, 3, 1, 2])
+    x = torch.ops.aten.permute(x_cl, [0, 3, 1, 2])
+    indices = torch.ops.aten.permute(indices_cl, [0, 3, 1, 2])
+    grad_x = torch.ops.aten.max_pool2d_with_indices_backward(
+        grad_output, x, kernel_size, stride, padding, dilation, ceil_mode, indices
+    )
+    grad_x_cl = torch.ops.aten.permute(grad_x, [0, 2, 3, 1])
+    return grad_x_cl
+
+
+@torch.fx.wrap
+def batch_norm_stat(input: torch.Tensor, reduction_factor: float):
     input = input.contiguous()
     mean_vec = torch.ops.aten.mean(input, [0, 1, 2], dtype=torch.float32, keepdim=False)
     input_square = torch.ops.aten.square(input)
@@ -113,7 +141,7 @@ def batch_norm_stat(input, reduction_factor):
     return mean_vec, mean_x2_vec
 
 @torch.fx.wrap
-def batch_norm_elemt(input, weight, bias, mean_vec, mean_x2_vec, eps, K):
+def batch_norm_elemt(input: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor, mean_vec: torch.Tensor, mean_x2_vec: torch.Tensor, eps: float, K: int):
     input = input.contiguous()
     var = mean_x2_vec - mean_vec * mean_vec
     rstd = torch.ops.aten.rsqrt(var + eps)
@@ -129,7 +157,7 @@ def batch_norm_elemt(input, weight, bias, mean_vec, mean_x2_vec, eps, K):
     return output.contiguous(), saved_mean, saved_rstd
 
 @torch.fx.wrap
-def batch_norm_backward_stat(y_grad, input, saved_mean, saved_rstd, K):
+def batch_norm_backward_stat(y_grad: torch.Tensor, input: torch.Tensor, saved_mean: torch.Tensor, saved_rstd: torch.Tensor, K: int):
     y_grad = y_grad.contiguous()
     input = input.contiguous()
     sum_grad_y = torch.ops.aten.sum(y_grad, [0, 1, 2], dtype=torch.float32, keepdim=False)
@@ -140,7 +168,11 @@ def batch_norm_backward_stat(y_grad, input, saved_mean, saved_rstd, K):
     return sum_grad_y, sum_grad_y_xhat
 
 @torch.fx.wrap
-def batch_norm_backward_elemt(y_grad, input, saved_mean, saved_rstd, K, sum_grad_y, sum_grad_y_xhat, reduction_factor, gamma):
+def batch_norm_backward_elemt(
+    y_grad: torch.Tensor, input: torch.Tensor, saved_mean: torch.Tensor, 
+    saved_rstd: torch.Tensor, K: int, sum_grad_y: torch.Tensor, 
+    sum_grad_y_xhat: torch.Tensor, reduction_factor: float, gamma: torch.Tensor):
+    #
     y_grad = y_grad.contiguous()
     input = input.contiguous()
     sub_saved_mean = torch.ops.aten.sub(input, saved_mean)
@@ -731,6 +763,52 @@ class Decomposition(PassBase):
             return bn_node.name == node.name
             
         self.pattern_replacement[key] = (pattern, replacement, [filter,])
+    
+    def requires_max_pool2d_with_indices(self, node: torch.fx.Node):
+        key = f"torch.ops.aten.max_pool2d_with_indices"
+
+        if key in self.pattern_replacement:
+            return
+        
+        def pattern(inputs, kernel_size, stride, padding):
+            output, indices = torch.ops.aten.max_pool2d_with_indices(inputs, kernel_size, stride, padding)
+            return output, indices
+        
+        def replacement(inputs, kernel_size, stride, padding):
+            inputs_cl = torch.ops.aten.permute(inputs, [0, 2, 3, 1])
+            output_cl, indices_cl = max_pool2d_with_indices_channel_last(inputs_cl, kernel_size, stride, padding)
+            output = torch.ops.aten.permute(output_cl, [0, 3, 1, 2])
+            indices = torch.ops.aten.permute(indices_cl, [0, 3, 1, 2])
+            return output, indices
+        
+        self.pattern_replacement[key] = (pattern, replacement, None)
+    
+    def requires_max_pool2d_with_indices_backward(self, node: torch.fx.Node):
+        key = f"torch.ops.aten.max_pool2d_with_indices_backward"
+
+        if key in self.pattern_replacement:
+            return
+        
+        def pattern(grad_output, x, kernel_size, stride, padding, dilation, ceil_mode, indices):
+            grad_x = torch.ops.aten.max_pool2d_with_indices_backward(
+                grad_output, x, kernel_size, stride, padding, dilation, ceil_mode, indices
+            )
+            return grad_x
+
+        def replacement(grad_output, x, kernel_size, stride, padding, dilation, ceil_mode, indices):
+            grad_output_cl = torch.ops.aten.permute(grad_output, [0, 2, 3, 1])
+            x_cl = torch.ops.aten.permute(x, [0, 2, 3, 1])
+            indices_cl = torch.ops.aten.permute(indices, [0, 2, 3, 1])
+
+            grad_x_cl = max_pool2d_with_indices_backward_channel_last(
+                grad_output_cl, x_cl, kernel_size, stride, padding, dilation, 
+                ceil_mode, indices_cl
+            )
+
+            grad_x = torch.ops.aten.permute(grad_x_cl, [0, 3, 1, 2])
+            return grad_x
+
+        self.pattern_replacement[key] = (pattern, replacement, None)
 
 
 """

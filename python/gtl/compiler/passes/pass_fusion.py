@@ -1290,9 +1290,7 @@ class Partitioning(PassBase):
             if EVTFuser.fusible(par, graph_module):
                 fuser = EVTFuser()
                 fuser.trace(graph_module, par)
-            else:
-                if len(par) == 1:
-                    continue
+            elif NVFuser.fusible(par):
                 fuser = NVFuser()
                 fuser.trace(graph_module, par)
 

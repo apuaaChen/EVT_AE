@@ -38,9 +38,9 @@ class AutoTunerBase:
         self.warmup_iterations=100
         self.profile_iterations=100
 
-        self.inputs = [
-            input for input in epilogue_visitor.inputs 
-            if input.target != self.target]
+        self.inputs = epilogue_visitor.input_nodes
+        self.input_names = epilogue_visitor.input_names
+        assert len(self.inputs) == len(self.input_names)
         self.outputs = epilogue_visitor.outputs
         self.output2store = epilogue_visitor.output2store
         self.num_best_tds = 5
@@ -198,8 +198,8 @@ class AutoTunerBase:
     
     def get_visitor_args(self):
         visitor_args = {}
-        for input in self.inputs:
-            visitor_args[input.name] = torch.empty(
+        for input_name, input in zip(self.input_names, self.inputs):
+            visitor_args[input_name] = torch.empty(
                 size = input.meta["tensor_meta"].shape,
                 dtype = input.meta["tensor_meta"].dtype,
                 device = "cuda"

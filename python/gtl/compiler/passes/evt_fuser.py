@@ -46,6 +46,7 @@ from torch.utils._python_dispatch import _pop_mode_temporarily, _len_torch_dispa
 from contextlib import nullcontext
 from gtl.compiler.autotuner.gemm_tuner import MMTuner
 from gtl.compiler.autotuner.bmm_tuner import BMMTuner
+from gtl.compiler.autotuner.conv_tuner import ConvFpropTuner, ConvDgradTuner
 from gtl.compiler.autotuner.reduce_apply_tuner import SoftmaxTuner, SoftmaxBackwardTuner, LayerNormTuner, LayerNormBackwardTuner
 from gtl.compiler.passes.pass_decomposition import spmm, batch_norm_stat, convolution_forward_channel_last, batch_norm_backward_stat, convolution_backward_data_channel_last
 from torch.fx.subgraph_rewriter import replace_pattern_with_filters
@@ -300,7 +301,23 @@ class FusedConvFprop(FusedOpBase):
         # TODO: get conv plan
         plan = cutlass.Conv2dFprop(element=element, element_accumulator=torch.float32)
 
-        # TODO: Get candidate configs
+        self.problem_size = Conv2DProblemSize(
+            N, H, W, C,
+            K, R, S, C,
+            self.padding[0], self.padding[1],
+            self.stride[0], self.stride[1],
+            self.dilation[0], self.dilation[1]
+        )
+
+        # Get candidate tds
+        with (_pop_mode_temporarily() 
+            if _len_torch_dispatch_stack() > 0 else nullcontext()):
+            autotuner = ConvFpropTuner(plan, self.problem_size, epilogue_visitor)
+            td, swizzle, stages = autotuner.get_best_config()
+        plan.tile_description = td
+        plan.swizzling_functor = swizzle
+
+        epilogue_visitor.epilogue_stages = stages
 
         plan.epilogue_visitor = epilogue_visitor
 
@@ -310,23 +327,15 @@ class FusedConvFprop(FusedOpBase):
         self.align_B = self.get_alignment(C)
         self.align_C = self.get_alignment(K)
 
-        self.problem_size = Conv2DProblemSize(
-            N, H, W, C,
-            K, R, S, C,
-            self.padding[0], self.padding[1],
-            self.stride[0], self.stride[1],
-            self.dilation[0], self.dilation[1]
-        )
-
         iterator_algorithm = self.plan._propose_iterator_algorithm(
             self.problem_size, self.align_A, self.align_B)
         stride_support = self.plan._propose_stride_support(self.stride)
-        swizzling_functor = self.plan._propose_swizzling_functor(self.stride)
+        # swizzling_functor = self.plan._propose_swizzling_functor(self.stride)
 
         self.operation = self.plan.compile(
             alignment_A=self.align_A, alignment_B=self.align_B,
             alignment_C=self.align_C, iterator_algorithm=iterator_algorithm,
-            stride_support=stride_support, swizzling_functor=swizzling_functor
+            stride_support=stride_support#, swizzling_functor=swizzling_functor
         )
     
     def reference(self, args, visitor_args):
@@ -374,14 +383,6 @@ class FusedConvDgrad(FusedOpBase):
 
         plan = cutlass.Conv2dDgrad(element=element, element_accumulator=torch.float32)
 
-        # TODO: Get candidate configs
-        plan.epilogue_visitor = epilogue_visitor
-        self.plan = plan
-
-        self.align_A = self.get_alignment(K)
-        self.align_B = self.get_alignment(C)
-        self.align_C = self.get_alignment(C)
-
         self.problem_size = Conv2DProblemSize(
             N, H, W, C,
             K, R, S, C,
@@ -389,6 +390,24 @@ class FusedConvDgrad(FusedOpBase):
             self.stride[0], self.stride[1],
             self.dilation[0], self.dilation[1]
         )
+
+        # Get candidate tds
+        with (_pop_mode_temporarily() 
+            if _len_torch_dispatch_stack() > 0 else nullcontext()):
+            autotuner = ConvDgradTuner(plan, self.problem_size, epilogue_visitor)
+            td, swizzle, stages = autotuner.get_best_config()
+        plan.tile_description = td
+        plan.swizzling_functor = swizzle
+
+        epilogue_visitor.epilogue_stages = stages
+
+        # TODO: Get candidate configs
+        plan.epilogue_visitor = epilogue_visitor
+        self.plan = plan
+
+        self.align_A = self.get_alignment(K)
+        self.align_B = self.get_alignment(C)
+        self.align_C = self.get_alignment(C)
 
         iterator_algorithm = self.plan._propose_iterator_algorithm(
             self.problem_size, self.align_A, self.align_B)
@@ -1196,6 +1215,7 @@ class EVTFuser(EVTFrontendBase):
         
         # Get mainloop args
         self.input_names = [input.name for input in self.inputs if input!= anchor]
+        self.input_nodes = [input for input in self.inputs if input!= anchor]
         fused_kernel = self.get_fused_node(anchor)
         args = [input for input in self.inputs if input!= anchor] + fused_kernel.args
         graph_module.graph.inserting_after(anchor)

@@ -1,8 +1,0 @@
-{
-    "torch-nchw": 1590.58,
-    "torch-nhwc": 2385.84,
-    "torch-nvfuser": 2556.47,
-    "ours \\w fusion": 2782.75,
-    "ours \\w fusion+uturn": 2783.02,
-    "ours \\w fusion+uturn+stream": 2906.14
-}

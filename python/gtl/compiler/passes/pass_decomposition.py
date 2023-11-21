@@ -97,13 +97,13 @@ def convolution_backward_weight_channel_last(
     # K, C, R, S = weight_channel_last.size()
     # weight_channel_last = torch.ops.aten.view(weight_channel_last.contiguous(), [K, R, S, C])
 
-    grad_output = torch.ops.aten.permute(grad_output_channel_last.contiguous(), [0, 3, 1, 2]).contiguous()
-    input = torch.ops.aten.permute(input_channel_last.contiguous(), [0, 3, 1, 2]).contiguous()
-    weight = torch.ops.aten.permute(weight_channel_last.contiguous(), [0, 3, 1, 2]).contiguous()
+    grad_output = torch.ops.aten.permute(grad_output_channel_last.contiguous(), [0, 3, 1, 2])
+    input = torch.ops.aten.permute(input_channel_last.contiguous(), [0, 3, 1, 2])
+    weight = torch.ops.aten.permute(weight_channel_last.contiguous(), [0, 3, 1, 2])
     _, grad_weight, _ = torch.ops.aten.convolution_backward(
         grad_output, input, weight, [0], stride, padding, dilation, transpose, output_padding, groups, [False, True, False]
     )
-    grad_weight_channel_last = torch.ops.aten.permute(grad_weight, [0, 2, 3, 1]).contiguous()#.view(K, C, R, S)#.contiguous().view(K, C, R, S)
+    grad_weight_channel_last = torch.ops.aten.permute(grad_weight, [0, 2, 3, 1])
     return grad_weight_channel_last
 
 @torch.fx.wrap
@@ -193,9 +193,10 @@ class Decomposition(PassBase):
     """
     GTL pass that decompose operations to registered patterns
     """
-    def __init__(self) -> None:
+    def __init__(self, disabled_ops) -> None:
         super().__init__()
         self.modified = False
+        self.disabled_ops  =disabled_ops
 
         # concept: dict{key, list of tuples of function}
         self.pattern_replacement = {}
@@ -235,6 +236,8 @@ class Decomposition(PassBase):
         graph = graph_module.graph
         for node in graph.nodes:
             visitor_name = "requires_" + str(node.target).split(sep='.')[-1]
+            if visitor_name in self.disabled_ops:
+                continue
             if hasattr(self, visitor_name):
                 getattr(self, visitor_name)(node)
     
@@ -809,103 +812,11 @@ class Decomposition(PassBase):
             return grad_x
 
         self.pattern_replacement[key] = (pattern, replacement, None)
-
-
-"""
-    # TODO: the convolution backward is more tricky to construct the arg list
-    def requires_convolution_backward(self, node: torch.fx.Node):
-        # _grad_output, _input, _weight, _bias_sizes_opt, _stride, _padding, _dilation, _transposed, _output_padding, _groups, _output_mask = node.args
-        _output_mask = node.args[-1]
-        # n, c, h, w = _input.meta["tensor_meta"].shape
-        # k, c_, r, s = _weight.meta["tensor_meta"].shape
-        # assert c == c_
-        if (not _output_mask[0]) and _output_mask[1] and (not _output_mask[2]):
-            key = f"aten.convolution_backward_FTF"
-            if key in self.pattern_replacement.keys():
-                return
-
-            def nhwc_wgrad_only(grad_output, input, weight, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups):
-                k, c, s, r = weight.size()
-                weight_permuted = weight.view(k, r, s, c).permute(0, 3, 1, 2)
-                weight_grad = torch.ops.aten.convolution_backward(grad_output, input, weight_permuted, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, [False, True, False])[1]
-                weight_grad = weight_grad.permute(0, 2, 3, 1).view(k, c, r, s)
-                return [None, weight_grad, None]
-            
-            def pattern(grad_output, input, weight, bias_sizes_opt, stride, padding, 
-                        dilation, transposed, output_padding, groups):
-                return torch.ops.aten.convolution_backward(
-                    grad_output, input, weight, bias_sizes_opt, stride, padding, 
-                    dilation, transposed, output_padding, groups, [False, True, False])
-
-            def replacement(grad_output, input, weight, bias_sizes_opt, stride, padding, 
-                        dilation, transposed, output_padding, groups):
-                return nhwc_wgrad_only(grad_output, input, weight, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups)
-            
-            self.pattern_replacement[key] = (pattern, replacement)
-            
-
-    # TODO: it may lead to several issues, we keep the old way temporarily
-"""
         
 
-def pass_decomposition(module, graph, disabled_list=[]):
-    decompose = Decomposition()
+def pass_decomposition(module, graph, disabled_ops=[]):
+    decompose = Decomposition(disabled_ops)
 
     module, modified = decompose(module)
-    # module.recompile()
-
-    # graph = module.graph
-    
-    # TODO: strange it is not working
-    # for node in graph.nodes:
-    #     if node.op == "call_function":
-    #         if node.target in disabled_list: continue
-    #         if node.target == torch.ops.aten.convolution_backward:
-    #             grad_output, input, weight, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, output_mask = node.args
-    #             n, c, h, w = input.meta["tensor_meta"].shape
-    #             k, c_, r, s = weight.meta["tensor_meta"].shape
-    #             assert c == c_
-    #             # inject dgrad node 
-    #             if output_mask[0] and output_mask[1]:
-    #                 dgrad_output = list(node.users.keys())[0]
-    #                 wgrad_output = list(node.users.keys())[1]
-    #             elif (not output_mask[0]) and output_mask[1]:
-    #                 dgrad_output = None
-    #                 wgrad_output = list(node.users.keys())[0]
-    #             elif output_mask[0] and (not output_mask[1]):
-    #                 dgrad_output = list(node.users.keys())[0]
-    #                 wgrad_output = None
-    #             else:
-    #                 raise NotImplementedError
-                
-    #             if dgrad_output is not None:
-    #                 dgrad_args = [
-    #                     (n, c, h, w), weight, grad_output, stride, padding, dilation, groups
-    #                 ]
-    #                 graph.inserting_after(node)
-    #                 dgrad_node = graph.call_function(torch.nn.grad.conv2d_input, args=tuple(dgrad_args))
-    #                 dgrad_node.meta["tensor_meta"] = dgrad_output.meta["tensor_meta"]._replace()
-    #                 dgrad_output.replace_all_uses_with(dgrad_node)
-                
-    #             if wgrad_output is not None:
-    #                 if dgrad_output is not None:
-    #                     torch_wgrad_func = nhwcWgradOnly()
-
-    #                     graph.inserting_after(node)
-    #                     wgrad_node = graph.call_function(torch_wgrad_func, args=(grad_output, input, weight, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, [False, True, False]))
-    #                     wgrad_node.meta["tensor_meta"] = wgrad_output.meta["tensor_meta"]._replace()
-    #                     wgrad_output.replace_all_uses_with(wgrad_node)
-    #                 else:
-    #                     # transfer the function to nhwc
-    #                     def nhwc_wgrad_only(grad_output, input, weight, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, output_mask):
-    #                         k, c, s, r = weight.size()
-    #                         weight_permuted = weight.view(k, r, s, c).permute(0, 3, 1, 2)
-    #                         weight_grad = torch.ops.aten.convolution_backward(grad_output, input, weight_permuted, bias_sizes_opt, stride, padding, dilation, transposed, output_padding, groups, output_mask)[1]
-    #                         weight_grad = weight_grad.permute(0, 2, 3, 1).view(k, c, r, s)
-    #                         return [None, weight_grad, None]
-                        
-    #                     node.target = nhwc_wgrad_only
-    # graph.eliminate_dead_code()
     legalize_graph(module)
-    # graph.lint()
    

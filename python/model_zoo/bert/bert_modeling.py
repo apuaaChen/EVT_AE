@@ -111,6 +111,9 @@ class Bert(torch.nn.Module):
         self.encoder = BertExcludeEmbedding(config, self.embedding.word_embeddings.weight, sequence_output_is_dense)
         self.scaler = torch.cuda.amp.GradScaler(init_scale=4096)
     
+    def reset_parameters(self):
+        return
+    
     def forward(self, input_ids, token_type_ids, attention_mask, masked_lm_labels, labels, next_sentence_labels):
         embedding_output = self.embedding(input_ids, token_type_ids)
         loss_sum = self.encoder(input_ids, embedding_output, attention_mask, masked_lm_labels, labels, next_sentence_labels)
@@ -128,6 +131,9 @@ class Bert(torch.nn.Module):
             # self.encoder = aot_module(
             #     self.encoder, fw_compiler=fw_compiler, 
             #     bw_compiler=bw_compiler, partition_fn=partition_fn)
+    
+    def torch_compile(self, backend="inductor", mode="default"):
+        self.encoder = torch.compile(self.encoder, backend=backend, mode=mode)
     
     def capture_graph(self, batch, sequence_length, optimizer, warmup_iteration=3):
         device = next(self.parameters()).device

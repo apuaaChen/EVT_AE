@@ -25,6 +25,10 @@ from torch.profiler import profile, ProfilerActivity, record_function
 from copy import deepcopy
 from torch.fx.subgraph_rewriter import replace_pattern_with_filters
 from gtl.compiler.passes.pass_decomposition import batch_norm_elemt, batch_norm_backward_elemt
+from torch.utils._python_dispatch import _pop_mode_temporarily, _len_torch_dispatch_stack
+from contextlib import nullcontext
+from gtl.compiler.passes.pass_fake_shape_infer import FakeTensorInfer
+from torch._dynamo.utils import increment_frame
 
 torch.fx.wrap('batch_norm_elemt')
 torch.fx.wrap('batch_norm_backward_elemt')
@@ -42,7 +46,9 @@ class FusedInductorOp:
         self.output_names = [node.name for node in self.outputs]
         CleanUp()(gm)
         gm.recompile()
+
         # self.inductor_module = torch.compile(gm)
+
         self.inductor_module = torch.jit.script(gm)
         self.partition_names = partition_names
         #
@@ -98,24 +104,24 @@ class FusedInductorOp:
                 print("atol passed rate: ", self.pass_rate(out, ref, {"atol": self.atol}))
                 print("rtol passed rate: ", self.pass_rate(out, ref, {"rtol": self.rtol}))
             
-            # Step 3: profiling
-            ## Profile the baseline
-            print("############### Torch Compile ###############")
-            torch.cuda.synchronize()
-            with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
-                with record_function("torch"):
-                    self.reference_module(**inputs)
-                
-            print(prof.key_averages().table(sort_by="cuda_time_total"))
+        # Step 3: profiling
+        ## Profile the baseline
+        print("############### Torch Compile ###############")
+        torch.cuda.synchronize()
+        with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
+            with record_function("torch"):
+                self.reference_module(**inputs)
+            
+        print(prof.key_averages().table(sort_by="cuda_time_total"))
 
-            ## Profile the optimized kernel
-            print("############### INDUCTOR ###############")
-            torch.cuda.synchronize()
-            with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
-                with record_function("evt"):
-                    self.inductor_module(**inputs)
-            print(prof.key_averages().table(sort_by="cuda_time_total"))
-            breakpoint()
+        ## Profile the optimized kernel
+        print("############### INDUCTOR ###############")
+        torch.cuda.synchronize()
+        with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
+            with record_function("evt"):
+                self.inductor_module(**inputs)
+        print(prof.key_averages().table(sort_by="cuda_time_total"))
+        breakpoint()
 
 
 class NVFuser:
@@ -124,6 +130,15 @@ class NVFuser:
     """
     def __init__(self) -> None:
         self.mode = os.environ.get('MODE', 'RUN')
+    
+    @staticmethod
+    def fusible(partition_names):
+        if len(partition_names) == 1:
+            return False
+        for name in partition_names:
+            if "convolution_backward_weight_channel" in name:
+                return False
+        return True
     
     def get_node_with_name(name, graph_module):
         for node in graph_module.graph.nodes:
@@ -183,7 +198,7 @@ class NVFuser:
         original_output_node_names = [node.name for node in output_nodes[0].args[0]]
 
         # Step 2: Get the decomposition patterns
-        # modified = False
+        modified = False
         graph = gm.graph
         for node in graph.nodes:
             if hasattr(node.target, "__qualname__"):
@@ -193,8 +208,8 @@ class NVFuser:
                     matches = replace_pattern_with_filters(
                         gm, pattern, replacement, filter
                     )
-                    # if len(matches) >= 1:
-                    #     modified = True
+                    if len(matches) >= 1:
+                        modified = True
 
         # Step 3: update the output node names
         output_nodes = [node for node in gm.graph.nodes if node.op == "output"]
@@ -203,8 +218,8 @@ class NVFuser:
             node.name = name
         
         # # Filling node meta
-        # if modified:
-        #     FakeTensorInfer(gm).infer()
+        if modified:
+            FakeTensorInfer(gm).infer()
     
     def requires_batch_norm_elemt(self, node: torch.fx.Node):
         def pattern(input, weight, bias, mean_vec, mean_x2_vec, eps, K):

@@ -785,6 +785,7 @@ class Reassociation(PassBase):
         # 4. Special case: one-hot is assigned rank-1, so if it exists, we can
         #    find it easily
         arg_rank = 2
+        # O(n)
         # Step 1: rank the nodes
         for node in graph.nodes:
             if node.op == "placeholder":

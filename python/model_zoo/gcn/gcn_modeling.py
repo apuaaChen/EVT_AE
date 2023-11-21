@@ -211,6 +211,9 @@ class GCN(nn.Module):
             #     self.model, fw_compiler=fw_compiler, 
             #     bw_compiler=bw_compiler, partition_fn=partition_fn)
     
+    def torch_compile(self, backend="inductor", mode="default"):
+        self.model = torch.compile(self.model, backend=backend, mode=mode)
+    
     def capture_graph(self, features, labels, optimizer, warmup_iteration=3):
         self.static_features = torch.randn_like(features)
         self.static_labels = torch.ones_like(labels)

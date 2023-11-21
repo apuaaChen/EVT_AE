@@ -89,16 +89,25 @@ class ResNetTest(BaseTestCase):
         self.run_target_model(model, optimizer, sample_inputs)
         self.verify(model_ref, model, verbose=1, rtol=3e-1)
 
+        for _ in range(10):
+            self.run_target_model(model, optimizer, sample_inputs)
+
         with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
             with record_function("evt"):
-                self.run_target_model(model, optimizer, sample_inputs)
+                for _ in range(10):
+                    self.run_target_model(model, optimizer, sample_inputs)
 
         print(prof.key_averages().table(sort_by="cuda_time_total"))
         
         model_ref = model_ref.to(memory_format=torch.channels_last)
+
+        for _ in range(10):
+            self.run_reference_model(model_ref, optimizer_ref, sample_inputs, 1.)
+
         with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
             with record_function("torch"):
-                self.run_reference_model(model_ref, optimizer_ref, sample_inputs, 1.)
+                for _ in range(10):
+                    self.run_reference_model(model_ref, optimizer_ref, sample_inputs, 1.)
         print(prof.key_averages().table(sort_by="cuda_time_total"))
     
     # def grad_preprocess(self, grad):

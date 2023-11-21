@@ -37,7 +37,10 @@ def joint_optimization(joint_module):
     joint_module, _ = frontend(joint_module)
 
     pass_loss_elimination(joint_module, joint_module.graph)
-    pass_decomposition(joint_module, joint_module.graph)
+    pass_decomposition(joint_module, joint_module.graph, disabled_ops = [
+        "requires_convolution", "requires_convolution_backward",
+        "requires_max_pool2d_with_indices", "requires_max_pool2d_with_indices_backward"
+    ])
     pass_cse(joint_module, joint_module.graph)
     pass_constant_propagation(joint_module, joint_module.graph)
     pass_fusion(joint_module, joint_module.graph)
@@ -82,19 +85,32 @@ class ViTProfile(BaseTestCase):
                     joint_compiler=joint_optimization
                 )
             )
+        elif self.method in ["inductor"]:
+            model.torch_compile(backend=self.method, mode="max-autotune")
+        elif self.method in ["aot_ts_nvfuser"]:
+            model.torch_compile(backend=self.method)
 
-        model.capture_graph(
-            params.batch_size, params.sequence_length, params.embedding_dim,
-            params.y_dim, optimizer=optimizer
-        )
+        if self.method in ["torch", "gtl", "aot_ts_nvfuser"]:
+            model.capture_graph(
+                params.batch_size, params.sequence_length, params.embedding_dim,
+                params.y_dim, optimizer=optimizer
+            )
 
-        for _ in range(10):
-            self.run_target_model(model, optimizer, sample_inputs)
-        
-        with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
-            with record_function(self.method):
-                for _ in range(10):
-                    self.run_target_model(model, optimizer, sample_inputs)
+            for _ in range(10):
+                self.run_target_model(model, optimizer, sample_inputs)
+            
+            with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
+                with record_function(self.method):
+                    for _ in range(10):
+                        self.run_target_model(model, optimizer, sample_inputs)
+        else:
+            # Max-autotune naturally has cuda graph
+            for _ in range(10):
+                self.run_reference_model(model, optimizer, sample_inputs, 4096.)
+            with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
+                with record_function(self.method):
+                    for _ in range(10):
+                        self.run_reference_model(model, optimizer, sample_inputs, 4096.)
 
         print(prof.key_averages().table(sort_by="cuda_time_total"))
     
@@ -108,7 +124,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', '-b', type=int, default=32, help="Training batch size per GPU")
     parser.add_argument('--seq_len', '-l', type=int, default=512, help="Sequence length")
     # method
-    parser.add_argument('--method', '-mt', type=str, default="torch", choices=["torch", "gtl"])
+    parser.add_argument('--method', '-mt', type=str, default="torch", choices=["torch", "gtl", "inductor", "aot_ts_nvfuser"])
     args = parser.parse_args()
 
     ################################################################################

@@ -315,6 +315,9 @@ class ResNet(nn.Module):
             my_backend = aot_autograd(fw_compiler=fw_compiler, bw_compiler=bw_compiler, partition_fn=partition_fn)
             self.model = torch.compile(self.model, fullgraph=True, dynamic=False, backend=my_backend)
     
+    def torch_compile(self, backend="inductor", mode="default"):
+        self.model = torch.compile(self.model, backend=backend, mode=mode)
+    
     def forward(self, x, y):
         return self.model(x, y)
     

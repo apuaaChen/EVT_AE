@@ -15,76 +15,63 @@
 ################################################################################
 # Unit test for end-to-end bert
 from gtl.helper import compiler_fn, partition_func, BaseTestCase, apex_autocast
-from model_zoo.bert import prepare_model_and_optimizer as bert_model_optimizer
-from model_zoo.bert import example_inputs as bert_inputs
-import sys
-sys.path.append("/workspace/gtl/sparseTraining/thirdparty/DeepLearningExample/PyTorch/LanguageModeling/BERT")
-from modeling import BertSelfAttention, BertConfig, BertAttention
+from model_zoo.resnet import prepare_model_and_optimizer as resnet_model_optimizer
+from model_zoo.resnet import example_inputs as resnet_inputs
 from functools import partial
 from gtl.compiler.passes import (
     GTLFrontend, pass_loss_elimination,
     pass_decomposition, pass_cse,
     pass_constant_propagation,
     pass_fusion,
+    pass_permute_propagation,
     pass_clean_up,
     pass_print_graph)
 from torch.profiler import profile, ProfilerActivity, record_function
 import argparse
 import torch
 
-batch_size = 32
+batch_size = 128
 
 
 def joint_optimization(joint_module):
     frontend = GTLFrontend()
     joint_module, _ = frontend(joint_module)
-
     pass_loss_elimination(joint_module, joint_module.graph)
     pass_decomposition(joint_module, joint_module.graph)
+    pass_permute_propagation(joint_module, joint_module.graph)
     pass_cse(joint_module, joint_module.graph)
     pass_constant_propagation(joint_module, joint_module.graph)
     pass_fusion(joint_module, joint_module.graph)
-    pass_clean_up(joint_module, joint_module.graph)
     joint_module.recompile()
     
     return joint_module
 
-from bert_modeling_slapo import xFlashAttention#, LSBertEmbeddings
-config_file = "./large.json"
-config = BertConfig.from_json_file(config_file)
-
-# pass 1: using flash attention
-def pass_using_flash_attention(sch):
-    for subsch in sch.child:
-        if isinstance(sch[subsch].mod, BertAttention):
-            new_mod = xFlashAttention(config)
-            sch[subsch].replace(new_mod)
-        else:
-            pass_using_flash_attention(sch[subsch])
-
-# pass 2: using lightseq2 embedding
-# def pass_using_lightseq2_embedding(sch):
-#     for subsch in sch.child:
-#         if isinstance(sch[subsch].mod, modeling.BertEmbeddings):
-#             new_mod = LSBertEmbeddings(config)
-#             sch[subsch].replace(new_mod)
-#         else:
-#             pass_using_lightseq2_embedding(sch[subsch])
-
 class BertProfile(BaseTestCase):
     
-    def __init__(self, method, methodName: str = "runTest") -> None:
-        super().__init__(methodName)        
+    def __init__(self, method, channel_last, methodName: str = "runTest") -> None:
+        super().__init__(methodName,)        
         self.method = method
+        self.channel_last = channel_last
 
     def profile_bert_large(self):
         # Create the sample inputs
-        sample_inputs = bert_inputs(batch_size=batch_size, seq_len=512)
+        sample_inputs = resnet_inputs(batch_size=batch_size)
 
-        model, optimizer = bert_model_optimizer(config_file="./large.json")
-        model, optimizer = apex_autocast(
-            model, optimizer, False
-        )
+        model, optimizer = resnet_model_optimizer(depth=50)
+        if self.method == "gtl":
+            model, optimizer = apex_autocast(
+                model, optimizer, False
+            )
+        else:
+            model, optimizer = apex_autocast(
+                model, optimizer, True
+            )
+
+        if self.channel_last:
+            if self.method == "gtl":
+                model.to_channels_last()
+            else:
+                model.to(memory_format=torch.channels_last)
 
         if self.method == "gtl":
             model.aot_optimize(
@@ -98,21 +85,12 @@ class BertProfile(BaseTestCase):
             model.torch_compile(backend=self.method, mode="max-autotune")
         elif self.method in ["aot_ts_nvfuser"]:
             model.torch_compile(backend=self.method)
-        elif self.method in ["hand_tuned"]:
-            import slapo
-            sch = slapo.create_schedule(model, group=None)
-            pass_using_flash_attention(sch)
-            # pass_using_lightseq2_embedding(sch)
-
-            model, _ = slapo.build(sch)
-            model.to(torch.float16).to("cuda")
-
 
         if self.method in ["torch", "gtl", "aot_ts_nvfuser"]:
             model.capture_graph(
-                batch=batch_size, sequence_length=512, optimizer=optimizer
+                (batch_size, 4, 224, 224), optimizer=optimizer
             )
-
+            
             for _ in range(10):
                 self.run_target_model(model, optimizer, sample_inputs)
             
@@ -123,11 +101,12 @@ class BertProfile(BaseTestCase):
         else:
             # Max-autotune naturally has cuda graph
             for _ in range(10):
-                self.run_reference_model(model, optimizer, sample_inputs, 4096.)
+                self.run_reference_model(model, optimizer, sample_inputs, 1.)
+            
             with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
                 with record_function(self.method):
                     for _ in range(10):
-                        self.run_reference_model(model, optimizer, sample_inputs, 4096.)
+                        self.run_reference_model(model, optimizer, sample_inputs, 1.)
 
         print(prof.key_averages().table(sort_by="cuda_time_total"))
     
@@ -138,13 +117,12 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Bert End-to-End Training with CUDA Graph")
     parser.add_argument('--iter', '-it', type=int, default=50, help="Profiling Iterations")
     # Hyper-parameter that defines the model size
-    parser.add_argument('--batch_size', '-b', type=int, default=32, help="Training batch size per GPU")
-    parser.add_argument('--seq_len', '-l', type=int, default=512, help="Sequence length")
+    parser.add_argument('-cl', '--channel_last', action="store_true", help="apply channel last")
     # method
-    parser.add_argument('--method', '-mt', type=str, default="torch", choices=["torch", "gtl", "inductor", "aot_ts_nvfuser", "hand_tuned"])
+    parser.add_argument('--method', '-mt', type=str, default="torch", choices=["torch", "gtl", "inductor", "aot_ts_nvfuser"])
     args = parser.parse_args()
 
     ################################################################################
 
-    profiler = BertProfile(args.method)
+    profiler = BertProfile(args.method, args.channel_last)
     profiler.profile_bert_large()

@@ -194,6 +194,9 @@ class ViT(nn.Module):
             # self.model = aot_module(
             #     self.model, fw_compiler=fw_compiler, 
             #     bw_compiler=bw_compiler, partition_fn=partition_fn)
+    
+    def torch_compile(self, backend="inductor", mode="default"):
+        self.model = torch.compile(self.model, backend=backend, mode=mode)
 
     def capture_graph(self, input_size, optimizer, warmup_iteration=3):
         self.static_x = torch.randn(size=input_size, dtype=torch.float16, device="cuda")

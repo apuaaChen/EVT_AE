@@ -111,6 +111,9 @@ class xmlCNN(nn.Module):
             my_backend = aot_autograd(fw_compiler=fw_compiler, bw_compiler=bw_compiler, partition_fn=partition_fn)
             self.model = torch.compile(self.model, fullgraph=True, dynamic=False, backend=my_backend)
     
+    def torch_compile(self, backend="inductor", mode="default"):
+        self.model = torch.compile(self.model, backend=backend, mode=mode)
+    
     def capture_graph(self, batch_size, sequence_length, embedding_dim, y_dim, optimizer, warmup_iteration=3):
         device = next(self.parameters()).device
         # initialize the static tensors

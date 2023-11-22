@@ -216,7 +216,7 @@ class SubGraphDrawer:
 class ILPSolver:
     def __init__(self, component: 'list[str]', 
                  graph: nx.DiGraph, node_topo: 'list[str]',
-                 cache: dict) -> None:
+                 cache: dict, partition_graph: nx.Graph) -> None:
         """
         Args:
             component: the 
@@ -229,6 +229,16 @@ class ILPSolver:
         self.graph_undirected.add_nodes_from(self.graph.nodes)
         self.graph_undirected.add_edges_from(self.graph.edges)
         self.node_topo = node_topo
+        
+        self.graph_directed_undirected = nx.DiGraph()
+        self.graph_directed_undirected.add_nodes_from(self.graph.nodes)
+        self.graph_directed_undirected.add_edges_from(self.graph.edges)
+        for edge in partition_graph.edges:
+            src, dst = edge
+            if not self.graph_directed_undirected.has_edge(src, dst):
+                self.graph_directed_undirected.add_edge(src, dst)
+            elif not self.graph_directed_undirected.has_edge(dst, src):
+                self.graph_directed_undirected.add_edge(dst, src)
 
         # Step 1: get the subgraph to work on
         self.get_subgraph(component)
@@ -326,14 +336,26 @@ class ILPSolver:
         connectivity_graph = self.graph_undirected.copy()
         connectivity_graph.remove_nodes_from(node_set)
 
-        # Step 1.2: add edges between neighbors
+        connectivity_graph_directed_undirected = self.graph_directed_undirected.copy()
+        connectivity_graph_directed_undirected.remove_nodes_from(node_set)
+
+        connectivity_graph_directed = self.graph.copy()
+        connectivity_graph_directed.remove_nodes_from(node_set)
+        
+        # new_edge_list = []
         for n1 in neighbour_set:
             n1_idx = self.topo_idx(n1)
             for n2 in neighbour_set:
                 n2_idx = self.topo_idx(n2)
-                if n2_idx > n1_idx:
-                    if nx.has_path(connectivity_graph, n1, n2):
+                if n1 in descendant_set and n2 in ancestor_set and (not nx.has_path(self.graph, n2, n1)):
+                    if nx.has_path(connectivity_graph_directed_undirected, n1, n2):
                         self.subgraph.add_edge(n1, n2)
+                        # For debugging purpose
+                        if not (n2_idx > n1_idx and nx.has_path(connectivity_graph, n1, n2)):
+                            breakpoint()
+                        if not nx.has_path(connectivity_graph_directed, n1, n2):
+                            print(f"{n1}->{n2}")
+                            breakpoint()
         
         ########################################################################
         # Step 2: Label node and edges
@@ -1057,7 +1079,7 @@ class ComputeGraphIR:
         with ThreadPoolExecutor(1) as executor:
             with tqdm(total=len(connected_components)) as pbar:
                 def solve_component(component):
-                    solver = ILPSolver(component, self._graph, self.node_topo, self.solution_cache)
+                    solver = ILPSolver(component, self._graph, self.node_topo, self.solution_cache, self.partition_graph)
                     result = solver()
                     pbar.update(1)
                     return result

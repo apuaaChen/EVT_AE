@@ -22,6 +22,8 @@ class PreNorm(nn.Module):
 class FeedForward(nn.Module):
     def __init__(self, dim, hidden_dim, dropout = 0.):
         super().__init__()
+        self.dim = dim
+        self.hidden_dim = hidden_dim
         self.net = nn.Sequential(
             nn.Linear(dim, hidden_dim),
             nn.GELU(),
@@ -196,7 +198,7 @@ class ViT(nn.Module):
             #     bw_compiler=bw_compiler, partition_fn=partition_fn)
     
     def torch_compile(self, backend="inductor", mode="default"):
-        self.model = torch.compile(self.model, backend=backend, mode=mode)
+        self.model = torch.compile(self.model, backend=backend, mode=mode, fullgraph=True, dynamic=False)
 
     def capture_graph(self, input_size, optimizer, warmup_iteration=3):
         self.static_x = torch.randn(size=input_size, dtype=torch.float16, device="cuda")

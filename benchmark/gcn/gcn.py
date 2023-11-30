@@ -61,7 +61,11 @@ class BertProfile(BaseTestCase):
         else:
             f32_loss = True
 
-        model, optimizer = gcn_model_optimizer(in_feats, n_classes, csr, csc, f32_loss=f32_loss)
+        if self.method in ["hand_tuned", "nvprims_nvfuser"]:
+            apex_loss = True
+        else:
+            apex_loss = False
+        model, optimizer = gcn_model_optimizer(in_feats, n_classes, csr, csc, f32_loss=f32_loss, apex_loss=apex_loss)
         model, optimizer = apex_autocast(
             model, optimizer, True
         )
@@ -76,10 +80,10 @@ class BertProfile(BaseTestCase):
             )
         elif self.method in ["inductor"]:
             model.torch_compile(backend=self.method, mode="max-autotune")
-        elif self.method in ["aot_ts_nvfuser"]:
+        elif self.method in ["aot_ts_nvfuser", "nvprims_nvfuser"]:
             model.torch_compile(backend=self.method)
 
-        if self.method in ["torch", "gtl", "aot_ts_nvfuser"]:
+        if self.method in ["torch", "gtl", "aot_ts_nvfuser", "nvprims_nvfuser", "hand_tuned"]:
             model.capture_graph(
                 features, labels, optimizer=optimizer
             )
@@ -109,7 +113,7 @@ if __name__ == '__main__':
     # parse args
     parser = argparse.ArgumentParser(description="Bert End-to-End Training with CUDA Graph")
     # method
-    parser.add_argument('--method', '-mt', type=str, default="torch", choices=["torch", "gtl", "inductor", "aot_ts_nvfuser"])
+    parser.add_argument('--method', '-mt', type=str, default="torch", choices=["torch", "gtl", "inductor", "aot_ts_nvfuser", "nvprims_nvfuser", "hand_tuned"])
     args = parser.parse_args()
 
     ################################################################################

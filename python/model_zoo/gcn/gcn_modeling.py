@@ -8,7 +8,8 @@ import torch.nn as nn
 from functorch.compile import aot_module
 from apex.contrib.xentropy import SoftmaxCrossEntropyLoss
 from torch._dynamo.backends.common import aot_autograd
-
+from dgsparse import spmm_sum
+from dgsparse import SparseTensor
 
 ################################################################################
 # DGL GCN
@@ -109,6 +110,10 @@ class Aggregate(torch.autograd.Function):
     @staticmethod
     def forward(ctx, csr, csc, x):
         ctx.save_for_backward(csc)
+        # dcsr = SparseTensor.from_torch_sparse_csr_tensor(
+        #     csr.clone().detach(), True, requires_grad=True
+        # )
+        # return spmm_sum(dcsr, x, 0)
         return torch.matmul(csr, x)
 
     @staticmethod

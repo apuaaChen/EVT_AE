@@ -2,7 +2,7 @@ import sys
 sys.path.append("/workspace/gtl/sparseTraining/thirdparty/DeepLearningExample/PyTorch/LanguageModeling/BERT")
 import torch
 from modeling import BertForPreTraining, BertPreTrainingHeads, BertModel, \
-    BertEncoder, BertPooler, BertEmbeddings
+    BertEncoder, BertPooler, BertEmbeddings, BertSelfAttention, BertConfig
 from typing import Final
 # from amp_helper import scale_loss
 from functorch.compile import aot_module
@@ -132,8 +132,8 @@ class Bert(torch.nn.Module):
             #     self.encoder, fw_compiler=fw_compiler, 
             #     bw_compiler=bw_compiler, partition_fn=partition_fn)
     
-    def torch_compile(self, backend="inductor", mode="default"):
-        self.encoder = torch.compile(self.encoder, backend=backend, mode=mode)
+    def torch_compile(self, *args, **kwargs):
+        self.encoder = torch.compile(self.encoder, *args, **kwargs)
     
     def capture_graph(self, batch, sequence_length, optimizer, warmup_iteration=3):
         device = next(self.parameters()).device

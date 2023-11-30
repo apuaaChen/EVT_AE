@@ -17,9 +17,6 @@
 from gtl.helper import compiler_fn, partition_func, BaseTestCase, apex_autocast
 from model_zoo.bert import prepare_model_and_optimizer as bert_model_optimizer
 from model_zoo.bert import example_inputs as bert_inputs
-import sys
-sys.path.append("/workspace/gtl/sparseTraining/thirdparty/DeepLearningExample/PyTorch/LanguageModeling/BERT")
-from modeling import BertSelfAttention, BertConfig, BertAttention
 from functools import partial
 from gtl.compiler.passes import (
     GTLFrontend, pass_loss_elimination,
@@ -49,27 +46,6 @@ def joint_optimization(joint_module):
     
     return joint_module
 
-from bert_modeling_slapo import xFlashAttention#, LSBertEmbeddings
-config_file = "./large.json"
-config = BertConfig.from_json_file(config_file)
-
-# pass 1: using flash attention
-def pass_using_flash_attention(sch):
-    for subsch in sch.child:
-        if isinstance(sch[subsch].mod, BertAttention):
-            new_mod = xFlashAttention(config)
-            sch[subsch].replace(new_mod)
-        else:
-            pass_using_flash_attention(sch[subsch])
-
-# pass 2: using lightseq2 embedding
-# def pass_using_lightseq2_embedding(sch):
-#     for subsch in sch.child:
-#         if isinstance(sch[subsch].mod, modeling.BertEmbeddings):
-#             new_mod = LSBertEmbeddings(config)
-#             sch[subsch].replace(new_mod)
-#         else:
-#             pass_using_lightseq2_embedding(sch[subsch])
 
 class BertProfile(BaseTestCase):
     
@@ -95,20 +71,24 @@ class BertProfile(BaseTestCase):
                 )
             )
         elif self.method in ["inductor"]:
-            model.torch_compile(backend=self.method, mode="max-autotune")
-        elif self.method in ["aot_ts_nvfuser"]:
+            model.torch_compile(
+                backend=self.method, dynamic=False, 
+                options={"epilogue_fusion": True, "max_autotune": True})
+        elif self.method in ["aot_ts_nvfuser", "onnxrt"]:
             model.torch_compile(backend=self.method)
         elif self.method in ["hand_tuned"]:
             import slapo
+            from slapo_modules import pass_slapo, BertConfig
             sch = slapo.create_schedule(model, group=None)
-            pass_using_flash_attention(sch)
-            # pass_using_lightseq2_embedding(sch)
+            config_file = "./large.json"
+            config = BertConfig.from_json_file(config_file)
+            pass_slapo(sch, config)
 
             model, _ = slapo.build(sch)
             model.to(torch.float16).to("cuda")
 
 
-        if self.method in ["torch", "gtl", "aot_ts_nvfuser"]:
+        if self.method in ["torch", "gtl", "aot_ts_nvfuser", "hand_tuned", "onnxrt"]:
             model.capture_graph(
                 batch=batch_size, sequence_length=512, optimizer=optimizer
             )
@@ -141,7 +121,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', '-b', type=int, default=32, help="Training batch size per GPU")
     parser.add_argument('--seq_len', '-l', type=int, default=512, help="Sequence length")
     # method
-    parser.add_argument('--method', '-mt', type=str, default="torch", choices=["torch", "gtl", "inductor", "aot_ts_nvfuser", "hand_tuned"])
+    parser.add_argument('--method', '-mt', type=str, default="torch", choices=["torch", "gtl", "inductor", "aot_ts_nvfuser", "hand_tuned", "onnxrt"])
     args = parser.parse_args()
 
     ################################################################################

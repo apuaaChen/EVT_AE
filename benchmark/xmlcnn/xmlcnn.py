@@ -87,10 +87,10 @@ class ViTProfile(BaseTestCase):
             )
         elif self.method in ["inductor"]:
             model.torch_compile(backend=self.method, mode="max-autotune")
-        elif self.method in ["aot_ts_nvfuser"]:
+        elif self.method in ["aot_ts_nvfuser", "nvprims_nvfuser"]:
             model.torch_compile(backend=self.method)
 
-        if self.method in ["torch", "gtl", "aot_ts_nvfuser"]:
+        if self.method in ["torch", "gtl", "aot_ts_nvfuser", "nvprims_nvfuser"]:
             model.capture_graph(
                 params.batch_size, params.sequence_length, params.embedding_dim,
                 params.y_dim, optimizer=optimizer
@@ -124,7 +124,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', '-b', type=int, default=32, help="Training batch size per GPU")
     parser.add_argument('--seq_len', '-l', type=int, default=512, help="Sequence length")
     # method
-    parser.add_argument('--method', '-mt', type=str, default="torch", choices=["torch", "gtl", "inductor", "aot_ts_nvfuser"])
+    parser.add_argument('--method', '-mt', type=str, default="torch", choices=["torch", "gtl", "inductor", "aot_ts_nvfuser", "nvprims_nvfuser"])
     args = parser.parse_args()
 
     ################################################################################

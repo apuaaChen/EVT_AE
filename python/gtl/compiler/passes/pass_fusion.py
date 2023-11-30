@@ -216,7 +216,7 @@ class SubGraphDrawer:
 class ILPSolver:
     def __init__(self, component: 'list[str]', 
                  graph: nx.DiGraph, node_topo: 'list[str]',
-                 cache: dict, partition_graph: nx.Graph) -> None:
+                 cache: dict, partition_graph: nx.DiGraph) -> None:
         """
         Args:
             component: the 
@@ -230,6 +230,7 @@ class ILPSolver:
         self.graph_undirected.add_edges_from(self.graph.edges)
         self.node_topo = node_topo
         
+        self.partition_graph = partition_graph
         self.graph_directed_undirected = nx.DiGraph()
         self.graph_directed_undirected.add_nodes_from(self.graph.nodes)
         self.graph_directed_undirected.add_edges_from(self.graph.edges)
@@ -297,10 +298,19 @@ class ILPSolver:
             src_metadata = src_metadata[dst_node.args[1]]
         
         shape = src_metadata.shape
+        datatype = src_metadata.dtype
+        dtype2bits = {
+            torch.float16: 16,
+            torch.float32: 32,
+            torch.bool: -100,
+            torch.int32: 32,
+            torch.int64: 64
+        }
+        bits = dtype2bits[datatype]
         volumn = 1
         for d in shape:
             volumn *= d
-        return volumn
+        return volumn * bits
     
     def get_ancestors_and_descendants(self, component: 'list[str]'):
         """
@@ -347,7 +357,21 @@ class ILPSolver:
             n1_idx = self.topo_idx(n1)
             for n2 in neighbour_set:
                 n2_idx = self.topo_idx(n2)
-                if n1 in descendant_set and n2 in ancestor_set and (not nx.has_path(self.graph, n2, n1)):
+                if n1 in descendant_set and n2 in ancestor_set:
+                    # n2->n1 that cross multiple partitions doesn't exist
+                    # Case 1: if n2 and n1 are not in the same partition:
+                    if nx.has_path(self.graph, n2, n1) and not nx.has_path(self.partition_graph, n2, n1):
+                        if nx.has_path(connectivity_graph_directed, n1, n2):
+                            print(f"{n1}->{n2}")
+                            breakpoint()
+                        continue
+                    # Case 2: if n2 and n1 are in the same partition:
+                    elif nx.has_path(self.partition_graph, n2, n1):
+                        if len(list(nx.all_simple_paths(self.graph, n2, n1))) > len(list(nx.all_simple_paths(self.partition_graph, n2, n1))):
+                            if nx.has_path(connectivity_graph_directed, n1, n2):
+                                print(f"{n1}->{n2}")
+                                breakpoint()
+                            continue
                     if nx.has_path(connectivity_graph_directed_undirected, n1, n2):
                         self.subgraph.add_edge(n1, n2)
                         # For debugging purpose
@@ -356,6 +380,11 @@ class ILPSolver:
                         if not nx.has_path(connectivity_graph_directed, n1, n2):
                             print(f"{n1}->{n2}")
                             breakpoint()
+                    else:
+                        if nx.has_path(connectivity_graph_directed, n1, n2):
+                            print(f"{n1}->{n2}")
+                            breakpoint()
+                        continue
         
         ########################################################################
         # Step 2: Label node and edges
@@ -936,7 +965,7 @@ class ComputeGraphIR:
         self._graph = nx.DiGraph()
         # We use the _graph_undirected to track the binary fusible relationship
         # Between nodes
-        self.partition_graph = nx.Graph()
+        self.partition_graph = nx.DiGraph()
 
         for node in graph.nodes:
             # Insert the node
@@ -1069,7 +1098,7 @@ class ComputeGraphIR:
             for node3 in unfusible_nodes:
                 self.partition_graph.remove_edge(node1, node3)
 
-        connected_components = list(nx.connected_components(self.partition_graph))
+        connected_components = list(nx.weakly_connected_components(self.partition_graph))
 
         # Support multi-thread solving. Although it doesn't bring much benefits
         # results = []

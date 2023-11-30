@@ -58,7 +58,7 @@ class BertProfile(BaseTestCase):
         sample_inputs = resnet_inputs(batch_size=batch_size)
 
         model, optimizer = resnet_model_optimizer(depth=50)
-        if self.method == "gtl":
+        if self.method in ["gtl", "onnxrt"]:
             model, optimizer = apex_autocast(
                 model, optimizer, False
             )
@@ -83,10 +83,9 @@ class BertProfile(BaseTestCase):
             )
         elif self.method in ["inductor"]:
             model.torch_compile(backend=self.method, mode="max-autotune")
-        elif self.method in ["aot_ts_nvfuser"]:
+        elif self.method in ["aot_ts_nvfuser", "nvprims_nvfuser", "onnxrt"]:
             model.torch_compile(backend=self.method)
-
-        if self.method in ["torch", "gtl", "aot_ts_nvfuser"]:
+        if self.method in ["torch", "gtl", "aot_ts_nvfuser", "nvprims_nvfuser"]:
             model.capture_graph(
                 (batch_size, 4, 224, 224), optimizer=optimizer
             )
@@ -119,7 +118,7 @@ if __name__ == '__main__':
     # Hyper-parameter that defines the model size
     parser.add_argument('-cl', '--channel_last', action="store_true", help="apply channel last")
     # method
-    parser.add_argument('--method', '-mt', type=str, default="torch", choices=["torch", "gtl", "inductor", "aot_ts_nvfuser"])
+    parser.add_argument('--method', '-mt', type=str, default="torch", choices=["torch", "gtl", "inductor", "aot_ts_nvfuser", "nvprims_nvfuser", "onnxrt"])
     args = parser.parse_args()
 
     ################################################################################

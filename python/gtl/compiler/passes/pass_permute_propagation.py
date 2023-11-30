@@ -78,7 +78,7 @@ class PermuteProp(PassBase):
         self.visited.append(node)
 
         if node.target in self.COMMUTATIVE_TGTS:
-            if node.meta["tensor_meta"].shape != permute_node.meta["tensor_meta"].shape:
+            if "tensor_meta" in node.meta and node.meta["tensor_meta"].shape != permute_node.meta["tensor_meta"].shape:
                 breakpoint()
                 raise NotImplementedError
             # Reset the metadata

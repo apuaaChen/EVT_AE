@@ -27,6 +27,7 @@ from gtl.compiler.passes import (
     pass_print_graph)
 from torch.profiler import profile, ProfilerActivity, record_function
 import argparse
+import torch
 
 batch_size = 128
 
@@ -70,10 +71,19 @@ class ViTProfile(BaseTestCase):
             )
         elif self.method in ["inductor"]:
             model.torch_compile(backend=self.method, mode="max-autotune")
-        elif self.method in ["aot_ts_nvfuser"]:
+        elif self.method in ["aot_ts_nvfuser", "nvprims_nvfuser"]:
             model.torch_compile(backend=self.method)
+        elif self.method in ["hand_tuned"]:
+            import slapo
+            from slapo_modules import pass_slapo
 
-        if self.method in ["torch", "gtl", "aot_ts_nvfuser"]:
+            sch = slapo.create_schedule(model, group=None)
+            pass_slapo(sch)
+
+            model, _ = slapo.build(sch)
+            model.to(torch.float16).to("cuda")
+
+        if self.method in ["torch", "gtl", "aot_ts_nvfuser", "hand_tuned", "nvprims_nvfuser"]:
             model.capture_graph(
                 (batch_size, 3, 224, 224), optimizer=optimizer
             )
@@ -106,7 +116,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', '-b', type=int, default=32, help="Training batch size per GPU")
     parser.add_argument('--seq_len', '-l', type=int, default=512, help="Sequence length")
     # method
-    parser.add_argument('--method', '-mt', type=str, default="torch", choices=["torch", "gtl", "inductor", "aot_ts_nvfuser"])
+    parser.add_argument('--method', '-mt', type=str, default="torch", choices=["torch", "gtl", "inductor", "aot_ts_nvfuser", "hand_tuned", "nvprims_nvfuser"])
     args = parser.parse_args()
 
     ################################################################################

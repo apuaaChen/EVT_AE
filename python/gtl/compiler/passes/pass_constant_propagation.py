@@ -33,6 +33,7 @@ from contextlib import nullcontext
 from gtl.compiler.nodes import inject_get_attr, inject_squeeze
 from gtl.compiler.passes.pass_fake_shape_infer import pass_fake_shape_infer
 from torch.fx.passes.shape_prop import TensorMetadata
+from tqdm import tqdm
 
 
 def get_shape(node: Union[Node, float, int]) -> list:
@@ -810,6 +811,7 @@ class Reassociation(PassBase):
 
         # Reassociate the input graph and perform constant folding
         # Inspect all of the nodes in this graph, reasociating them as we go
+        worklist = []
         for node in graph.nodes:
             # If this instruction is a commutative binary operator, process it
             if not self.is_associative(node):
@@ -821,7 +823,9 @@ class Reassociation(PassBase):
             if (len(users) == 1 and 
                 self.is_reassociable_op(node, users[0].target)):
                 continue
-            
+            worklist.append(node)
+        
+        for node in tqdm(worklist):
             self.reassociate_expression(node)
         
         # Constant propagation
@@ -998,8 +1002,6 @@ class Reassociation(PassBase):
         # Rewrite the expr tree
         self.rewrite_expr_tree(node, ops, len(ops)-1)
         self.module = legalize_graph(self.module)
-        # Eliminate potential dead code
-        self.module.graph.eliminate_dead_code()
 
     def is_associative(self, node: Node):
         # Only add & mul are reassociable so far

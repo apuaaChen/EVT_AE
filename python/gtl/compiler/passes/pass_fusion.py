@@ -302,7 +302,7 @@ class ILPSolver:
         dtype2bits = {
             torch.float16: 16,
             torch.float32: 32,
-            torch.bool: -100,
+            torch.bool: 8,
             torch.int32: 32,
             torch.int64: 64
         }
@@ -363,27 +363,28 @@ class ILPSolver:
                     if nx.has_path(self.graph, n2, n1) and not nx.has_path(self.partition_graph, n2, n1):
                         if nx.has_path(connectivity_graph_directed, n1, n2):
                             print(f"{n1}->{n2}")
-                            breakpoint()
+                            # breakpoint()
                         continue
                     # Case 2: if n2 and n1 are in the same partition:
                     elif nx.has_path(self.partition_graph, n2, n1):
                         if len(list(nx.all_simple_paths(self.graph, n2, n1))) > len(list(nx.all_simple_paths(self.partition_graph, n2, n1))):
                             if nx.has_path(connectivity_graph_directed, n1, n2):
                                 print(f"{n1}->{n2}")
-                                breakpoint()
+                                # breakpoint()
                             continue
                     if nx.has_path(connectivity_graph_directed_undirected, n1, n2):
                         self.subgraph.add_edge(n1, n2)
                         # For debugging purpose
                         if not (n2_idx > n1_idx and nx.has_path(connectivity_graph, n1, n2)):
-                            breakpoint()
+                            # breakpoint()
+                            pass
                         if not nx.has_path(connectivity_graph_directed, n1, n2):
                             print(f"{n1}->{n2}")
-                            breakpoint()
+                            # breakpoint()
                     else:
                         if nx.has_path(connectivity_graph_directed, n1, n2):
                             print(f"{n1}->{n2}")
-                            breakpoint()
+                            # breakpoint()
                         continue
         
         ########################################################################
@@ -467,7 +468,7 @@ class ILPSolver:
                 partition_str = [node.name for node in partition]
                 partitions.append(partition_str)
             else:
-                breakpoint()
+                # breakpoint()
                 raise RuntimeError(f"Invalid partition: {partition}")
         return partitions
     
@@ -730,6 +731,31 @@ class ILPSolver:
             b = np.ones(shape=A.shape[0])
             return scipy.optimize.LinearConstraint(A, ub=b, lb=b)
         return None
+    
+    def constraint_rand_like(self):
+        """
+        The rand_like is always fused with its preceeding nodes
+        """
+        A = []
+        for node in self.node_list:
+            if "rand_like" not in node:
+                continue
+            in_edges = list(self.subgraph.in_edges(node))
+            assert len(in_edges) <= 1
+            for src, _ in self.subgraph.in_edges(node):
+                if src not in self.node_list:
+                    continue
+                i = self.node_list.index(src)
+                j = self.node_list.index(node)
+                At = np.zeros(shape=(1, self.num_all))
+                for s in range(self.nc):
+                    At[0][self.z(min(i,j), max(i,j), s)] = 1
+                A.append(At)
+        if len(A) > 0:
+            A = np.concatenate(A, axis=0)
+            b = np.ones(shape=A.shape[0])
+            return scipy.optimize.LinearConstraint(A, ub=b, lb=b)
+        return None
 
     def constraint_eliminate_mainloop_fusion(self):
         """
@@ -927,7 +953,7 @@ class ILPSolver:
             drawer = SubGraphDrawer(self.subgraph, "error", self.node_list)
             graph = drawer._dot_graphs["error"]
             graph.write_svg(f"./error.svg")
-            breakpoint()
+            # breakpoint()
             return
         result = res.x[self.num_z: self.num_z + self.num_x]
 
@@ -949,7 +975,7 @@ class ILPSolver:
                     for component in components:
                         partitions.append(list(component))
                 else:
-                    breakpoint()
+                    # breakpoint()
                     raise RuntimeError(f"Invalid partition: {partition}")
         
         # self.solution_cache[hash] = (partitions, self.subgraph)

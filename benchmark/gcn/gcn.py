@@ -61,7 +61,7 @@ class BertProfile(BaseTestCase):
         else:
             f32_loss = True
 
-        if self.method in ["hand_tuned", "nvprims_nvfuser"]:
+        if self.method in ["hand_tuned", "nvprims_nvfuser", "aot_ts_nvfuser"]:
             apex_loss = True
         else:
             apex_loss = False

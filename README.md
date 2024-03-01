@@ -26,3 +26,10 @@ Inside the docker container, to install gtl library:
 ```
 cd /workspace/<repo dir>/python && bash install.sh
 ```
+
+
+## Reproduce the experimental results
+To reproduce Figure 12:
+```
+bash figure12.sh
+```

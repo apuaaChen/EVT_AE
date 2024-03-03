@@ -80,7 +80,7 @@ def evt_compile_fn(fx_module: torch.fx.GraphModule, _):
     return fx_module
 
 
-def tvm_compile_fn(model, _):
+def autotvm_compile_fn(model, _):
     frontend = GTLFrontend()
     model, _ = frontend(model)
     pass_decomposition(model, model.graph, disabled_ops=["requires_native_dropout"])
@@ -109,11 +109,44 @@ def tvm_compile_fn(model, _):
 
             # Aututuner
             autotvm_log_file = "./tvm_autotvm.log"
-            ansor_log_file = "./tvm_ansor.log"
             autotvm_tuner(mod, params, autotvm_log_file, 1000, 500)
+
+            exec_tvm = compile_tvm(mod, params, autotvm_log_file=autotvm_log_file, additional_outputs=[])
+    
+    return exec_tvm
+
+
+def ansor_compile_fn(model, _):
+    frontend = GTLFrontend()
+    model, _ = frontend(model)
+    pass_decomposition(model, model.graph, disabled_ops=["requires_native_dropout"])
+    model.graph.eliminate_dead_code()
+    model.recompile()
+    # pass_print_graph(model, "./tvm_self_atten.svg")
+    config = BertConfig.from_json_file(config_file)
+
+    with (_pop_mode_temporarily() 
+        if _len_torch_dispatch_stack() > 0 else nullcontext()):
+            primals_1 = torch.randn((config.hidden_size, config.hidden_size), dtype=torch.float16, device="cuda")
+            primals_2 = torch.randn((config.hidden_size,), dtype=torch.float16, device="cuda")
+            primals_3 = torch.randn((config.hidden_size, config.hidden_size), dtype=torch.float16, device="cuda")
+            primals_4 = torch.randn((config.hidden_size,), dtype=torch.float16, device="cuda")
+            primals_5 = torch.randn((config.hidden_size, config.hidden_size), dtype=torch.float16, device="cuda")
+            primals_6 = torch.randn((config.hidden_size,), dtype=torch.float16, device="cuda")
+            primals_7 = torch.randn((seq_len, batch_size, config.hidden_size), dtype=torch.float16, device="cuda")
+            primals_8 = torch.randn((batch_size, 1, 1, seq_len), dtype=torch.float16, device="cuda")
+            
+            inputs = [primals_1, primals_2, primals_3, primals_4, primals_5, primals_6, primals_7, primals_8]
+            
+            model.eval()
+            scripted_model = torch.jit.script(model)
+            shape_list = [(f"inp_{idx}", i.shape) for idx, i in enumerate(inputs)]
+            mod, params = relay.frontend.from_pytorch(scripted_model, shape_list, default_dtype="float16")
+
+            # Aututuner
+            ansor_log_file = "./tvm_ansor.log"
             ansor_tuner(mod, params, ansor_log_file, 1000)
 
-            # exec_tvm = compile_tvm(mod, params, autotvm_log_file=autotvm_log_file, additional_outputs=[])
             exec_tvm = compile_tvm(mod, params, ansor_log_file=ansor_log_file, additional_outputs=[])
     
     return exec_tvm
@@ -137,7 +170,7 @@ class SelfAttenProfile:
     
     def __call__(self) -> Any:
         config = BertConfig.from_json_file(config_file)
-        if self.method == "tvm":
+        if self.method in ["autotvm", "ansor"]:
             config.attention_probs_dropout_prob = 0
         model = BertSelfAttention(config).to("cuda").to(torch.float16).train()
 
@@ -196,9 +229,14 @@ class SelfAttenProfile:
                     )
                 rt_mod.run()
             model = exec_tvm
-        elif self.method == "tvm":
+        elif self.method == "autotvm":
             tvm_backend = aot_autograd(
-                fw_compiler=tvm_compile_fn, bw_compiler=compiler_fn
+                fw_compiler=autotvm_compile_fn, bw_compiler=compiler_fn
+            )
+            model = torch.compile(model, dynamic=False, backend=tvm_backend)
+        elif self.method == "ansor":
+            tvm_backend = aot_autograd(
+                fw_compiler=ansor_compile_fn, bw_compiler=compiler_fn
             )
             model = torch.compile(model, dynamic=False, backend=tvm_backend)
             
@@ -212,7 +250,7 @@ if __name__ == '__main__':
     # method
     parser.add_argument(
         '--method', '-mt', type=str, default="torch", 
-        choices=["torch", "evt", "tvm", "inductor", "triton", "bolt"])
+        choices=["torch", "evt", "autotvm",  "ansor", "inductor", "triton", "bolt"])
     args = parser.parse_args()
 
     ################################################################################

@@ -143,7 +143,7 @@ class ConvBNProfile:
             reduction_factor = 1. / (N * H * W)
             
             inputs = [input_cl, weight_cl, gamma, beta, K, reduction_factor]
-        elif self.method == "tvm":
+        elif self.method in ["autotvm", "ansor"]:
             model = ConvBNTVM()
             input = torch.randn((N, C, H, W), dtype=torch.float16, device="cuda")
             weight = torch.randn((K, C, R, S), dtype=torch.float16, device="cuda")
@@ -178,18 +178,22 @@ class ConvBNProfile:
         elif self.method == "triton":
             model = torch.compile(model, dynamic=False, backend="inductor", 
                                   options={"epilogue_fusion": True, "max_autotune": True})
-        elif self.method == "tvm":
+        elif self.method == "autotvm":
             scripted_model = torch.jit.trace(model, inputs).eval()
             shape_list = [(f"inp_{idx}", i.shape) for idx, i in enumerate(inputs)]
             mod, params = relay.frontend.from_pytorch(scripted_model, shape_list, default_dtype="float16")
 
             autotvm_log_file = "./tvm_autotvm.log"
             autotvm_tuner(mod, params, autotvm_log_file, 1000, 200)
+            model = compile_tvm(mod, params, autotvm_log_file=autotvm_log_file, additional_outputs=[])
+        elif self.method == "ansor":
+            scripted_model = torch.jit.trace(model, inputs).eval()
+            shape_list = [(f"inp_{idx}", i.shape) for idx, i in enumerate(inputs)]
+            mod, params = relay.frontend.from_pytorch(scripted_model, shape_list, default_dtype="float16")
+
             ansor_log_file = "./tvm_ansor.log"
             ansor_tuner(mod, params, ansor_log_file, 1000, skipped_kws = ["matmul", "dense", "conv"])
 
-            # model = compile_tvm(mod, params, additional_outputs=[])
-            # model = compile_tvm(mod, params, autotvm_log_file=autotvm_log_file, additional_outputs=[])
             model = compile_tvm(mod, params, ansor_log_file=ansor_log_file, additional_outputs=[])
 
         self.profile(model, inputs)
@@ -202,7 +206,7 @@ if __name__ == '__main__':
     # method
     parser.add_argument(
         '--method', '-mt', type=str, default="torch", 
-        choices=["torch", "evt", "tvm", "inductor", "triton", "bolt"])
+        choices=["torch", "evt", "autotvm", "ansor", "inductor", "triton", "bolt"])
     args = parser.parse_args()
 
     ################################################################################

@@ -1,5 +1,4 @@
 import matplotlib.pyplot as plt
-import os
 import re
 
 # Results of each subgraph

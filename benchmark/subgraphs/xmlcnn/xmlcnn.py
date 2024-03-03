@@ -154,7 +154,7 @@ def bolt_compile_fn(model, _):
     return exec_tvm
 
 
-def tvm_compile_fn(model, _):
+def autotvm_compile_fn(model, _):
     for node in model.graph.nodes:
         if node.op == "output":
             print(node.args)
@@ -176,13 +176,40 @@ def tvm_compile_fn(model, _):
 
     # Aututuner
     autotvm_log_file = "./tvm_autotvm.log"
-    ansor_log_file = "./tvm_ansor.log"
     autotvm_tuner(mod, params, autotvm_log_file, 1000, 200)
-    ansor_tuner(mod, params, ansor_log_file, 1000)
-
     exec_tvm = compile_tvm(mod, params, autotvm_log_file=autotvm_log_file, additional_outputs=[None, None, None])
     
     return exec_tvm
+
+
+def ansor_compile_fn(model, _):
+    for node in model.graph.nodes:
+        if node.op == "output":
+            print(node.args)
+            node.args = ([node.args[0][0], node.args[0][1]])
+
+    model.graph.eliminate_dead_code()
+    model.recompile()
+    primals_1 = torch.randn((y_dim, hidden_dims), dtype=torch.float16, device="cuda")
+    primals_2 = torch.randn((y_dim,), dtype=torch.float16, device="cuda")
+    primals_3 = torch.randn((batch_size, hidden_dims), dtype=torch.float16, device="cuda")
+    primals_4 = torch.randn((batch_size, y_dim), dtype=torch.float16, device="cuda")
+    tangents_1 = torch.randn(size=(1,), dtype=torch.float16, device="cuda")
+    
+    inputs = [primals_1, primals_2, primals_3, primals_4, tangents_1]
+    
+    scripted_model = torch.jit.script(model)
+    shape_list = [(f"inp_{idx}", i.shape) for idx, i in enumerate(inputs)]
+    mod, params = relay.frontend.from_pytorch(scripted_model, shape_list, default_dtype="float16")
+
+    # Aututuner
+    ansor_log_file = "./tvm_ansor.log"
+    ansor_tuner(mod, params, ansor_log_file, 1000)
+
+    exec_tvm = compile_tvm(mod, params, autotvm_log_file=ansor_log_file, additional_outputs=[None, None, None])
+    
+    return exec_tvm
+
 
 
 class XMLCNNProfile:
@@ -235,13 +262,22 @@ class XMLCNNProfile:
                 fw_compiler=compiler_fn, bw_compiler=bolt_compile_fn, partition_fn=partition_fn)
             model = torch.compile(model, fullgraph=True, dynamic=False, backend=bolt_backend)
             
-        elif self.method == "tvm":
+        elif self.method == "autotvm":
             partition_fn = partial(
                 partition_func,
                 joint_compiler=tvm_joint_optimization
             )
             tvm_backend = aot_autograd(
-                fw_compiler=compiler_fn, bw_compiler=tvm_compile_fn, partition_fn=partition_fn)
+                fw_compiler=compiler_fn, bw_compiler=autotvm_compile_fn, partition_fn=partition_fn)
+            model = torch.compile(model, fullgraph=True, dynamic=False, backend=tvm_backend)
+        
+        elif self.method == "ansor":
+            partition_fn = partial(
+                partition_func,
+                joint_compiler=tvm_joint_optimization
+            )
+            tvm_backend = aot_autograd(
+                fw_compiler=compiler_fn, bw_compiler=ansor_compile_fn, partition_fn=partition_fn)
             model = torch.compile(model, fullgraph=True, dynamic=False, backend=tvm_backend)
 
         self.profile(model, inputs)
@@ -254,7 +290,7 @@ if __name__ == '__main__':
     # method
     parser.add_argument(
         '--method', '-mt', type=str, default="torch", 
-        choices=["torch", "evt", "tvm", "inductor", "triton", "bolt"])
+        choices=["torch", "evt", "autotvm", "ansor", "inductor", "triton", "bolt"])
     args = parser.parse_args()
 
     ################################################################################

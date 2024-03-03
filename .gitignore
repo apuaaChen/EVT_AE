@@ -33,9 +33,11 @@ figures/section3/test/*
 figures/section3/profiler/*
 *.tsv
 python/build/*
-*.db
 .hypothesis/unicode_data/13.0.0/charmap.json.gz
 python/gtl.egg-info/PKG-INFO
 **/torchinductor*/
 unittest/fx_passes/dataset/*
 unittest/evt_fuser/dataset/*
+benchmark/subgraphs/bert/tmp/*
+benchmark/subgraphs/xmlcnn/tmp/*
+benchmark/operator/*

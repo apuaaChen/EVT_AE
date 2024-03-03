@@ -1,31 +1,13 @@
 [submodule "thirdparty/AITemplate"]
 	path = thirdparty/AITemplate
 	url = https://github.com/facebookincubator/AITemplate.git
-[submodule "thirdparty/FlexFlow"]
-	path = thirdparty/FlexFlow
-	url = https://github.com/flexflow/FlexFlow.git
 [submodule "thirdparty/DeepLearningExample"]
 	path = thirdparty/DeepLearningExample
 	url = https://github.com/NVIDIA/DeepLearningExamples.git
-[submodule "thirdparty/SSGC"]
-	path = thirdparty/SSGC
-	url = https://github.com/allenhaozhu/SSGC.git
-[submodule "thirdparty/raf"]
-	path = thirdparty/raf
-	url = https://github.com/awslabs/raf
 [submodule "thirdparty/tvm"]
 	path = thirdparty/tvm
 	url = https://github.com/apache/tvm
-[submodule "thirdparty/dgl"]
-	path = thirdparty/dgl
-	url = https://github.com/dmlc/dgl.git
 [submodule "thirdparty/cutlass"]
 	path = thirdparty/cutlass
 	url = https://github.com/apuaaChen/cutlass.git
 	branch = feature/2.x/epilogue_visitor
-[submodule "thirdparty/torch-mlir"]
-	path = thirdparty/torch-mlir
-	url = https://github.com/llvm/torch-mlir.git
-[submodule "thirdparty/llvm-project"]
-	path = thirdparty/llvm-project
-	url = https://github.com/llvm/llvm-project.git

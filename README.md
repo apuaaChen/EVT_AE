@@ -19,6 +19,7 @@ cd <repo dir>
 git submodule update --init --recursive
 export MLCOMPILER_DIR=</path/to/your/clone>
 bash build.sh <image_name>
+docker run --gpus all --name evt_ae_test -v ${MLCOMPILER_DIR}:/workspace/SEAL-PICASSO-ML-Compiler -it evt_ae
 bash launch.sh <container_name> <port> <image_name>
 ```
 

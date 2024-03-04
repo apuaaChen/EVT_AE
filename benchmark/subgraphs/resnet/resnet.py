@@ -126,10 +126,10 @@ class ConvBNProfile:
         print(prof.key_averages().table(sort_by="cuda_time_total"))
     
     def __call__(self) -> Any:
-        N = 32
+        N = 16
         H = 28
         W = 28
-        C = 256
+        C = 128
         K = 256
         R = 3
         S = 3

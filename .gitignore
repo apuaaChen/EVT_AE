@@ -1,5 +1,4 @@
 *.pyc
-*.so
 *.o
 build/*
 Codegen/compiler/compiled_cache.db

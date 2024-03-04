@@ -8,8 +8,6 @@ import torch.nn as nn
 from functorch.compile import aot_module
 from apex.contrib.xentropy import SoftmaxCrossEntropyLoss
 from torch._dynamo.backends.common import aot_autograd
-from dgsparse import spmm_sum
-from dgsparse import SparseTensor
 
 ################################################################################
 # DGL GCN

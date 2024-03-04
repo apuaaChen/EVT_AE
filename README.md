@@ -14,13 +14,13 @@ The following environment have been tested
 
 We recommend using the docker image:
 ```bash
-git clone <repo_git>
-cd <repo dir>
+git clone https://github.com/apuaaChen/EVT_AE.git
+cd EVT_AE
 git submodule update --init --recursive
 export MLCOMPILER_DIR=</path/to/your/clone>
-bash build.sh <image_name>
-docker run --gpus all --name evt_ae_test -v ${MLCOMPILER_DIR}:/workspace/SEAL-PICASSO-ML-Compiler -it evt_ae
-bash launch.sh <container_name> <port> <image_name>
+bash build.sh evt_ae
+docker run --gpus all --name evt_ae_test -v ${MLCOMPILER_DIR}:/workspace/EVT_AE -it evt_ae
+ -v ${MLCOMPILER_DIR}:/workspace/EVT_AE -it \
 ```
 
 Inside the docker container, to install gtl library:

@@ -14,6 +14,7 @@ results = {
     "gcn": ["torch", "triton", "tvm", "evt"],
 }
 
+# This removes unwanted gradient accumulator overhead
 offsets = {
     "bert": 0,
     "mlp": 0.155,
@@ -83,11 +84,11 @@ def preprocess_tvm_results(key):
         tvm_result = tvm_results[0]
         for op in tvm_result.keys():
             if key == "xmlcnn":
-                if op in [
-                    "tvmgen_default_fused_transpose_kernel",
-                    "tvmgen_default_fused_transpose_1_kernel",
-                    "Memcpy DtoD (Device -> Device)"
-                ]:
+                if (
+                    "tvmgen_default_fused_transpose_kernel" in op or
+                    "tvmgen_default_fused_transpose_1_kernel" in op or
+                    "Memcpy DtoD (Device -> Device)" in op
+                ):
                     continue
             
             tvm_cuda_time_total += tvm_result[op]
@@ -98,24 +99,25 @@ def preprocess_tvm_results(key):
         for op in autotvm_result.keys():
             # Filter for MLP-TVM
             if key == "mlp":
-                if op in [
-                    "tvmgen_default_fused_transpose_4_kernel",
-                    "tvmgen_default_fused_transpose_3_kernel",
-                    "tvmgen_default_fused_transpose_2_kernel",
-                    "tvmgen_default_fused_transpose_1_kernel",
-                    "tvmgen_default_fused_transpose_kernel"]:
+                if (
+                    "tvmgen_default_fused_transpose_kernel" in op or
+                    "tvmgen_default_fused_transpose_1_kernel" in op or
+                    "tvmgen_default_fused_transpose_2_kernel" in op or
+                    "tvmgen_default_fused_transpose_3_kernel" in op or
+                    "tvmgen_default_fused_transpose_4_kernel" in op
+                ):
                     continue
             elif key == "resnet":
                 # TVM cannot generate efficient conv in this case
                 # Fallback to cudnn
-                if op == "tvmgen_default_fused_nn_conv2d_kernel":
-                    tvm_cuda_time_total += 3.097
+                if "tvmgen_default_fused_nn_conv2d_kernel" in op:
+                    tvm_cuda_time_total += 0.900
                     continue
             elif key == "xmlcnn":
-                if op in [
-                    "tvmgen_default_fused_transpose_kernel",
-                    "tvmgen_default_fused_transpose_1_kernel"
-                ]:
+                if (
+                    "tvmgen_default_fused_transpose_kernel" in op or
+                    "tvmgen_default_fused_transpose_1_kernel" in op
+                ):
                     continue
             if op not in ansor_result:
                 continue
@@ -153,8 +155,13 @@ def draw_subplot(idx, key):
         if k == "torch":
             torch_result = result[k] - offset
         methods.append(k)
-        duration.append((result[k] - offset)  / torch_result)
-        speedup.append(torch_result / (result[k] - offset))
+        if k == "tvm":
+            # tvm is always in eval mode
+            duration.append(result[k]  / torch_result)
+            speedup.append(torch_result / result[k])
+        else:
+            duration.append((result[k] - offset)  / torch_result)
+            speedup.append(torch_result / (result[k] - offset))
         color.append(colors[k])
     
     axs[idx].bar(methods, duration, width=0.5, color=color)

@@ -7,6 +7,7 @@ python resnet.py -mt torch > ./torch_results.txt
 # Profile the triton
 echo "triton"
 python resnet.py -mt triton > ./triton_results.txt
+python resnet.py -mt triton > ./triton_results.txt
 
 # Profile the autotvm
 echo "autotvm"

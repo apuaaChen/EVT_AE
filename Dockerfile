@@ -34,23 +34,24 @@ WORKDIR /workspace/cutlass/python
 RUN python setup.py develop --user
 
 # build TVM
+RUN yes | apt install llvm
+
 RUN mkdir tvm
 WORKDIR /workspace/tvm
 COPY ./thirdparty/tvm .
+
+COPY ./thirdparty/pytorch.py /workspace/tvm/python/tvm/relay/frontend/
+
 RUN mkdir build
+WORKDIR /workspace/tvm/build
 COPY ./thirdparty/cmake/config.cmake .
 RUN cmake ..
 RUN make -j8
 ENV TVM_HOME /workspace/tvm
 ENV PYTHONPATH /workspace/tvm/python:${PYTHONPATH}
 
-COPY ./thirdparty/pytorch.py ./thirdparty/tvm/python/tvm/relay/frontend/
-
-RUN apt install llvm
-
-
 # go back to root directory
-ENV MLCOMPILER_PATH /workspace/SEAL-PICASSO-ML-Compiler/
+ENV MLCOMPILER_PATH /workspace/EVT_AE/
 WORKDIR /workspace
 
 ################################################################################
@@ -67,8 +68,8 @@ RUN sed -i 's/approximate=True/approximate="tanh"/g' /workspace/bert/modeling.py
 RUN pip install ogb
 RUN pip install dgl -f https://data.dgl.ai/wheels/cu121/repo.html
 
-RUN cp /workspace/SEAL-PICASSO-ML-Compiler/thirdparty/prebuild_dgl/libdgl_sparse_pytorch_2.1.0a0.so /usr/local/lib/python3.10/dist-packages/dgl/dgl_sparse/
+COPY ./thirdparty/prebuild_dgl/libdgl_sparse_pytorch_2.1.0a0.so /usr/local/lib/python3.10/dist-packages/dgl/dgl_sparse/
 
 # fix the issue that sparse tensors in torch do not have fake mode
 COPY ./python/torch_src/meta_utils.py /usr/local/lib/python3.10/dist-packages/torch/_subclasses/meta_utils.py
-COPY ./python/torch_src/aot_autograph.py /usr/local/lib/python3.10/dist-packages/torch/_functorch/aot_autograd.py
+COPY ./python/torch_src/aot_autograd.py /usr/local/lib/python3.10/dist-packages/torch/_functorch/aot_autograd.py

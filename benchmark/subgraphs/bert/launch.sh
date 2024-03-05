@@ -7,6 +7,7 @@ python selfattention.py -mt torch > ./torch_results.txt
 # Profile the triton
 echo "triton"
 python selfattention.py -mt triton > ./triton_results.txt
+python selfattention.py -mt triton > ./triton_results.txt
 
 # Profile the autotvm
 echo "autotvm"

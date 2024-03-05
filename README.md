@@ -1,4 +1,4 @@
-# Anonymize Release of EVT
+# Artifact Evaluation of EVT ASPLOS'24
 
 This repo is the EVT compiler 
 targeting single-GPU & distributed training & inference of Deep Learning Models.
@@ -20,17 +20,18 @@ git submodule update --init --recursive
 export MLCOMPILER_DIR=</path/to/your/clone>
 bash build.sh evt_ae
 docker run --gpus all --name evt_ae_test -v ${MLCOMPILER_DIR}:/workspace/EVT_AE -it evt_ae
- -v ${MLCOMPILER_DIR}:/workspace/EVT_AE -it \
 ```
 
 Inside the docker container, to install gtl library:
 ```
-cd /workspace/<repo dir>/python && bash install.sh
+cd /workspace/EVT_AE/python && bash install.sh
 ```
 
 
 ## Reproduce the experimental results
-To reproduce Figure 12:
+To reproduce Figure 12, 13-17, run:
 ```
+cd /workspace/EVT_AE
 bash figure12.sh
+bash figure13_17.sh
 ```

@@ -735,7 +735,7 @@ class FusedSoftmax(FusedOpBase):
             warp_count=warp_count, epilogue_visitor=epilogue_visitor, cache_input=cache_input
         )
         # TODO: hardcode
-        MLCOMPILER_SRC_DIR = '/workspace/SEAL-PICASSO-ML-Compiler/src/cuda'
+        MLCOMPILER_SRC_DIR = '/workspace/EVT_AE/src/cuda'
         include_paths = [
             MLCOMPILER_SRC_DIR
         ] + compiler.default_include_paths
@@ -799,7 +799,7 @@ class FusedSoftmaxBackward(FusedOpBase):
             warp_count=warp_count, epilogue_visitor=epilogue_visitor, cache_input=cache_input
         )
         # TODO: hardcode
-        MLCOMPILER_SRC_DIR = '/workspace/SEAL-PICASSO-ML-Compiler/src/cuda'
+        MLCOMPILER_SRC_DIR = '/workspace/EVT_AE/src/cuda'
         include_paths = [
             MLCOMPILER_SRC_DIR
         ] + compiler.default_include_paths
@@ -871,7 +871,7 @@ class FusedLayerNorm(FusedOpBase):
         )
 
         # TODO: hardcode
-        MLCOMPILER_SRC_DIR = '/workspace/SEAL-PICASSO-ML-Compiler/src/cuda'
+        MLCOMPILER_SRC_DIR = '/workspace/EVT_AE/src/cuda'
         include_paths = [
             MLCOMPILER_SRC_DIR
         ] + compiler.default_include_paths
@@ -939,7 +939,7 @@ class FusedLayerNormBackward(FusedOpBase):
         )
 
         # TODO: hardcode
-        MLCOMPILER_SRC_DIR = '/workspace/SEAL-PICASSO-ML-Compiler/src/cuda'
+        MLCOMPILER_SRC_DIR = '/workspace/EVT_AE/src/cuda'
         include_paths = [
             MLCOMPILER_SRC_DIR
         ] + compiler.default_include_paths
@@ -1002,7 +1002,7 @@ class FusedSpmm(FusedOpBase):
         )
 
         # TODO: hardcode
-        MLCOMPILER_SRC_DIR = '/workspace/SEAL-PICASSO-ML-Compiler/src/cuda'
+        MLCOMPILER_SRC_DIR = '/workspace/EVT_AE/src/cuda'
         include_paths = [
             MLCOMPILER_SRC_DIR
         ] + compiler.default_include_paths

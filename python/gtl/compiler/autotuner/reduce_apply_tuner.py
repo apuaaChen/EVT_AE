@@ -98,7 +98,7 @@ class ReduceApplyTuner(AutoTunerBase):
         return best_configs
     
     def compile_operation(self, operation):
-        MLCOMPILER_SRC_DIR = '/workspace/SEAL-PICASSO-ML-Compiler/src/cuda'
+        MLCOMPILER_SRC_DIR = '/workspace/EVT_AE/src/cuda'
         include_paths = [
             MLCOMPILER_SRC_DIR
         ] + compiler.default_include_paths

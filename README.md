@@ -35,3 +35,7 @@ cd /workspace/EVT_AE
 bash figure12.sh
 bash figure13_17.sh
 ```
+The reference results of the two figures are listed below:
+
+![Reference Result of Figure 12](reference_results/figure12.png)
+![Reference Result of Figure 13-17](reference_results/figure13_17.png)

@@ -5,7 +5,6 @@ Codegen/compiler/compiled_cache.db
 dist/sptrain-0.0.1-py3.8-linux-x86_64.egg
 src/sptrain.egg-info/*
 *.svg
-*.png
 =0.7
 .vscode/settings.json
 *.model
